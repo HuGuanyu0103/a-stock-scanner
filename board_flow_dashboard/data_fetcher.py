@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-A 股概念板块资金流向数据获取层
+A 股板块资金流向数据获取层
 
-数据源：东方财富网-概念资金流排名 + 板块分时资金流向
+数据源：东方财富网 push2 API — 概念板块、行业板块、北向资金、个股资金流
 底层依赖 akshare，可降级为模拟数据（非交易时段/网络不可达时）
 """
 
@@ -10,14 +10,65 @@ import json
 import logging
 import random
 import time
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional
 
 import pandas as pd
+import requests as req
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
-TRADE_DATE = "2026-06-30"
+TRADE_DATE = datetime.now().strftime("%Y-%m-%d")
+
+# ── 交易日历缓存 ────────────────────────────────────────────
+_TRADING_DAYS: set[str] = set()
+_TRADING_CALENDAR_LOADED = False
+
+
+def load_trading_calendar(year: Optional[int] = None) -> set[str]:
+    """加载 A 股交易日历，失败时降级为周一至周五判断。"""
+    global _TRADING_DAYS, _TRADING_CALENDAR_LOADED
+    if _TRADING_CALENDAR_LOADED and _TRADING_DAYS:
+        return _TRADING_DAYS
+
+    if year is None:
+        year = datetime.now().year
+
+    try:
+        import akshare as ak
+        # 拉取当年 + 明年的交易日
+        for y in (year, year + 1):
+            df = ak.tool_trade_date_hist_sina()
+            if df is not None and not df.empty:
+                col = df.columns[0]
+                dates = df[col].astype(str).tolist()
+                _TRADING_DAYS.update(d for d in dates if d >= f"{year}-01-01")
+        _TRADING_CALENDAR_LOADED = True
+        logger.info("交易日历加载完成: %d 个交易日", len(_TRADING_DAYS))
+    except Exception as e:
+        logger.warning("交易日历加载失败: %s，降级为周一至周五判断", e)
+        _TRADING_CALENDAR_LOADED = True  # 标记已尝试，避免反复重试
+
+    return _TRADING_DAYS
+
+
+def is_trading_day(d: Optional[date] = None) -> bool:
+    """判断是否为 A 股交易日。"""
+    if d is None:
+        d = date.today()
+
+    # 周末一定不是交易日
+    if d.weekday() >= 5:
+        return False
+
+    # 如果有交易日历缓存，精确判断
+    if _TRADING_DAYS:
+        return d.isoformat() in _TRADING_DAYS
+
+    # 降级：周一至周五
+    return True
 
 SECTORS_WARM = [
     "光通信模块", "通信设备", "人形机器人", "数据中心", "玻璃基板",
@@ -39,6 +90,15 @@ COLOR_PALETTE = [
     "#00BFFF", "#1E90FF", "#9370DB", "#FFA07A", "#98FB98",
 ]
 SECTOR_COLORS = {s: COLOR_PALETTE[i] for i, s in enumerate(ALL_SECTORS)}
+
+EASTMONEY_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://data.eastmoney.com/",
+}
 
 
 def _build_trade_minutes() -> list[str]:
@@ -131,7 +191,6 @@ def fetch_rank_akshare() -> Optional[pd.DataFrame]:
 
 
 def fetch_all_sectors_snapshot(timeout: float = 10.0) -> Optional[dict]:
-    import requests as req
     try:
         url = "https://push2.eastmoney.com/api/qt/clist/get"
         params = {
@@ -142,14 +201,8 @@ def fetch_all_sectors_snapshot(timeout: float = 10.0) -> Optional[dict]:
             "fields": "f12,f14,f3,f62,f184,f66,f72,f78,f84",
             "_": str(int(time.time() * 1000)),
         }
-        resp = req.get(url, params=params, timeout=timeout, headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Referer": "https://data.eastmoney.com/",
-        })
+        resp = req.get(url, params=params, timeout=timeout,
+                       verify=False, headers=EASTMONEY_HEADERS)
         resp.raise_for_status()
         data = resp.json()
         items = data.get("data", {}).get("diff", [])
@@ -175,6 +228,139 @@ def fetch_all_sectors_snapshot(timeout: float = 10.0) -> Optional[dict]:
         }
     except Exception as e:
         logger.warning("fetch_all_sectors_snapshot failed: %s", e)
+        return None
+
+
+def fetch_industry_sectors_snapshot(timeout: float = 10.0) -> Optional[dict]:
+    """获取行业板块资金流向快照（fs=m:90+t:2）。"""
+    try:
+        url = "https://push2.eastmoney.com/api/qt/clist/get"
+        params = {
+            "pn": "1", "pz": "200", "po": "1", "np": "1",
+            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            "fltt": "2", "invt": "2", "fid": "f62",
+            "fs": "m:90+t:2",  # 行业板块
+            "fields": "f12,f14,f3,f62,f184,f66,f72,f78,f84",
+            "_": str(int(time.time() * 1000)),
+        }
+        resp = req.get(url, params=params, timeout=timeout,
+                       verify=False, headers=EASTMONEY_HEADERS)
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get("data", {}).get("diff", [])
+        if not items:
+            return None
+
+        sectors = []
+        for item in items:
+            name = item.get("f14", "")
+            if not name:
+                continue
+            sectors.append({
+                "name": name,
+                "code": item.get("f12", ""),
+                "net_main": round(float(item.get("f62", 0)) / 1e8, 2),
+                "pct_chg": item.get("f3", 0),
+            })
+        if not sectors:
+            return None
+        return {
+            "time": datetime.now().strftime("%H:%M"),
+            "sectors": sectors,
+        }
+    except Exception as e:
+        logger.warning("fetch_industry_sectors_snapshot failed: %s", e)
+        return None
+
+
+def fetch_northbound_flow(timeout: float = 8.0) -> Optional[dict]:
+    """获取沪深港通（北向资金）实时流向。
+
+    返回字段：
+      - net_inflow: 北向净流入（亿元）= 沪股通 + 深股通
+      - hk2sh:      沪股通净流入（亿元）
+      - hk2sz:      深股通净流入（亿元）
+      - time:        更新时间
+    """
+    try:
+        url = "https://push2.eastmoney.com/api/qt/kamt/get"
+        params = {
+            "_": str(int(time.time() * 1000)),
+        }
+        resp = req.get(url, params=params, timeout=timeout,
+                       verify=False, headers=EASTMONEY_HEADERS)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("rc") != 0:
+            return None
+
+        d = data.get("data", {})
+        hk2sh = d.get("hk2sh", {})
+        hk2sz = d.get("hk2sz", {})
+
+        # dayNetAmtIn 单位是元，转为亿元
+        net_sh = float(hk2sh.get("dayNetAmtIn", 0)) / 1e8
+        net_sz = float(hk2sz.get("dayNetAmtIn", 0)) / 1e8
+        total_net = net_sh + net_sz
+
+        return {
+            "time": datetime.now().strftime("%H:%M"),
+            "net_inflow": round(total_net, 2),
+            "hk2sh": round(net_sh, 2),
+            "hk2sz": round(net_sz, 2),
+        }
+    except Exception as e:
+        logger.warning("fetch_northbound_flow failed: %s", e)
+        return None
+
+
+def fetch_stock_fund_flow_rank(sort_by: str = "net_main",
+                               count: int = 50,
+                               timeout: float = 10.0) -> Optional[list]:
+    """获取全 A 股主力资金净流入排名。
+
+    Args:
+        sort_by: 排序字段 — "net_main"(主力净额) 或 "net_ratio"(主力净占比)
+        count: 返回数量
+    """
+    try:
+        fid_map = {"net_main": "f62", "net_ratio": "f184"}
+        fid = fid_map.get(sort_by, "f62")
+
+        url = "https://push2.eastmoney.com/api/qt/clist/get"
+        params = {
+            "pn": "1", "pz": str(count), "po": "1" if fid == "f62" else "0",
+            "np": "1", "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            "fltt": "2", "invt": "2", "fid": fid,
+            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",  # 沪深 A 股
+            "fields": "f12,f14,f2,f3,f8,f37,f62,f66,f184,f20",
+            "_": str(int(time.time() * 1000)),
+        }
+        resp = req.get(url, params=params, timeout=timeout,
+                       verify=False, headers=EASTMONEY_HEADERS)
+        resp.raise_for_status()
+        items = resp.json().get("data", {}).get("diff", [])
+        stocks = []
+        for item in items:
+            code = item.get("f12", "")
+            name = item.get("f14", "")
+            if not code or not name:
+                continue
+            stocks.append({
+                "code": code,
+                "name": name,
+                "price": item.get("f2"),
+                "pct_chg": item.get("f3"),
+                "turnover_rate": item.get("f8"),
+                "volume_ratio": item.get("f37"),
+                "net_main": round(float(item.get("f62", 0)) / 1e8, 2),
+                "amp_ratio": item.get("f66"),
+                "net_main_ratio": item.get("f184"),
+                "market_cap": item.get("f20"),
+            })
+        return stocks
+    except Exception as e:
+        logger.warning("fetch_stock_fund_flow_rank failed: %s", e)
         return None
 
 
@@ -240,7 +426,7 @@ if __name__ == "__main__":
     print(json.dumps(data, ensure_ascii=False, indent=2)[:500])
     print(f"\n... 共 {len(data['rank'])} 个板块, {data['total_times']} 个时间点")
 
-# ── 盘中选股模拟数据 ────────────────────────────────────────
+# ── 模拟股票池（供 stocks/flow mock 模式使用）─────────────────
 _MOCK_STOCKS = [
     ("600519", "贵州茅台", 1680.0, 2.1, "白酒"),
     ("300750", "宁德时代", 198.5, 3.2, "固态电池"),
@@ -283,46 +469,3 @@ _MOCK_STOCKS = [
     ("000725", "京东方A", 4.2, 1.0, "消费电子"),
     ("000100", "TCL科技", 4.5, 1.5, "消费电子"),
 ]
-
-SIGNAL_POOL = [
-    "放量突破", "MA5金叉MA10", "均线多头排列", "MACD金叉",
-    "KDJ超卖金叉", "RSI上穿50", "连续3日放量", "涨停回踩10日线",
-    "平台突破", "连板梯队", "炸板回封", "弱转强反包", "情绪周期",
-]
-
-
-def generate_mock_stock_picks() -> dict:
-    """生成模拟的个股选股结果（匹配 run_daily.py 输出格式）"""
-    picks = []
-    for code, name, base_price, base_pct, sector in _MOCK_STOCKS:
-        import random as rnd
-        tech_score = rnd.randint(0, 8)
-        sent_score = rnd.randint(0, 4)
-        factor_score = round(rnd.uniform(0, 5), 1)
-        combined = round(tech_score * 0.5 + sent_score * 0.2 + factor_score * 0.3, 1)
-        n_signals = min(tech_score // 2 + sent_score // 2 + rnd.randint(0, 1), 5)
-        signals = rnd.sample(SIGNAL_POOL, min(n_signals, len(SIGNAL_POOL)))
-        price_jitter = rnd.uniform(-0.5, 0.5)
-        pct_jitter = rnd.uniform(-0.3, 0.3)
-
-        picks.append({
-            "stock_code": code,
-            "short_name": name,
-            "price": round(base_price + price_jitter, 2),
-            "change_pct": round(base_pct + pct_jitter, 1),
-            "signal_score": tech_score,
-            "sentiment_score": sent_score,
-            "factor_score": factor_score,
-            "combined_score": combined,
-            "signal_count": len(signals),
-            "signal_names": " | ".join(signals),
-            "concepts": sector,
-        })
-
-    picks.sort(key=lambda x: x["combined_score"], reverse=True)
-
-    return {
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "total": len(picks),
-        "stocks": picks,
-    }

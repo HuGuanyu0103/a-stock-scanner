@@ -5,3 +5,5 @@ reports/*.md
 data/*.csv
 .venv/
 env/
+.claude/scheduled_tasks.json
+.claude/scheduled_tasks.lock

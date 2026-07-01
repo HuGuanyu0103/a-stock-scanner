@@ -1,124 +1,432 @@
 #!/usr/bin/env python3
 """
-板块资金流向实时采集器
+板块资金流向实时采集器 v3
 
-通过后台线程轮询东方财富 push2 API，在交易时段每 3 秒采集一次全板块资金流向快照，
-累积形成分钟级时间序列，供前端看板实时展示和回放。
+通过后台线程轮询东方财富 push2 API，在交易时段每 3 秒采集一次：
+  - 概念板块资金流向 (m:90+t:3)
+  - 行业板块资金流向 (m:90+t:2)
+  - 北向资金实时流向 (沪深港通)
+
+数据持久化到 SQLite，累积形成分钟级时间序列，供前端看板实时展示和回放。
+
+v3 改进：
+  - 行业/北向增量持久化，不再截断
+  - 持久化触发改为时间驱动
+  - 连续失败自动降速
+  - 看板只展示 Top 25 板块 + 动态配色
+  - 北向资金存增量（更直观的走势）
 """
 
+import hashlib
 import json
 import logging
+import sqlite3
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 
-from data_fetcher import (
-    fetch_all_sectors_snapshot,
-    generate_mock_dashboard_data,
-    _build_trade_minutes,
-    SECTOR_COLORS,
-)
+try:
+    from .data_fetcher import (
+        fetch_all_sectors_snapshot,
+        fetch_industry_sectors_snapshot,
+        fetch_northbound_flow,
+        fetch_dashboard_data,
+        _build_trade_minutes,
+        is_trading_day,
+        load_trading_calendar,
+    )
+except ImportError:
+    from data_fetcher import (  # type: ignore[no-redef]
+        fetch_all_sectors_snapshot,
+        fetch_industry_sectors_snapshot,
+        fetch_northbound_flow,
+        fetch_dashboard_data,
+        _build_trade_minutes,
+        is_trading_day,
+        load_trading_calendar,
+    )
 
 logger = logging.getLogger(__name__)
 
+# ── 看板展示参数 ────────────────────────────────────────────
+
+DASHBOARD_TOP_N = 25          # 看板只展示前 N 个板块
+COLOR_PALETTE = [
+    "#E6194B", "#3CB44B", "#FFE119", "#4363D8", "#F58231",
+    "#911EB4", "#42D4F4", "#F032E6", "#BFEF45", "#FABED4",
+    "#469990", "#DCBEFF", "#9A6324", "#FFFAC8", "#800000",
+    "#AAFFC3", "#808000", "#FFD8B1", "#000075", "#A9A9A9",
+    "#E6BEFF", "#FF6347", "#00CED1", "#7B68EE", "#FF69B4",
+    "#1E90FF", "#FFA07A", "#20B2AA", "#9370DB", "#98FB98",
+]
+
+# ── SQLite 表结构 ──────────────────────────────────────────
+
+DB_SCHEMA = """
+CREATE TABLE IF NOT EXISTS concept_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    time TEXT NOT NULL,
+    data JSON NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS industry_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    time TEXT NOT NULL,
+    data JSON NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS northbound_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    time TEXT NOT NULL,
+    net_inflow REAL NOT NULL DEFAULT 0,
+    hk2sh REAL NOT NULL DEFAULT 0,
+    hk2sz REAL NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_concept_date_time
+    ON concept_snapshots(date, time);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_industry_date_time
+    ON industry_snapshots(date, time);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_northbound_date_time
+    ON northbound_snapshots(date, time);
+"""
+
+
+def _hash_color(name: str) -> str:
+    """基于名称 hash 从调色板取色，确保同一板块总是同一颜色。"""
+    idx = int(hashlib.md5(name.encode()).hexdigest(), 16) % len(COLOR_PALETTE)
+    return COLOR_PALETTE[idx]
+
+
+class Storage:
+    """SQLite 持久化层。"""
+
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self._lock = threading.Lock()
+        self._init_db()
+
+    def _init_db(self):
+        with self._lock:
+            conn = sqlite3.connect(str(self.db_path))
+            conn.executescript(DB_SCHEMA)
+            conn.commit()
+            conn.close()
+
+    def _get_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
+
+    # ── concept ────────────────────────────────────────────
+
+    def save_concept_snapshot(self, date_str: str, time_str: str, data: list):
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO concept_snapshots (date, time, data) VALUES (?, ?, ?)",
+                    (date_str, time_str, json.dumps(data, ensure_ascii=False)),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def load_concept_snapshots(self, date_str: str) -> list[dict]:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT time, data FROM concept_snapshots WHERE date = ? ORDER BY time",
+                    (date_str,),
+                ).fetchall()
+                return [{"time": r[0], "rank": json.loads(r[1])} for r in rows]
+            finally:
+                conn.close()
+
+    def get_latest_concept_time(self, date_str: str) -> Optional[str]:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT time FROM concept_snapshots WHERE date = ? ORDER BY id DESC LIMIT 1",
+                    (date_str,),
+                ).fetchone()
+                return row[0] if row else None
+            finally:
+                conn.close()
+
+    # ── industry ───────────────────────────────────────────
+
+    def save_industry_snapshot(self, date_str: str, time_str: str, data: list):
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO industry_snapshots (date, time, data) VALUES (?, ?, ?)",
+                    (date_str, time_str, json.dumps(data, ensure_ascii=False)),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def load_industry_snapshots(self, date_str: str) -> list[dict]:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT time, data FROM industry_snapshots WHERE date = ? ORDER BY time",
+                    (date_str,),
+                ).fetchall()
+                return [{"time": r[0], "rank": json.loads(r[1])} for r in rows]
+            finally:
+                conn.close()
+
+    def get_latest_industry_time(self, date_str: str) -> Optional[str]:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT time FROM industry_snapshots WHERE date = ? ORDER BY id DESC LIMIT 1",
+                    (date_str,),
+                ).fetchone()
+                return row[0] if row else None
+            finally:
+                conn.close()
+
+    # ── northbound ─────────────────────────────────────────
+
+    def save_northbound_snapshot(self, date_str: str, time_str: str,
+                                  net_inflow: float, hk2sh: float, hk2sz: float):
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO northbound_snapshots "
+                    "(date, time, net_inflow, hk2sh, hk2sz) VALUES (?, ?, ?, ?, ?)",
+                    (date_str, time_str, net_inflow, hk2sh, hk2sz),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def load_northbound_snapshots(self, date_str: str) -> list[dict]:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT time, net_inflow, hk2sh, hk2sz "
+                    "FROM northbound_snapshots WHERE date = ? ORDER BY time",
+                    (date_str,),
+                ).fetchall()
+                return [
+                    {"time": r[0], "net_inflow": r[1],
+                     "hk2sh": r[2], "hk2sz": r[3]}
+                    for r in rows
+                ]
+            finally:
+                conn.close()
+
+    def get_latest_northbound_time(self, date_str: str) -> Optional[str]:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT time FROM northbound_snapshots WHERE date = ? ORDER BY id DESC LIMIT 1",
+                    (date_str,),
+                ).fetchone()
+                return row[0] if row else None
+            finally:
+                conn.close()
+
+    # ── maintenance ────────────────────────────────────────
+
+    def cleanup_old_data(self, keep_days: int = 30):
+        cutoff = date.today().isoformat()
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                for table in ("concept_snapshots", "industry_snapshots",
+                              "northbound_snapshots"):
+                    conn.execute(
+                        f"DELETE FROM {table} WHERE date < date(?, ?)",
+                        (cutoff, f"-{keep_days} days"),
+                    )
+                conn.commit()
+                logger.info("清理 %d 天前的历史数据", keep_days)
+            finally:
+                conn.close()
+
 
 class SectorFlowCollector:
-    """板块资金流向实时采集器。"""
+    """板块资金流向实时采集器 v3。"""
 
     def __init__(self, poll_interval: float = 3.0):
         self._poll_interval = poll_interval
-        self._snapshots: list = []
+        self._base_poll_interval = poll_interval  # 记录基准间隔
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._last_poll_time: float = 0.0
         self._consecutive_failures: int = 0
-        self._max_failures_before_slowdown: int = 3
+        self._max_failures_before_slowdown: int = 5
+        self._last_save_time: float = 0.0   # v3: 时间驱动保存
+        self._save_interval: float = 60.0    # 每 60 秒保存一次
         self._trade_minutes = _build_trade_minutes()
-        self._cache_dir = Path(__file__).parent / "data"
-        self._cache_dir.mkdir(exist_ok=True)
-        self._today = datetime.now().strftime("%Y%m%d")
 
-    @property
-    def cache_file(self) -> Path:
-        return self._cache_dir / f"snapshots_{self._today}.json"
+        self._data_dir = Path(__file__).parent / "data"
+        self._data_dir.mkdir(exist_ok=True)
+        self._storage = Storage(self._data_dir / "collector.db")
+
+        self._today = datetime.now().strftime("%Y%m%d")
+        self._concept_snapshots: list[dict] = []
+        self._industry_snapshots: list[dict] = []
+        self._northbound_snapshots: list[dict] = []
+        self._last_nb_cumulative: dict = {}  # v3: 用于计算北向增量
+
+        load_trading_calendar()
+
+    # ── 生命周期 ────────────────────────────────────────────
 
     def start(self):
         if self._running:
             return
-        loaded = self._load_from_disk()
-        if loaded:
-            logger.info("从缓存恢复 %d 个快照", len(self._snapshots))
+        self._load_from_db()
         self._running = True
         self._thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._thread.start()
-        logger.info("采集器已启动 (间隔 %.1fs)", self._poll_interval)
+        logger.info("采集器 v3 已启动 (间隔 %.1fs)", self._poll_interval)
 
     def stop(self):
         self._running = False
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5.0)
-        self._save_to_disk()
-        logger.info("采集器已停止，共 %d 个快照", len(self._snapshots))
+        self._save_all_to_db()
+        logger.info("采集器已停止 | 概念:%d 行业:%d 北向:%d",
+                     len(self._concept_snapshots),
+                     len(self._industry_snapshots),
+                     len(self._northbound_snapshots))
 
     def reset(self):
         with self._lock:
-            self._snapshots.clear()
+            self._concept_snapshots.clear()
+            self._industry_snapshots.clear()
+            self._northbound_snapshots.clear()
+            self._last_nb_cumulative = {}
         self._consecutive_failures = 0
+        self._poll_interval = self._base_poll_interval
         logger.info("采集器已重置")
+
+    # ── 轮询主循环 ──────────────────────────────────────────
 
     def _poll_loop(self):
         while self._running:
             try:
                 if self._is_market_open():
-                    self._poll_once_and_store()
-                    if len(self._snapshots) > 0 and len(self._snapshots) % 20 == 0:
-                        self._save_to_disk()
+                    self._poll_once()
+                    self._maybe_save()
                     time.sleep(self._poll_interval)
                 else:
                     time.sleep(30)
-                    new_today = datetime.now().strftime("%Y%m%d")
-                    if new_today != self._today:
-                        self._today = new_today
-                        with self._lock:
-                            self._snapshots.clear()
-                        logger.info("日期切换至 %s，清空快照", new_today)
+                    self._check_date_rollover()
             except Exception as e:
                 logger.error("采集循环异常: %s", e)
                 time.sleep(5)
 
-    def _poll_once_and_store(self):
-        snapshot = fetch_all_sectors_snapshot(timeout=8.0)
-        if snapshot is None:
-            self._consecutive_failures += 1
-            if self._consecutive_failures <= 3:
-                logger.warning("API 轮询失败 (连续 %d 次)", self._consecutive_failures)
-            return
-
-        self._consecutive_failures = 0
-        self._last_poll_time = time.time()
-
+    def _poll_once(self):
         now = datetime.now()
         minute_key = self._round_to_nearest_minute(now)
         if minute_key is None:
             return
 
-        sectors = snapshot.get("sectors", [])
-        if not sectors:
+        any_success = False
+
+        # 概念板块
+        concept = fetch_all_sectors_snapshot(timeout=8.0)
+        if concept and concept.get("sectors"):
+            self._last_poll_time = time.time()
+            any_success = True
+            self._store_snapshot("concept", minute_key, concept["sectors"])
+
+        # 行业板块
+        industry = fetch_industry_sectors_snapshot(timeout=8.0)
+        if industry and industry.get("sectors"):
+            any_success = True
+            self._store_snapshot("industry", minute_key, industry["sectors"])
+
+        # 北向资金（v3: 时间驱动，间隙约 6s 即每 2 个 poll 周期采一次）
+        if self._should_poll_northbound():
+            nb = fetch_northbound_flow(timeout=6.0)
+            if nb:
+                self._store_northbound(minute_key, nb)
+
+        # 失败处理
+        if any_success:
+            self._consecutive_failures = 0
+            self._poll_interval = self._base_poll_interval
+        else:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self._max_failures_before_slowdown:
+                self._poll_interval = min(self._base_poll_interval * 6, 30.0)
+                logger.warning("连续 %d 次失败，降速至 %.0fs",
+                               self._consecutive_failures, self._poll_interval)
+
+    def _should_poll_northbound(self) -> bool:
+        """v3: 基于时间判断是否采集北向，而非计数。避免重启后不触发。"""
+        elapsed = time.time() - self._last_poll_time if self._last_poll_time else 999
+        return elapsed > self._base_poll_interval * 1.5
+
+    def _store_snapshot(self, snap_type: str, minute_key: str, sectors: list):
+        attr = f"_{snap_type}_snapshots"
+        with self._lock:
+            snapshots: list = getattr(self, attr)
+            if snapshots and snapshots[-1]["time"] == minute_key:
+                snapshots[-1] = {"time": minute_key, "rank": sectors}
+            else:
+                snapshots.append({"time": minute_key, "rank": sectors})
+
+    def _store_northbound(self, minute_key: str, nb_data: dict):
+        """v3: 存储北向增量而非累计值，使走势图更有意义。"""
+        net_inflow = nb_data["net_inflow"]
+        hk2sh = nb_data.get("hk2sh", 0)
+        hk2sz = nb_data.get("hk2sz", 0)
+
+        prev = self._last_nb_cumulative
+        delta_net = net_inflow - prev.get("net_inflow", net_inflow)
+        delta_sh = hk2sh - prev.get("hk2sh", hk2sh)
+        delta_sz = hk2sz - prev.get("hk2sz", hk2sz)
+
+        self._last_nb_cumulative = {
+            "net_inflow": net_inflow, "hk2sh": hk2sh, "hk2sz": hk2sz,
+        }
+
+        # 首次采集不存增量（没有基准）
+        if not prev:
             return
 
         with self._lock:
-            if self._snapshots and self._snapshots[-1]["time"] == minute_key:
-                self._snapshots[-1] = {"time": minute_key, "rank": sectors}
-            else:
-                self._snapshots.append({"time": minute_key, "rank": sectors})
+            self._northbound_snapshots.append({
+                "time": minute_key,
+                "net_inflow": round(delta_net, 2),
+                "hk2sh": round(delta_sh, 2),
+                "hk2sz": round(delta_sz, 2),
+            })
+
+    # ── 时间判断 ────────────────────────────────────────────
 
     @staticmethod
     def _is_market_open() -> bool:
         now = datetime.now()
-        if now.weekday() > 4:
+        if not is_trading_day(now.date()):
             return False
         t = now.time()
         morning = (
@@ -141,51 +449,121 @@ class SectorFlowCollector:
             return None
         return f"{h:02d}:{m:02d}"
 
-    def get_dashboard_data(self) -> dict:
-        with self._lock:
-            snapshots = list(self._snapshots)
+    def _check_date_rollover(self):
+        new_today = datetime.now().strftime("%Y%m%d")
+        if new_today != self._today:
+            self._today = new_today
+            with self._lock:
+                self._concept_snapshots.clear()
+                self._industry_snapshots.clear()
+                self._northbound_snapshots.clear()
+                self._last_nb_cumulative = {}
+            self._consecutive_failures = 0
+            self._poll_interval = self._base_poll_interval
+            logger.info("日期切换至 %s", new_today)
 
+    # ── 持久化（v3: 时间驱动 + 全部增量保存）─────────────────
+
+    def _maybe_save(self):
+        """v3: 基于时间间隔触发持久化，不依赖任何一种数据的计数。"""
+        now = time.time()
+        if self._last_save_time and (now - self._last_save_time) < self._save_interval:
+            return
+        self._last_save_time = now
+        self._save_all_to_db()
+
+    def _save_all_to_db(self):
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        self._save_to_db("concept", today_str, self._storage.get_latest_concept_time,
+                          self._storage.save_concept_snapshot)
+        self._save_to_db("industry", today_str, self._storage.get_latest_industry_time,
+                          self._storage.save_industry_snapshot)
+        self._save_to_db("northbound", today_str, self._storage.get_latest_northbound_time,
+                          self._save_nb_item)
+
+    def _save_to_db(self, snap_type: str, today_str: str,
+                    get_latest_fn, save_fn):
+        attr = f"_{snap_type}_snapshots"
+        with self._lock:
+            snapshots: list = list(getattr(self, attr))
+        if not snapshots:
+            return
+        last_saved = get_latest_fn(today_str)
+        new_items = snapshots if not last_saved else [
+            s for s in snapshots if s["time"] > last_saved
+        ]
+        for item in new_items:
+            try:
+                save_fn(today_str, item["time"], item)
+            except Exception:
+                pass
+
+    def _save_nb_item(self, date_str: str, time_str: str, item: dict):
+        self._storage.save_northbound_snapshot(
+            date_str, time_str,
+            item["net_inflow"], item.get("hk2sh", 0), item.get("hk2sz", 0),
+        )
+
+    def _load_from_db(self):
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        concept = self._storage.load_concept_snapshots(today_str)
+        industry = self._storage.load_industry_snapshots(today_str)
+        northbound = self._storage.load_northbound_snapshots(today_str)
+        if concept or industry:
+            with self._lock:
+                self._concept_snapshots = concept
+                self._industry_snapshots = industry
+                self._northbound_snapshots = northbound
+            # 恢复北向累计基准
+            if northbound:
+                last = northbound[-1]
+                self._last_nb_cumulative = {
+                    "net_inflow": last.get("net_inflow", 0),
+                    "hk2sh": last.get("hk2sh", 0),
+                    "hk2sz": last.get("hk2sz", 0),
+                }
+            logger.info("从 DB 恢复: 概念 %d, 行业 %d, 北向 %d",
+                         len(concept), len(industry), len(northbound))
+
+    # ── Dashboard 数据构建 ──────────────────────────────────
+
+    def _build_dashboard_from_snapshots(self, snapshots: list[dict]) -> dict:
+        """从快照列表构建前端看板数据（仅 Top N 板块）。"""
         if len(snapshots) < 2:
-            logger.info("快照不足 (%d)，降级为模拟数据", len(snapshots))
-            return generate_mock_dashboard_data()
+            return fetch_dashboard_data(use_real=True)
 
         minutes = [s["time"] for s in snapshots]
 
-        all_sectors: dict[str, set] = {}
-        for s in snapshots:
-            for item in s["rank"]:
-                name = item["name"]
-                if name not in all_sectors:
-                    all_sectors[name] = set()
-                all_sectors[name].add(s["time"])
+        # 最新时刻的排名 — 只取 Top N
+        latest_rank = snapshots[-1]["rank"] if snapshots else []
+        top_sectors = latest_rank[:DASHBOARD_TOP_N]
+        top_names = {item["name"] for item in top_sectors}
 
+        # 构建时序（只包含 Top N 板块）
         series = {}
-        for sector_name in all_sectors:
-            snap_map = {s["time"]: s["rank"] for s in snapshots}
+        snap_map = {s["time"]: s["rank"] for s in snapshots}
+        for item in top_sectors:
+            sector_name = item["name"]
             values = []
             for t in minutes:
                 rank = snap_map.get(t, [])
                 found = next(
-                    (item["net_main"] for item in rank if item["name"] == sector_name),
+                    (r["net_main"] for r in rank if r["name"] == sector_name),
                     None,
                 )
                 values.append(found)
-            color = SECTOR_COLORS.get(sector_name, "#666666")
             series[sector_name] = {
                 "name": sector_name,
-                "color": color,
+                "color": _hash_color(sector_name),
                 "times": minutes,
                 "values": values,
             }
 
-        latest_rank = snapshots[-1]["rank"] if snapshots else []
-        rank_data = []
-        for item in latest_rank:
-            rank_data.append({
-                "name": item["name"],
-                "value": item["net_main"],
-                "color": SECTOR_COLORS.get(item["name"], "#666666"),
-            })
+        rank_data = [
+            {"name": item["name"], "value": item["net_main"],
+             "color": _hash_color(item["name"])}
+            for item in top_sectors
+        ]
         rank_data.sort(key=lambda x: x["value"], reverse=True)
 
         return {
@@ -198,8 +576,21 @@ class SectorFlowCollector:
             "series": series,
         }
 
-    def get_snapshot(self, time_idx: int) -> dict:
-        data = self.get_dashboard_data()
+    def get_dashboard_data(self, sector_type: str = "concept") -> dict:
+        with self._lock:
+            if sector_type == "industry":
+                snapshots = list(self._industry_snapshots)
+            else:
+                snapshots = list(self._concept_snapshots)
+
+        if len(snapshots) < 2:
+            logger.info("快照不足 (%d)，尝试实时获取", len(snapshots))
+            return fetch_dashboard_data(use_real=True)
+
+        return self._build_dashboard_from_snapshots(snapshots)
+
+    def get_snapshot(self, time_idx: int, sector_type: str = "concept") -> dict:
+        data = self.get_dashboard_data(sector_type)
         minutes = data["minutes"]
         series = data["series"]
 
@@ -209,15 +600,10 @@ class SectorFlowCollector:
         snapshot_rank = []
         for sec_name, sec_data in series.items():
             vals = sec_data["values"]
-            if time_idx < len(vals):
-                val = vals[time_idx]
-            else:
-                val = vals[-1] if vals else 0
+            val = vals[time_idx] if time_idx < len(vals) else (vals[-1] if vals else 0)
             if val is not None:
                 snapshot_rank.append({
-                    "name": sec_name,
-                    "value": val,
-                    "color": sec_data["color"],
+                    "name": sec_name, "value": val, "color": sec_data["color"],
                 })
         snapshot_rank.sort(key=lambda x: x["value"], reverse=True)
 
@@ -239,49 +625,85 @@ class SectorFlowCollector:
             },
         }
 
+    def get_top_sectors(self, top_n: int = 5) -> list[dict]:
+        """获取当前资金流入最强的板块（含 code，供选股引擎下钻）。
+
+        v3 新增：替代 stock_selector 直接调 API，复用采集器数据。
+        """
+        result = []
+        for stype in ("concept", "industry"):
+            with self._lock:
+                snapshots = list(
+                    self._concept_snapshots if stype == "concept"
+                    else self._industry_snapshots
+                )
+            if not snapshots:
+                continue
+            latest_rank = snapshots[-1].get("rank", [])
+            for item in latest_rank[:top_n]:
+                code = item.get("code", "")
+                name = item.get("name", "")
+                if name:
+                    result.append({
+                        "code": code,
+                        "name": name,
+                        "net_main": item.get("net_main", 0),
+                        "pct_chg": item.get("pct_chg", 0),
+                        "type": stype,
+                    })
+        return result
+
+    def get_northbound_data(self) -> dict:
+        with self._lock:
+            snapshots = list(self._northbound_snapshots)
+
+        if not snapshots:
+            nb = fetch_northbound_flow()
+            if nb:
+                return {
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "latest": nb,
+                    "history": [],
+                }
+            return {
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "latest": {"time": "--:--", "net_inflow": 0, "hk2sh": 0, "hk2sz": 0},
+                "history": [],
+            }
+
+        times = [s["time"] for s in snapshots]
+        net_inflows = [s["net_inflow"] for s in snapshots]
+
+        return {
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "latest": snapshots[-1] if snapshots else None,
+            "history": {
+                "times": times,
+                "net_inflows": net_inflows,
+            },
+        }
+
     def get_status(self) -> dict:
         with self._lock:
-            count = len(self._snapshots)
+            concept_count = len(self._concept_snapshots)
+            industry_count = len(self._industry_snapshots)
+            nb_count = len(self._northbound_snapshots)
         return {
             "running": self._running,
-            "snapshots_count": count,
+            "snapshots_concept": concept_count,
+            "snapshots_industry": industry_count,
+            "snapshots_northbound": nb_count,
             "last_poll_time": self._last_poll_time,
             "last_poll_iso": (
                 datetime.fromtimestamp(self._last_poll_time).isoformat()
                 if self._last_poll_time else None
             ),
             "consecutive_failures": self._consecutive_failures,
-            "market_open": self._is_market_open(),
-            "date": datetime.now().strftime("%Y-%m-%d"),
             "poll_interval": self._poll_interval,
+            "market_open": self._is_market_open(),
+            "is_trading_day": is_trading_day(date.today()),
+            "date": datetime.now().strftime("%Y-%m-%d"),
         }
 
-    def _save_to_disk(self):
-        with self._lock:
-            data = list(self._snapshots)
-        if not data:
-            return
-        try:
-            tmp = str(self.cache_file) + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
-            import os
-            os.replace(tmp, str(self.cache_file))
-        except Exception as e:
-            logger.warning("快照缓存写入失败: %s", e)
-
-    def _load_from_disk(self) -> bool:
-        if not self.cache_file.exists():
-            return False
-        try:
-            with open(self.cache_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if not isinstance(data, list) or len(data) == 0:
-                return False
-            with self._lock:
-                self._snapshots = data
-            logger.info("从缓存恢复 %d 个快照", len(data))
-            return True
-        except Exception as e:
-            logger.warning("快照缓存读取失败: %s", e)
-            return False
+    def cleanup_history(self, keep_days: int = 30):
+        self._storage.cleanup_old_data(keep_days)
