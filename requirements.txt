@@ -1,0 +1,14 @@
+adata>=0.1.0
+pandas>=1.3.0
+numpy>=1.21.0
+matplotlib>=3.4.0
+requests>=2.25.0
+pyyaml>=5.4.0
+openpyxl>=3.0.0
+flask>=2.0.0
+akshare>=1.13.0
+# 可选情绪分析（龙虎榜、涨停池）
+# pip install akshare  # 如需更多数据源（不必须）
+
+# 量化因子引擎已内置实现（无需额外安装）
+# scikit-learn>=1.0.0  # 如果安装，因子计算更高效
