@@ -22,6 +22,15 @@ logger = logging.getLogger(__name__)
 
 TRADE_DATE = datetime.now().strftime("%Y-%m-%d")
 
+
+def _now_time() -> str:
+    """当前时间，收盘后（>15:00）封顶至 15:00，避免数据时间显示为收盘后。"""
+    now = datetime.now()
+    if now.hour > 15 or (now.hour == 15 and now.minute > 0):
+        return "15:00"
+    return now.strftime("%H:%M")
+
+
 # ── 交易日历缓存 ────────────────────────────────────────────
 _TRADING_DAYS: set[str] = set()
 _TRADING_CALENDAR_LOADED = False
@@ -223,7 +232,7 @@ def fetch_all_sectors_snapshot(timeout: float = 10.0) -> Optional[dict]:
         if not sectors:
             return None
         return {
-            "time": datetime.now().strftime("%H:%M"),
+            "time": _now_time(),
             "sectors": sectors,
         }
     except Exception as e:
@@ -265,7 +274,7 @@ def fetch_industry_sectors_snapshot(timeout: float = 10.0) -> Optional[dict]:
         if not sectors:
             return None
         return {
-            "time": datetime.now().strftime("%H:%M"),
+            "time": _now_time(),
             "sectors": sectors,
         }
     except Exception as e:
@@ -304,7 +313,7 @@ def fetch_northbound_flow(timeout: float = 8.0) -> Optional[dict]:
         total_net = net_sh + net_sz
 
         return {
-            "time": datetime.now().strftime("%H:%M"),
+            "time": _now_time(),
             "net_inflow": round(total_net, 2),
             "hk2sh": round(net_sh, 2),
             "hk2sz": round(net_sz, 2),
