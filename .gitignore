@@ -7,3 +7,7 @@ data/*.csv
 env/
 .claude/scheduled_tasks.json
 .claude/scheduled_tasks.lock
+
+# 运行时缓存 / 数据文件
+board_flow_dashboard/data/*.json
+board_flow_dashboard/data/*.db

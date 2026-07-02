@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>A 股资金流向看板</title>
+<title>A 股短线看板</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -29,43 +29,42 @@ body {
 .live-dot.off { background: #d9d9d9; animation: none; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
 
-/* Tab bar */
-.tab-bar {
+/* ── 主标签栏 ───────────────────────────────── */
+.main-tab-bar {
   display: flex; gap: 0; margin-bottom: 16px; background: #fff;
   border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); overflow: hidden;
 }
-.tab-btn {
-  flex: 1; padding: 10px 0; border: none; background: #fafafa;
-  font-size: 14px; font-weight: 500; color: #888; cursor: pointer;
+.main-tab-btn {
+  flex: 1; padding: 12px 0; border: none; background: #fafafa;
+  font-size: 15px; font-weight: 500; color: #888; cursor: pointer;
   transition: all 0.2s; position: relative;
 }
-.tab-btn:not(:last-child) { border-right: 1px solid #eee; }
-.tab-btn:hover { color: #333; background: #f5f5f5; }
-.tab-btn.active { color: #1890ff; background: #fff; font-weight: 600; }
-.tab-btn.active::after {
+.main-tab-btn:not(:last-child) { border-right: 1px solid #eee; }
+.main-tab-btn:hover { color: #333; background: #f5f5f5; }
+.main-tab-btn.active { color: #1890ff; background: #fff; font-weight: 600; }
+.main-tab-btn.active::after {
   content: ''; position: absolute; bottom: 0; left: 20%; right: 20%;
-  height: 2px; background: #1890ff; border-radius: 1px 1px 0 0;
+  height: 3px; background: #1890ff; border-radius: 2px 2px 0 0;
 }
-.tab-content { display: none; }
-.tab-content.active { display: block; }
+.main-tab-content { display: none; }
+.main-tab-content.active { display: block; }
 
-/* Sub-tabs (concept/industry) */
+/* ── 二级标签栏（资金流向内）────────────────── */
 .sub-tab-bar {
-  display: flex; gap: 0; margin-bottom: 16px;
+  display: flex; gap: 4px; margin-bottom: 16px;
 }
 .sub-tab-btn {
-  padding: 5px 18px; border: 1px solid #d9d9d9; background: #fff;
-  font-size: 13px; color: #666; cursor: pointer; transition: all 0.2s;
+  padding: 6px 20px; border: 1px solid #d9d9d9; border-radius: 6px;
+  background: #fff; font-size: 13px; color: #666; cursor: pointer;
+  transition: all 0.2s;
 }
-.sub-tab-btn:first-child { border-radius: 6px 0 0 6px; }
-.sub-tab-btn:last-child { border-radius: 0 6px 6px 0; margin-left: -1px; }
-.sub-tab-btn.active { background: #1890ff; color: #fff; border-color: #1890ff; z-index: 1; }
-.sub-tab-btn:hover:not(.active) { color: #1890ff; border-color: #1890ff; z-index: 1; }
+.sub-tab-btn:hover { border-color: #1890ff; color: #1890ff; }
+.sub-tab-btn.active { background: #1890ff; color: #fff; border-color: #1890ff; }
 
-/* Sector flow layout */
-.main-content { display: flex; gap: 20px; }
-.left-panel { flex: 1; min-width: 0; }
-.right-panel { width: 320px; flex-shrink: 0; }
+/* ── 板块资金流向 ──────────────────────────── */
+.sector-grid { display: flex; gap: 20px; }
+.sector-left { flex: 1; min-width: 0; }
+.sector-right { width: 320px; flex-shrink: 0; }
 
 .chart-wrapper {
   background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
@@ -132,14 +131,13 @@ body {
 .rank-bar-fill.up { background: #ffccc7; }
 .rank-bar-fill.down { background: #d9f7be; }
 
-/* Northbound */
+/* ── 北向资金（资金流向子标签）────────────── */
 .nb-cards {
   display: flex; gap: 16px; margin-bottom: 16px;
 }
 .nb-card {
   flex: 1; background: #fff; border-radius: 10px;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.06); padding: 20px;
-  text-align: center;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06); padding: 20px; text-align: center;
 }
 .nb-card .nb-label { font-size: 13px; color: #999; margin-bottom: 8px; }
 .nb-card .nb-value { font-size: 28px; font-weight: 700; }
@@ -148,7 +146,7 @@ body {
 .nb-card .nb-sub { font-size: 12px; color: #bbb; margin-top: 4px; }
 #nbChart { width: 100%; height: 320px; background:#fff; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,0.06); padding:12px; }
 
-/* Stock flow table */
+/* ── 个股资金流表格 ────────────────────────── */
 .flow-table-wrap {
   background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
   padding: 16px; overflow-x: auto;
@@ -162,24 +160,24 @@ body {
 }
 .flow-sort-btn.active { background: #1890ff; color: #fff; border-color: #1890ff; }
 
-.flow-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.flow-table th {
+.flow-table, .picks-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.flow-table th, .picks-table th {
   padding: 8px 6px; text-align: right; font-weight: 600; color: #555;
   border-bottom: 2px solid #e8e8e8; white-space: nowrap;
 }
-.flow-table th:first-child { text-align: center; }
-.flow-table th:nth-child(2) { text-align: left; }
-.flow-table td {
+.flow-table th:first-child, .picks-table th:first-child { text-align: center; }
+.flow-table th:nth-child(2), .picks-table th:nth-child(2) { text-align: left; }
+.flow-table td, .picks-table td {
   padding: 7px 6px; text-align: right; border-bottom: 1px solid #f0f0f0;
   white-space: nowrap;
 }
-.flow-table td:first-child { text-align: center; color: #999; font-size: 12px; }
-.flow-table td:nth-child(2) { text-align: left; }
-.flow-table tr:hover { background: #f6f9ff; }
-.flow-table .up { color: #f5222d; }
-.flow-table .down { color: #389e0d; }
+.flow-table td:first-child, .picks-table td:first-child { text-align: center; color: #999; font-size: 12px; }
+.flow-table td:nth-child(2), .picks-table td:nth-child(2) { text-align: left; }
+.flow-table tr:hover, .picks-table tr:hover { background: #f6f9ff; }
+.up { color: #f5222d; }
+.down { color: #389e0d; }
 
-/* Stock picks (existing, tab3) */
+/* ── 盘中选股 ──────────────────────────────── */
 .picks-wrapper {
   background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
   padding: 16px; overflow-x: auto;
@@ -187,22 +185,6 @@ body {
 .picks-header { display: flex; align-items: center; justify-content: space-between; margin-bottom:12px; }
 .picks-header h2 { font-size: 16px; font-weight: 600; }
 .picks-meta { font-size: 12px; color: #999; }
-.picks-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.picks-table th {
-  padding: 8px 6px; text-align: right; font-weight: 600; color: #555;
-  border-bottom: 2px solid #e8e8e8; white-space: nowrap;
-}
-.picks-table th:first-child { text-align: center; }
-.picks-table th:nth-child(2) { text-align: left; }
-.picks-table td {
-  padding: 7px 6px; text-align: right; border-bottom: 1px solid #f0f0f0;
-  white-space: nowrap;
-}
-.picks-table td:first-child { text-align: center; color: #999; font-size: 12px; }
-.picks-table td:nth-child(2) { text-align: left; }
-.picks-table tr:hover { background: #f6f9ff; }
-.picks-table .up { color: #f5222d; }
-.picks-table .down { color: #389e0d; }
 .picks-table .score-high { color: #f5222d; font-weight: 700; }
 .picks-table .score-mid { color: #fa8c16; font-weight: 600; }
 .picks-table .score-low { color: #999; }
@@ -222,6 +204,16 @@ body {
   background: #fff1f0; color: #cf1322; border: 1px solid #ffccc7;
 }
 
+/* ── 持仓决策（预留）───────────────────────── */
+.placeholder-panel {
+  background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  padding: 80px 20px; text-align: center;
+}
+.placeholder-panel .ph-icon { font-size: 48px; margin-bottom: 16px; }
+.placeholder-panel .ph-title { font-size: 18px; font-weight: 600; color: #333; margin-bottom: 8px; }
+.placeholder-panel .ph-desc { font-size: 14px; color: #999; line-height: 1.8; }
+
+/* ── 通用 ────────────────────────────────── */
 .loading { text-align: center; padding: 80px 0; color: #999; font-size: 14px; }
 .spinner {
   display: inline-block; width: 24px; height: 24px;
@@ -231,8 +223,8 @@ body {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 900px) {
-  .main-content { flex-direction: column; }
-  .right-panel { width: 100%; }
+  .sector-grid { flex-direction: column; }
+  .sector-right { width: 100%; }
   .rank-panel { max-height: 400px; }
   #sectorChart { height: 360px; }
   .nb-cards { flex-direction: column; }
@@ -243,8 +235,8 @@ body {
 <div class="dashboard">
   <div class="header">
     <div>
-      <h1 id="pageTitle">A 股资金流向看板</h1>
-      <div class="subtitle">概念板块 · 行业板块 · 北向资金 · 盘中选股</div>
+      <h1 id="pageTitle">A 股短线看板</h1>
+      <div class="subtitle">资金流向 · 盘中选股 · 持仓决策</div>
     </div>
     <div class="status">
       <span class="live-dot" id="liveDot"></span>
@@ -252,85 +244,98 @@ body {
     </div>
   </div>
 
-  <!-- 主标签栏 -->
-  <div class="tab-bar">
-    <button class="tab-btn active" onclick="switchMainTab(0)">板块资金流向</button>
-    <button class="tab-btn" onclick="switchMainTab(1)">北向资金</button>
-    <button class="tab-btn" onclick="switchMainTab(2)">个股资金流</button>
-    <button class="tab-btn" onclick="switchMainTab(3)">盘中选股</button>
+  <!-- ═══ 主标签栏 ═══ -->
+  <div class="main-tab-bar">
+    <button class="main-tab-btn active" onclick="switchMainTab(0)">📊 资金流向</button>
+    <button class="main-tab-btn" onclick="switchMainTab(1)">🎯 盘中选股</button>
+    <button class="main-tab-btn" onclick="switchMainTab(2)">📋 持仓决策</button>
   </div>
 
-  <!-- ====== Tab 0: 板块资金流向 ====== -->
-  <div class="tab-content active" id="mainTab0">
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <!-- Tab 0: 资金流向（含三个子标签）-->
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <div class="main-tab-content active" id="mainTab0">
+    <!-- 二级标签 -->
     <div class="sub-tab-bar">
-      <button class="sub-tab-btn active" onclick="switchSectorType('concept')">概念板块</button>
-      <button class="sub-tab-btn" onclick="switchSectorType('industry')">行业板块</button>
+      <button class="sub-tab-btn active" onclick="switchFlowSubTab('sector')">板块资金</button>
+      <button class="sub-tab-btn" onclick="switchFlowSubTab('northbound')">北向资金</button>
+      <button class="sub-tab-btn" onclick="switchFlowSubTab('stocks')">个股资金流</button>
     </div>
-    <div class="main-content">
-      <div class="left-panel">
-        <div class="chart-wrapper">
-          <div id="sectorChart" class="loading">
-            <div class="spinner"></div><div>加载数据中...</div>
-          </div>
-          <div class="replay-bar" id="replayBar" style="display:none">
-            <button class="replay-btn" id="playBtn">▶ 回放</button>
-            <div class="replay-timeline">
-              <input type="range" id="timeSlider" min="0" max="100" value="0" step="1">
-              <span class="replay-time" id="timeLabel">09:31</span>
+
+    <!-- 板块资金 -->
+    <div class="flow-sub-content" id="flowSubSector">
+      <div class="sub-tab-bar" style="margin-top:-4px">
+        <button class="sub-tab-btn active" onclick="switchSectorType('concept')" style="font-size:12px;padding:4px 14px">概念板块</button>
+        <button class="sub-tab-btn" onclick="switchSectorType('industry')" style="font-size:12px;padding:4px 14px">行业板块</button>
+      </div>
+      <div class="sector-grid">
+        <div class="sector-left">
+          <div class="chart-wrapper">
+            <div id="sectorChart" class="loading">
+              <div class="spinner"></div><div>加载数据中...</div>
             </div>
-            <span class="replay-info" id="replayInfo"></span>
+            <div class="replay-bar" id="replayBar" style="display:none">
+              <button class="replay-btn" id="playBtn">▶ 回放</button>
+              <div class="replay-timeline">
+                <input type="range" id="timeSlider" min="0" max="100" value="0" step="1">
+                <span class="replay-time" id="timeLabel">09:31</span>
+              </div>
+              <span class="replay-info" id="replayInfo"></span>
+            </div>
+          </div>
+        </div>
+        <div class="sector-right">
+          <div class="rank-panel">
+            <div class="rank-header">
+              <h2 id="rankTitle">概念板块资金流向</h2>
+              <div class="rank-sub">单位：亿元 | <span id="rankTimeLabel">15:00</span></div>
+            </div>
+            <div class="rank-list" id="rankList"><div class="loading">加载中...</div></div>
           </div>
         </div>
       </div>
-      <div class="right-panel">
-        <div class="rank-panel">
-          <div class="rank-header">
-            <h2 id="rankTitle">概念板块资金流向</h2>
-            <div class="rank-sub">单位：亿元 | <span id="rankTimeLabel">15:00</span></div>
-          </div>
-          <div class="rank-list" id="rankList"><div class="loading">加载中...</div></div>
+    </div>
+
+    <!-- 北向资金 -->
+    <div class="flow-sub-content" id="flowSubNorthbound" style="display:none">
+      <div class="nb-cards">
+        <div class="nb-card">
+          <div class="nb-label">北向净流入</div>
+          <div class="nb-value" id="nbNetInflow">--</div>
+          <div class="nb-sub" id="nbTime">--:--</div>
+        </div>
+        <div class="nb-card">
+          <div class="nb-label">沪股通净流入</div>
+          <div class="nb-value" id="nbBalance" style="color:#333">--</div>
+          <div class="nb-sub">亿元</div>
+        </div>
+        <div class="nb-card">
+          <div class="nb-label">深股通净流入</div>
+          <div class="nb-value" id="nbQuota" style="color:#333">--</div>
+          <div class="nb-sub">亿元</div>
         </div>
       </div>
+      <div id="nbChart"><div class="loading">加载北向资金数据...</div></div>
+    </div>
+
+    <!-- 个股资金流 -->
+    <div class="flow-sub-content" id="flowSubStocks" style="display:none">
+      <div class="flow-table-wrap">
+        <h2>全 A 股主力资金净流入排名</h2>
+        <div class="flow-meta" id="flowMeta">加载中...</div>
+        <div class="flow-sort-bar">
+          <button class="flow-sort-btn active" onclick="switchFlowSort('net_main', this)">主力净额排名</button>
+          <button class="flow-sort-btn" onclick="switchFlowSort('net_ratio', this)">主力净占比排名</button>
+        </div>
+        <div id="flowTableContainer"><div class="loading">加载个股资金流数据...</div></div>
+      </div>
     </div>
   </div>
 
-  <!-- ====== Tab 1: 北向资金 ====== -->
-  <div class="tab-content" id="mainTab1">
-    <div class="nb-cards">
-      <div class="nb-card">
-        <div class="nb-label">北向净流入</div>
-        <div class="nb-value" id="nbNetInflow">--</div>
-        <div class="nb-sub" id="nbTime">--:--</div>
-      </div>
-      <div class="nb-card">
-        <div class="nb-label">沪股通净流入</div>
-        <div class="nb-value" id="nbBalance" style="color:#333">--</div>
-        <div class="nb-sub">亿元</div>
-      </div>
-      <div class="nb-card">
-        <div class="nb-label">深股通净流入</div>
-        <div class="nb-value" id="nbQuota" style="color:#333">--</div>
-        <div class="nb-sub">亿元</div>
-      </div>
-    </div>
-    <div id="nbChart"><div class="loading">加载北向资金数据...</div></div>
-  </div>
-
-  <!-- ====== Tab 2: 个股资金流 ====== -->
-  <div class="tab-content" id="mainTab2">
-    <div class="flow-table-wrap">
-      <h2>全 A 股主力资金净流入排名</h2>
-      <div class="flow-meta" id="flowMeta">加载中...</div>
-      <div class="flow-sort-bar">
-        <button class="flow-sort-btn active" onclick="switchFlowSort('net_main', this)">主力净额排名</button>
-        <button class="flow-sort-btn" onclick="switchFlowSort('net_ratio', this)">主力净占比排名</button>
-      </div>
-      <div id="flowTableContainer"><div class="loading">加载个股资金流数据...</div></div>
-    </div>
-  </div>
-
-  <!-- ====== Tab 3: 盘中选股 ====== -->
-  <div class="tab-content" id="mainTab3">
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <!-- Tab 1: 盘中选股 -->
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <div class="main-tab-content" id="mainTab1">
     <div class="picks-wrapper">
       <div class="picks-header">
         <h2>盘中选股候选池</h2>
@@ -340,36 +345,87 @@ body {
       <div id="picksTableContainer"><div class="loading">加载选股数据中...</div></div>
     </div>
   </div>
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <!-- Tab 2: 持仓决策（预留）-->
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <div class="main-tab-content" id="mainTab2">
+    <div class="placeholder-panel">
+      <div class="ph-icon">📋</div>
+      <div class="ph-title">持仓决策</div>
+      <div class="ph-desc">
+        功能开发中，敬请期待<br>
+        计划支持：持仓跟踪 · 止盈止损提醒 · 盈亏统计 · 交易日志
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
 // ── 全局状态 ──────────────────────────────────────────────
 let mainTab = 0;
-let sectorType = 'concept';  // 'concept' | 'industry'
+let flowSubTab = 'sector';     // sector | northbound | stocks
+let sectorType = 'concept';    // concept | industry
 let sectorData = null;
 let sectorChart = null;
 let isReplaying = false;
 let replayTimer = null;
 let currentTimeIdx = 0;
 let nbChart = null;
+let flowSortBy = 'net_main';
+let picksInterval = null;
+let flowInterval = null;
 
 // ── 主标签切换 ────────────────────────────────────────────
 function switchMainTab(idx) {
   mainTab = idx;
-  document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === idx));
-  document.querySelectorAll('.tab-content').forEach((c, i) => c.classList.toggle('active', i === idx));
+  document.querySelectorAll('.main-tab-btn').forEach((b, i) => b.classList.toggle('active', i === idx));
+  document.querySelectorAll('.main-tab-content').forEach((c, i) => c.classList.toggle('active', i === idx));
 
-  if (idx === 0 && !sectorData) loadSectorData();
-  if (idx === 1) loadNorthboundData();
-  if (idx === 2) loadStockFlow('net_main');
-  if (idx === 3) loadStockPicks();
-  setTimeout(() => { if (sectorChart) sectorChart.resize(); if (nbChart) nbChart.resize(); }, 100);
+  if (idx === 0) {
+    switchFlowSubTab(flowSubTab);  // 恢复资金流向子标签
+  }
+  if (idx === 1) {
+    loadStockPicks();
+    // 盘中选股每 15 秒刷新
+    if (picksInterval) clearInterval(picksInterval);
+    picksInterval = setInterval(loadStockPicks, 15000);
+  } else {
+    if (picksInterval) { clearInterval(picksInterval); picksInterval = null; }
+  }
+  if (idx === 2) {
+    // 持仓决策 - 预留
+  }
+  setTimeout(() => { if (sectorChart) sectorChart.resize(); if (nbChart) nbChart.resize(); }, 150);
+}
+
+// ── 资金流向子标签切换 ────────────────────────────────────
+function switchFlowSubTab(sub) {
+  flowSubTab = sub;
+  document.querySelectorAll('.flow-sub-content').forEach(el => {
+    el.style.display = 'none';
+  });
+  const target = document.getElementById('flowSub' + sub.charAt(0).toUpperCase() + sub.slice(1));
+  if (target) target.style.display = '';
+
+  // 高亮子标签
+  document.querySelectorAll('.sub-tab-bar .sub-tab-btn').forEach(b => {
+    const txt = b.textContent;
+    if (sub === 'sector' && txt.includes('板块')) b.classList.add('active');
+    else if (sub === 'northbound' && txt.includes('北向')) b.classList.add('active');
+    else if (sub === 'stocks' && txt.includes('个股')) b.classList.add('active');
+    else b.classList.remove('active');
+  });
+
+  if (sub === 'sector' && !sectorData) loadSectorData();
+  if (sub === 'northbound') loadNorthboundData();
+  if (sub === 'stocks') loadStockFlow(flowSortBy);
 }
 
 // ── 板块类型切换 ──────────────────────────────────────────
 function switchSectorType(type) {
   sectorType = type;
-  document.querySelectorAll('.sub-tab-btn').forEach(b => {
+  document.querySelectorAll('#flowSubSector .sub-tab-btn').forEach(b => {
     b.classList.toggle('active', b.textContent.includes(type === 'concept' ? '概念' : '行业'));
   });
   document.getElementById('rankTitle').textContent = type === 'concept' ? '概念板块资金流向' : '行业板块资金流向';
@@ -377,21 +433,18 @@ function switchSectorType(type) {
 }
 
 // ══════════════════════════════════════════════════════════
-// Tab 0: 板块资金流向
+// 板块资金流向
 // ══════════════════════════════════════════════════════════
 async function loadSectorData() {
   try {
     const res = await fetch('/api/data?type=' + sectorType);
     sectorData = await res.json();
     document.getElementById('statusText').textContent =
-      sectorData.date + ' · ' + sectorType + ' · ' + sectorData.rank.length + ' 个板块';
-    document.getElementById('pageTitle').textContent =
-      (sectorType === 'concept' ? '概念' : '行业') + '板块资金流向 · ' + sectorData.date;
+      sectorData.date + ' · ' + (sectorType === 'concept' ? '概念' : '行业') + ' · ' + sectorData.rank.length + ' 个板块';
     initSectorChart();
     initReplay();
   } catch (e) {
     console.error('板块数据加载失败:', e);
-    document.getElementById('statusText').textContent = '数据加载失败';
   }
 }
 
@@ -422,10 +475,8 @@ function updateSectorChart(timeIdx) {
     }
   }
   const absMax = Math.max(Math.abs(maxVal), Math.abs(minVal || 0), 30);
-  let yMax = Math.ceil(absMax / 30) * 30;
-  if (yMax < 30) yMax = 30;
-  let yMin = -Math.ceil(Math.abs(minVal || 0) / 30) * 30;
-  if (yMin > -30) yMin = -30;
+  let yMax = Math.ceil(absMax / 30) * 30; if (yMax < 30) yMax = 30;
+  let yMin = -Math.ceil(Math.abs(minVal || 0) / 30) * 30; if (yMin > -30) yMin = -30;
   if (maxVal <= 0 && minVal < 0) yMax = 0;
   if (minVal >= 0) yMin = -30;
 
@@ -454,12 +505,10 @@ function updateSectorChart(timeIdx) {
         valid.sort((a, b) => b.value - a.value);
         let html = '<div style="font-weight:600;margin-bottom:4px">' + timeLabel + '</div>';
         valid.slice(0, 8).forEach(p => {
-          const sign = p.value >= 0 ? '+' : '';
           html += '<div style="display:flex;justify-content:space-between;gap:16px;padding:1px 0">'
             + '<span>' + p.marker + ' ' + p.seriesName + '</span>'
-            + '<span style="font-weight:600">' + sign + p.value.toFixed(2) + ' 亿</span></div>';
+            + '<span style="font-weight:600">' + (p.value >= 0 ? '+' : '') + p.value.toFixed(2) + ' 亿</span></div>';
         });
-        if (valid.length > 8) html += '<div style="color:#999;font-size:12px;padding-top:2px">... 共 ' + valid.length + ' 个板块</div>';
         return html;
       },
     },
@@ -509,13 +558,12 @@ function updateSectorRank(timeIdx) {
   let html = '';
   ranked.forEach((item, idx) => {
     const cls = item.value >= 0 ? 'up' : 'down';
-    const sign = item.value >= 0 ? '+' : '';
     const barW = Math.min(100, Math.abs(item.value) / maxAbs * 100);
     html += '<div class="rank-item">'
       + '<span class="rank-index">' + (idx + 1) + '</span>'
       + '<span class="rank-dot" style="background:' + item.color + '"></span>'
       + '<span class="rank-name" title="' + item.name + '">' + item.name + '</span>'
-      + '<span class="rank-value ' + cls + '">' + sign + item.value.toFixed(2) + ' 亿</span>'
+      + '<span class="rank-value ' + cls + '">' + (item.value >= 0 ? '+' : '') + item.value.toFixed(2) + ' 亿</span>'
       + '</div>'
       + '<div class="rank-bar-wrap"><div class="rank-bar-fill ' + cls + '" style="width:' + barW + '%"></div></div>';
   });
@@ -537,7 +585,6 @@ function initReplay() {
     updateSectorChart(currentTimeIdx);
     updateSectorRank(currentTimeIdx);
   };
-
   document.getElementById('playBtn').onclick = toggleReplay;
   document.getElementById('replayInfo').textContent =
     Object.keys(sectorData.series).length + ' 条曲线 · ' + sectorData.minutes.length + ' 个时间点';
@@ -547,8 +594,7 @@ function toggleReplay() {
   const btn = document.getElementById('playBtn');
   isReplaying = !isReplaying;
   if (isReplaying) {
-    btn.classList.add('active');
-    btn.innerHTML = '⏸ 暂停';
+    btn.classList.add('active'); btn.innerHTML = '⏸ 暂停';
     currentTimeIdx = parseInt(document.getElementById('timeSlider').value) || 0;
     if (currentTimeIdx >= sectorData.total_times - 1) currentTimeIdx = 0;
     const intervalMs = Math.max(50, Math.floor(15000 / (sectorData.total_times - 1)));
@@ -556,22 +602,18 @@ function toggleReplay() {
       currentTimeIdx++;
       if (currentTimeIdx >= sectorData.total_times) {
         stopReplay();
-        btn.classList.remove('active');
-        btn.innerHTML = '▶ 回放';
+        btn.classList.remove('active'); btn.innerHTML = '▶ 回放';
         currentTimeIdx = sectorData.total_times - 1;
         document.getElementById('timeSlider').value = currentTimeIdx;
-        updateSectorChart(currentTimeIdx);
-        updateSectorRank(currentTimeIdx);
+        updateSectorChart(currentTimeIdx); updateSectorRank(currentTimeIdx);
         return;
       }
       document.getElementById('timeSlider').value = currentTimeIdx;
-      updateSectorChart(currentTimeIdx);
-      updateSectorRank(currentTimeIdx);
+      updateSectorChart(currentTimeIdx); updateSectorRank(currentTimeIdx);
     }, intervalMs);
   } else {
     stopReplay();
-    btn.classList.remove('active');
-    btn.innerHTML = '▶ 回放';
+    btn.classList.remove('active'); btn.innerHTML = '▶ 回放';
   }
 }
 
@@ -581,100 +623,65 @@ function stopReplay() {
 }
 
 // ══════════════════════════════════════════════════════════
-// Tab 1: 北向资金
+// 北向资金
 // ══════════════════════════════════════════════════════════
 async function loadNorthboundData() {
   try {
     const res = await fetch('/api/northbound');
     const data = await res.json();
     renderNorthbound(data);
-  } catch (e) {
-    console.error('北向资金加载失败:', e);
-  }
+  } catch (e) { console.error('北向资金加载失败:', e); }
 }
 
 function renderNorthbound(data) {
   const latest = data.latest || {};
   const net = latest.net_inflow || 0;
-
   const elNet = document.getElementById('nbNetInflow');
   elNet.textContent = (net >= 0 ? '+' : '') + net.toFixed(2) + ' 亿';
   elNet.className = 'nb-value ' + (net >= 0 ? 'up' : 'down');
 
-  const hk2sh = latest.hk2sh || 0;
-  const hk2sz = latest.hk2sz || 0;
-  const elSh = document.getElementById('nbBalance');
-  const elSz = document.getElementById('nbQuota');
-  elSh.textContent = (hk2sh >= 0 ? '+' : '') + hk2sh.toFixed(2) + ' 亿';
-  elSh.className = 'nb-value ' + (hk2sh >= 0 ? 'up' : 'down');
-  elSz.textContent = (hk2sz >= 0 ? '+' : '') + hk2sz.toFixed(2) + ' 亿';
-  elSz.className = 'nb-value ' + (hk2sz >= 0 ? 'up' : 'down');
+  const hk2sh = latest.hk2sh || 0, hk2sz = latest.hk2sz || 0;
+  ['nbBalance','nbQuota'].forEach((id, i) => {
+    const v = i === 0 ? hk2sh : hk2sz;
+    const el = document.getElementById(id);
+    el.textContent = (v >= 0 ? '+' : '') + v.toFixed(2) + ' 亿';
+    el.className = 'nb-value ' + (v >= 0 ? 'up' : 'down');
+  });
   document.getElementById('nbTime').textContent = latest.time || '--:--';
 
-  // 历史折线图
   const history = data.history || {};
-  const times = history.times || [];
-  const inflows = history.net_inflows || [];
+  const times = history.times || [], inflows = history.net_inflows || [];
 
   const dom = document.getElementById('nbChart');
-  dom.classList.remove('loading');
-  dom.innerHTML = '';
-  dom.style.height = '320px';
+  dom.classList.remove('loading'); dom.innerHTML = ''; dom.style.height = '320px';
   if (nbChart) nbChart.dispose();
   nbChart = echarts.init(dom);
-
-  const option = {
+  nbChart.setOption({
     title: { text: '北向资金净流入走势', left: 'center', top: 8, textStyle: { fontSize: 14, fontWeight: 600 } },
-    tooltip: {
-      trigger: 'axis',
-      formatter: function(params) {
-        const p = params[0];
-        const v = p.value;
-        const sign = v >= 0 ? '+' : '';
-        return p.axisValue + '<br/>' + sign + v.toFixed(2) + ' 亿';
-      },
-    },
+    tooltip: { trigger: 'axis', formatter: p => p[0].axisValue + '<br/>' + (p[0].value >= 0 ? '+' : '') + p[0].value.toFixed(2) + ' 亿' },
     grid: { left: 60, right: 20, top: 48, bottom: 28 },
     xAxis: { type: 'category', data: times, axisLabel: { fontSize: 11, color: '#999' } },
-    yAxis: {
-      type: 'value',
-      axisLabel: { fontSize: 11, color: '#999', formatter: v => v.toFixed(0) + ' 亿' },
-      splitLine: { lineStyle: { color: '#e8e8e8', type: 'dashed' } },
-    },
+    yAxis: { type: 'value', axisLabel: { fontSize: 11, color: '#999', formatter: v => v.toFixed(0) + ' 亿' }, splitLine: { lineStyle: { color: '#e8e8e8', type: 'dashed' } } },
     series: [{
       type: 'line', data: inflows, smooth: true, symbol: 'none',
-      lineStyle: { width: 2, color: '#1890ff' },
-      itemStyle: { color: '#1890ff' },
-      areaStyle: {
-        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-          { offset: 0, color: 'rgba(24,144,255,0.15)' },
-          { offset: 1, color: 'rgba(24,144,255,0.02)' },
-        ]),
-      },
-      markLine: {
-        silent: true,
-        data: [{ yAxis: 0, lineStyle: { color: '#d9d9d9', type: 'dashed' } }],
-      },
+      lineStyle: { width: 2, color: '#1890ff' }, itemStyle: { color: '#1890ff' },
+      areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(24,144,255,0.15)' }, { offset: 1, color: 'rgba(24,144,255,0.02)' }]) },
+      markLine: { silent: true, data: [{ yAxis: 0, lineStyle: { color: '#d9d9d9', type: 'dashed' } }] },
     }],
-  };
-  nbChart.setOption(option);
+  });
   window.addEventListener('resize', () => { if (nbChart) nbChart.resize(); });
 }
 
 // ══════════════════════════════════════════════════════════
-// Tab 2: 个股资金流
+// 个股资金流
 // ══════════════════════════════════════════════════════════
-let flowSortBy = 'net_main';
-
 async function loadStockFlow(sortBy) {
   flowSortBy = sortBy;
   try {
     const res = await fetch('/api/stocks/flow?sort=' + sortBy + '&count=50');
     const data = await res.json();
     renderStockFlow(data);
-  } catch (e) {
-    console.error('个股资金流加载失败:', e);
-  }
+  } catch (e) { console.error('个股资金流加载失败:', e); }
 }
 
 function switchFlowSort(sortBy, btn) {
@@ -684,14 +691,11 @@ function switchFlowSort(sortBy, btn) {
 }
 
 function renderStockFlow(data) {
-  const meta = document.getElementById('flowMeta');
-  meta.textContent = data.time + ' | 共 ' + data.total + ' 只股票';
-
+  document.getElementById('flowMeta').textContent = data.time + ' | 共 ' + data.total + ' 只股票';
   let html = '<table class="flow-table"><thead><tr>'
     + '<th>#</th><th style="text-align:left">名称</th><th>价格</th><th>涨跌幅%</th>'
     + '<th>主力净额(亿)</th><th>主力净占比%</th><th>量比</th><th>换手率%</th>'
     + '</tr></thead><tbody>';
-
   (data.stocks || []).forEach((s, idx) => {
     const pctCls = (s.pct_chg || 0) >= 0 ? 'up' : 'down';
     const netCls = (s.net_main || 0) >= 0 ? 'up' : 'down';
@@ -706,13 +710,12 @@ function renderStockFlow(data) {
       + '<td>' + (s.turnover_rate != null ? Number(s.turnover_rate).toFixed(2) : '-') + '</td>'
       + '</tr>';
   });
-
   html += '</tbody></table>';
   document.getElementById('flowTableContainer').innerHTML = html;
 }
 
 // ══════════════════════════════════════════════════════════
-// Tab 3: 盘中选股
+// 盘中选股
 // ══════════════════════════════════════════════════════════
 async function loadStockPicks() {
   try {
@@ -721,72 +724,109 @@ async function loadStockPicks() {
     renderPicks(data);
   } catch (e) {
     console.error('选股加载失败:', e);
-    document.getElementById('picksTableContainer').innerHTML =
-      '<div class="loading">数据加载失败</div>';
+    document.getElementById('picksTableContainer').innerHTML = '<div class="loading">数据加载失败</div>';
   }
 }
 
 function renderPicks(data) {
-  const { candidates, hot_sectors, time, date, mode, risk_level, market_breadth, filter_stats } = data;
-  const riskLabel = { low: '🟢 低风险', medium: '🟡 中风险', high: '🔴 高风险' };
+  const { candidates, hot_sectors, pullback_sectors, time, date, mode, risk_level, market_breadth, filter_stats } = data;
+  const riskLabel = { low: '低风险', medium: '中风险', high: '高风险' };
   const riskInfo = riskLabel[risk_level] || risk_level;
   const breadthPct = (market_breadth * 100).toFixed(0) + '%';
-  document.getElementById('picksMeta').innerHTML =
-    date + ' ' + time + ' | ' + candidates.length + ' 只候选 · ' + (mode === 'live' ? '实时' : '本地')
-    + ' | ' + riskInfo + ' 广度' + breadthPct;
+  const poolA = filter_stats?.pool_a || 18;
+  const poolB = filter_stats?.pool_b || 7;
 
-  let hsHtml = (hot_sectors || []).map(s =>
-    '<span class="picks-hot-tag">' + s + '</span>').join('');
+  // 刷新时间
+  const cachedAt = data.cached_at || '';
+  const modeLabel = mode === 'live' ? '实时' : (mode === 'cached' ? '缓存' : '本地');
+  const refreshInfo = date + ' ' + time + (cachedAt && mode === 'cached' ? ' (数据时间: ' + cachedAt + ')' : '');
+  document.getElementById('picksMeta').innerHTML =
+    refreshInfo + ' | ' + candidates.length + ' 只 (追涨' + poolA + ' + 低吸' + poolB + ') | '
+    + riskInfo + ' 广度' + breadthPct + ' | ' + modeLabel;
+  document.getElementById('picksRefreshTime').innerHTML =
+    mode === 'cached' ? '非交易时段，显示最近交易时段数据 · 更新于 ' + cachedAt : '';
+
+  // 板块标签
+  const aSectors = (hot_sectors || []).filter(s => !(pullback_sectors || []).includes(s));
+  const bSectors = pullback_sectors || [];
+  let hsHtml = '';
+  hsHtml += aSectors.map(s => '<span class="picks-hot-tag">' + s + '</span>').join('');
+  hsHtml += bSectors.map(s => '<span class="picks-hot-tag pullback">' + s + '</span>').join('');
   if (filter_stats) {
     hsHtml += '<span style="font-size:11px;color:#999;margin-left:8px">'
-      + '流动性剔除:' + (filter_stats.liquidity_removed || 0)
-      + ' 诱多剔除:' + (filter_stats.fraud_removed || 0)
+      + '流动性剔除 ' + (filter_stats.liquidity_removed || 0)
+      + '  涨停剔除 ' + (filter_stats.limit_up_removed || 0)
+      + '  诱多剔除 ' + (filter_stats.fraud_removed || 0)
       + '</span>';
   }
   document.getElementById('picksHotSectors').innerHTML = hsHtml;
 
-  let html = '<table class="picks-table"><thead><tr>'
-    + '<th>#</th><th style="text-align:left">名称</th><th>板块</th><th>涨幅%</th>'
-    + '<th>盘中评分</th><th>日评分</th>'
-    + '<th>主力净额</th><th>量比</th><th>日内位</th><th>开涨幅%</th>'
-    + '<th>信号</th><th>建议</th></tr></thead><tbody>';
+  // 分离 A/B 池
+  const aStocks = (candidates || []).filter(c => c.pool !== 'B');
+  const bStocks = (candidates || []).filter(c => c.pool === 'B');
 
-  (candidates || []).forEach((c, idx) => {
-    const pctCls = (c.pct_chg || 0) >= 0 ? 'up' : 'down';
-    const scoreCls = c.score >= 0.7 ? 'score-high' : (c.score >= 0.5 ? 'score-mid' : 'score-low');
-    const dailyCls = (c.daily_combined_score || 0) >= 8 ? 'score-high' : ((c.daily_combined_score || 0) >= 5 ? 'score-mid' : 'score-low');
-    const sigMap = { '放量上攻': 's1', '资金驱动': 's1', '量价齐升': 's2', '放量突破': 's2', '温和吸筹': 's3', '盘中观察': 's3', '补涨潜力': 's4', '滞涨关注': 's4', '高位风险': 's1', '弱势回避': 's4' };
-    const sigCls = sigMap[c.signal] || 's3';
-    const intraPos = c.intraday_position != null ? c.intraday_position : 0.5;
-    const intraCls = intraPos > 0.8 ? 'up' : (intraPos < 0.3 ? 'down' : '');
-    const sectorLabel = (c.sector_type === 'industry' ? '🏭' : '') + c.sector;
-    const guide = (c.holding_days && c.holding_days !== 0)
-      ? '持' + c.holding_days + '天<br><span style="font-size:10px;color:#52c41a">' + c.take_profit + '</span>/<span style="font-size:10px;color:#f5222d">' + c.stop_loss + '</span>'
-      : '<span style="color:#999">规避</span>';
+  // 信号分类
+  function sigClass(signal) {
+    const pos = ['放量上攻','放量突破','资金驱动','量价齐升','主线分歧低吸'];
+    const neg = ['弱势回避','高位风险'];
+    if (pos.includes(signal)) return 'sig-positive';
+    if (neg.includes(signal)) return 'sig-negative';
+    return 'sig-neutral';
+  }
 
-    html += '<tr>'
-      + '<td>' + (idx + 1) + '</td>'
-      + '<td>' + c.name + '<br><span style="font-size:11px;color:#999">' + c.code + '</span></td>'
-      + '<td style="font-size:12px">' + sectorLabel + '</td>'
-      + '<td class="' + pctCls + '">' + (c.pct_chg >= 0 ? '+' : '') + c.pct_chg.toFixed(1) + '</td>'
-      + '<td class="' + scoreCls + '">' + (c.score * 100).toFixed(1) + '</td>'
-      + '<td class="' + dailyCls + '">' + (c.daily_combined_score != null ? c.daily_combined_score.toFixed(1) : '-') + '</td>'
-      + '<td class="' + ((c.net_main_inflow || 0) >= 0 ? 'up' : 'down') + '">' + (c.net_main_inflow >= 0 ? '+' : '') + c.net_main_inflow.toFixed(1) + '</td>'
-      + '<td>' + c.volume_ratio.toFixed(1) + '</td>'
-      + '<td class="' + intraCls + '">' + intraPos.toFixed(2) + '</td>'
-      + '<td class="' + ((c.open_return || 0) >= 0 ? 'up' : 'down') + '">' + (c.open_return >= 0 ? '+' : '') + (c.open_return || 0).toFixed(1) + '</td>'
-      + '<td><span class="signal-tag ' + sigCls + '">' + c.signal + '</span></td>'
-      + '<td style="font-size:12px">' + guide + '</td>'
-      + '</tr>';
-  });
+  function renderPoolTable(stocks, poolLabel, poolCls) {
+    if (stocks.length === 0) {
+      return '<div class="picks-pool-section">'
+        + '<span class="picks-pool-title ' + poolCls + '">' + poolLabel + '</span>'
+        + '<div style="color:#999;font-size:13px;padding:16px 0">暂无候选</div></div>';
+    }
+    let t = '<div class="picks-pool-section">'
+      + '<span class="picks-pool-title ' + poolCls + '">' + poolLabel + ' (' + stocks.length + ')</span>'
+      + '<table class="picks-table"><thead><tr>'
+      + '<th>#</th><th style="text-align:left">名称</th><th>板块</th>'
+      + '<th>盘中评分</th><th>日评分</th><th>涨幅%</th>'
+      + '<th>信号</th><th>量比</th><th>日内位</th><th>开涨幅%</th>'
+      + '<th>主力净额</th><th>建议</th></tr></thead><tbody>';
 
-  html += '</tbody></table>';
+    stocks.forEach((c, idx) => {
+      const pctCls = (c.pct_chg || 0) >= 0 ? 'up' : 'down';
+      const scoreCls = c.score >= 0.7 ? 'score-high' : (c.score >= 0.5 ? 'score-mid' : 'score-low');
+      const dailyCls = (c.daily_combined_score || 0) >= 8 ? 'score-high' : ((c.daily_combined_score || 0) >= 5 ? 'score-mid' : 'score-low');
+      const sCls = sigClass(c.signal);
+      const intraPos = c.intraday_position != null ? c.intraday_position : 0.5;
+      const intraCls = intraPos > 0.8 ? 'up' : (intraPos < 0.3 ? 'down' : '');
+      const guide = (c.holding_days && c.holding_days !== 0)
+        ? '持' + c.holding_days + '天 ' + c.take_profit + '/' + c.stop_loss
+        : '规避';
+
+      t += '<tr>'
+        + '<td>' + (idx + 1) + '</td>'
+        + '<td>' + c.name + '<br><span style="font-size:11px;color:#999">' + c.code + '</span></td>'
+        + '<td style="font-size:12px">' + c.sector + '</td>'
+        + '<td class="' + scoreCls + '">' + (c.score * 100).toFixed(1) + '</td>'
+        + '<td class="' + dailyCls + '" title="' + (c.daily_signal_names || '') + '">'
+        + (c.daily_combined_score != null ? c.daily_combined_score.toFixed(1) + '<span style="font-size:10px;color:#999">·' + (c.daily_signal_count || 0) + '</span>' : '-')
+        + '</td>'
+        + '<td class="' + pctCls + '">' + (c.pct_chg >= 0 ? '+' : '') + (c.pct_chg != null ? Number(c.pct_chg).toFixed(1) : '-') + '</td>'
+        + '<td><span class="signal-tag ' + sCls + '">' + c.signal + '</span></td>'
+        + '<td>' + (c.volume_ratio != null ? Number(c.volume_ratio).toFixed(1) : '-') + '</td>'
+        + '<td class="' + intraCls + '">' + intraPos.toFixed(2) + '</td>'
+        + '<td class="' + ((c.open_return || 0) >= 0 ? 'up' : 'down') + '">' + (c.open_return >= 0 ? '+' : '') + (c.open_return != null ? Number(c.open_return).toFixed(1) : '-') + '</td>'
+        + '<td class="' + ((c.net_main_inflow || 0) >= 0 ? 'up' : 'down') + '">' + (c.net_main_inflow >= 0 ? '+' : '') + (c.net_main_inflow != null ? Number(c.net_main_inflow).toFixed(1) : '-') + '</td>'
+        + '<td style="font-size:12px">' + guide + '</td>'
+        + '</tr>';
+    });
+
+    t += '</tbody></table></div>';
+    return t;
+  }
+
+  let html = renderPoolTable(aStocks, '追涨池', 'pool-a');
+  html += renderPoolTable(bStocks, '低吸池', 'pool-b');
   document.getElementById('picksTableContainer').innerHTML = html;
 }
-
 // ── 初始化 ────────────────────────────────────────────────
 async function init() {
-  // 加载状态
   try {
     const st = await fetch('/api/status');
     const status = await st.json();
@@ -803,11 +843,13 @@ async function init() {
     }
   } catch (e) { /* ignore */ }
 
-  // 加载当前标签数据
+  // 默认加载板块资金流向
   loadSectorData();
 
-  // 定时刷新北向资金
-  setInterval(() => { if (mainTab === 1) loadNorthboundData(); }, 30000);
+  // 北向资金每 30 秒刷新
+  setInterval(() => {
+    if (mainTab === 0 && flowSubTab === 'northbound') loadNorthboundData();
+  }, 30000);
 }
 
 init();

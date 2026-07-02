@@ -281,6 +281,7 @@ class SectorFlowCollector:
         self._max_failures_before_slowdown: int = 5
         self._last_save_time: float = 0.0   # v3: 时间驱动保存
         self._save_interval: float = 60.0    # 每 60 秒保存一次
+        self._daily_summary_saved: bool = False  # 当日收盘摘要已保存
         self._trade_minutes = _build_trade_minutes()
 
         self._data_dir = Path(__file__).parent / "data"
@@ -336,6 +337,7 @@ class SectorFlowCollector:
                     self._maybe_save()
                     time.sleep(self._poll_interval)
                 else:
+                    self._maybe_save_daily_summary()
                     time.sleep(30)
                     self._check_date_rollover()
             except Exception as e:
@@ -453,6 +455,7 @@ class SectorFlowCollector:
         new_today = datetime.now().strftime("%Y%m%d")
         if new_today != self._today:
             self._today = new_today
+            self._daily_summary_saved = False
             with self._lock:
                 self._concept_snapshots.clear()
                 self._industry_snapshots.clear()
@@ -461,6 +464,28 @@ class SectorFlowCollector:
             self._consecutive_failures = 0
             self._poll_interval = self._base_poll_interval
             logger.info("日期切换至 %s", new_today)
+
+    def _maybe_save_daily_summary(self):
+        """收盘后（15:00+）自动保存当日板块摘要，供 B 池回溯使用。"""
+        if self._daily_summary_saved:
+            return
+        now = datetime.now()
+        # 交易日 15:00 后触发一次
+        if not is_trading_day(now.date()):
+            return
+        if now.hour < 15:
+            return
+        # 检查是否有快照数据
+        with self._lock:
+            if not self._concept_snapshots:
+                return
+        try:
+            from sector_reviewer import generate_daily_summary
+            generate_daily_summary(collector=self)
+            self._daily_summary_saved = True
+            logger.info("收盘板块摘要已自动保存")
+        except Exception as e:
+            logger.warning("收盘摘要自动保存失败: %s", e)
 
     # ── 持久化（v3: 时间驱动 + 全部增量保存）─────────────────
 
@@ -651,6 +676,36 @@ class SectorFlowCollector:
                         "pct_chg": item.get("pct_chg", 0),
                         "type": stype,
                     })
+        return result
+
+    def get_all_sectors_data(self) -> list[dict]:
+        """获取全量板块实时数据（含 code/pct_chg），供 sector_reviewer 使用。
+
+        与 get_top_sectors 的区别：返回全部板块而非 Top N，
+        且包含 pct_chg 用于回调判定。
+        """
+        result = []
+        for stype in ("concept", "industry"):
+            with self._lock:
+                snapshots = list(
+                    self._concept_snapshots if stype == "concept"
+                    else self._industry_snapshots
+                )
+            if not snapshots:
+                continue
+            latest_rank = snapshots[-1].get("rank", [])
+            for i, item in enumerate(latest_rank):
+                name = item.get("name", "")
+                if not name:
+                    continue
+                result.append({
+                    "code": item.get("code", ""),
+                    "name": name,
+                    "net_main": item.get("net_main", 0),
+                    "pct_chg": item.get("pct_chg", 0),
+                    "type": stype,
+                    "rank": i + 1,
+                })
         return result
 
     def get_northbound_data(self) -> dict:

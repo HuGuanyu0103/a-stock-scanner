@@ -100,9 +100,9 @@ class StockScreener:
             logger.warning("初筛无结果")
             return pd.DataFrame()
 
-        candidate_df = market_df.sort_values("amount", ascending=False).head(1000)
+        candidate_df = market_df.sort_values("amount", ascending=False)
         codes = candidate_df["stock_code"].tolist()
-        logger.info("K线扫描候选: %d 只（按成交额排名取前1000）", len(codes))
+        logger.info("K线扫描候选: %d 只（全量）", len(codes))
         kline_map = self.fetcher.batch_kline(codes, days=DEFAULT_KLINE_DAYS)
         logger.info("K 线获取完成: %d/%d", len(kline_map), len(codes))
 

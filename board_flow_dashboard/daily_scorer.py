@@ -14,6 +14,7 @@
 import argparse
 import json
 import logging
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).parent / "data"
 CACHE_PREFIX = "daily_scores_"
+MAX_CACHE_FILES = 5              # 保留最近 N 个交易日的缓存
 
 
 def _today() -> str:
@@ -46,6 +48,28 @@ def load_daily_scores() -> dict:
     except Exception as e:
         logger.warning("\u52a0\u8f7d\u65e5\u8bc4\u5206\u7f13\u5b58\u5931\u8d25: %s", e)
         return {}
+def cleanup_old_caches(keep: int = MAX_CACHE_FILES):
+    """删除超过 N 个交易日以前的评分缓存，只保留最近的。"""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    pattern = re.compile(rf"^{re.escape(CACHE_PREFIX)}(\d{{8}})\.json$")
+    caches = []
+    for f in DATA_DIR.iterdir():
+        m = pattern.match(f.name)
+        if m:
+            caches.append((m.group(1), f))
+
+    if len(caches) <= keep:
+        return
+
+    # 按日期排序，保留最新的 keep 个
+    caches.sort(key=lambda x: x[0], reverse=True)
+    for date_str, f in caches[keep:]:
+        try:
+            f.unlink()
+            logger.info("清理过期缓存: %s", f.name)
+        except OSError as e:
+            logger.warning("清理缓存失败 %s: %s", f.name, e)
+
 
 
 def run_scan(top_n: int = 300) -> dict:
@@ -89,11 +113,12 @@ def run_scan(top_n: int = 300) -> dict:
 
     logger.info("\u6bcf\u65e5\u8bc4\u5206\u5b8c\u6210: %d \u53ea\u80a1\u7968, \u5df2\u7f13\u5b58\u81f3 %s",
                 len(scores), cp)
+    cleanup_old_caches()
     return scores
 
 
 def cmd_scan(args):
-    run_scan(top_n=args.top or 300)
+    run_scan(top_n=args.top if args.top is not None else 300)
 
 
 def cmd_status(args):
