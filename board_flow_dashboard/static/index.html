@@ -126,6 +126,9 @@ body {
 .rank-value { font-weight: 600; font-size: 13px; white-space: nowrap; }
 .rank-value.up { color: #f5222d; }
 .rank-value.down { color: #389e0d; }
+.rank-ratio { font-size: 11px; margin-left: 6px; white-space: nowrap; opacity: 0.75; }
+.rank-ratio.up { color: #f5222d; }
+.rank-ratio.down { color: #389e0d; }
 .rank-bar-wrap { height: 3px; background: #f0f0f0; border-radius: 2px; margin-bottom: 2px; }
 .rank-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s; }
 .rank-bar-fill.up { background: #ffccc7; }
@@ -318,6 +321,10 @@ body {
             <div class="rank-header">
               <h2 id="rankTitle">概念板块资金流向</h2>
               <div class="rank-sub">单位：亿元 | <span id="rankTimeLabel">15:00</span></div>
+              <div class="rank-sort-bar" style="margin-top:6px;display:flex;gap:4px;">
+                <button class="flow-sort-btn active" onclick="switchSectorSort('net_main', this)">主力净额</button>
+                <button class="flow-sort-btn" onclick="switchSectorSort('net_ratio', this)">主力净占比</button>
+              </div>
             </div>
             <div class="rank-list" id="rankList"><div class="loading">加载中...</div></div>
           </div>
@@ -411,6 +418,7 @@ let replayTimer = null;
 let currentTimeIdx = 0;
 let nbChart = null;
 let flowSortBy = 'net_main';
+let sectorSortBy = 'net_main';  // 'net_main' | 'net_ratio'
 let picksInterval = null;
 let flowInterval = null;
 let sectorInterval = null;
@@ -618,22 +626,53 @@ function updateSectorChart(timeIdx) {
 function updateSectorRank(timeIdx) {
   if (!sectorData) return;
   const series = sectorData.series;
+
+  // 从 series 和 sectorData.rank 中收集完整数据
   const ranked = Object.entries(series).map(([name, sdata]) => {
     const val = timeIdx < sdata.values.length ? sdata.values[timeIdx] : (sdata.values[sdata.values.length-1] || 0);
-    return { name, value: val, color: sdata.color };
+    const ratioVals = sdata.ratio_values || [];
+    const ratio = timeIdx < ratioVals.length ? ratioVals[timeIdx] : (ratioVals[ratioVals.length-1] || 0);
+    // 从 rank 数据中取 pct_chg（合并两个数据源）
+    const rankEntry = (sectorData.rank || []).find(r => r.name === name);
+    const pct = rankEntry ? (rankEntry.pct_chg || 0) : 0;
+    return { name, value: val || 0, ratio: ratio || 0, pct: pct, color: sdata.color };
   });
-  ranked.sort((a, b) => b.value - a.value);
 
-  const maxAbs = Math.max(...ranked.map(r => Math.abs(r.value))) || 1;
+  // 按 sectorSortBy 排序
+  if (sectorSortBy === 'net_ratio') {
+    ranked.sort((a, b) => b.ratio - a.ratio);
+  } else {
+    ranked.sort((a, b) => b.value - a.value);
+  }
+
+  const isRatioSort = sectorSortBy === 'net_ratio';
+  const sortValues = ranked.map(r => isRatioSort ? Math.abs(r.ratio) : Math.abs(r.value));
+  const maxAbs = Math.max(...sortValues) || 1;
+
   let html = '';
   ranked.forEach((item, idx) => {
-    const cls = item.value >= 0 ? 'up' : 'down';
-    const barW = Math.min(100, Math.abs(item.value) / maxAbs * 100);
+    const sortVal = isRatioSort ? item.ratio : item.value;
+    const cls = sortVal >= 0 ? 'up' : 'down';
+    const barW = Math.min(100, Math.abs(sortVal) / maxAbs * 100);
+
+    // 主力净占比显示
+    const ratioStr = item.ratio !== 0
+      ? ('<span class="rank-ratio ' + (item.ratio >= 0 ? 'up' : 'down') + '">净占比' + (item.ratio >= 0 ? '+' : '') + item.ratio.toFixed(2) + '%</span>')
+      : '';
+
+    // 量价背离标记：跌但净占比为正
+    const divergence = (item.pct < 0 && item.ratio > 0) ? ' ⚠️' : '';
+
+    const primaryVal = isRatioSort
+      ? ((item.ratio >= 0 ? '+' : '') + item.ratio.toFixed(2) + '%')
+      : ((item.value >= 0 ? '+' : '') + item.value.toFixed(2) + ' 亿');
+
     html += '<div class="rank-item">'
       + '<span class="rank-index">' + (idx + 1) + '</span>'
       + '<span class="rank-dot" style="background:' + item.color + '"></span>'
-      + '<span class="rank-name" title="' + item.name + '">' + item.name + '</span>'
-      + '<span class="rank-value ' + cls + '">' + ((item.value || 0) >= 0 ? '+' : '') + (item.value || 0).toFixed(2) + ' 亿</span>'
+      + '<span class="rank-name" title="' + item.name + (divergence ? ' 量价背离' : '') + '">' + item.name + divergence + '</span>'
+      + '<span class="rank-value ' + cls + '">' + primaryVal + '</span>'
+      + ratioStr
       + '</div>'
       + '<div class="rank-bar-wrap"><div class="rank-bar-fill ' + cls + '" style="width:' + barW + '%"></div></div>';
   });
@@ -758,6 +797,13 @@ function switchFlowSort(sortBy, btn) {
   document.querySelectorAll('.flow-sort-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   loadStockFlow(sortBy);
+}
+
+function switchSectorSort(sortBy, btn) {
+  document.querySelectorAll('.rank-sort-bar .flow-sort-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  sectorSortBy = sortBy;
+  updateSectorRank(currentTimeIdx);
 }
 
 function switchPool(pool) {

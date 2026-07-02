@@ -28,11 +28,19 @@ logger = logging.getLogger(__name__)
 
 PULLBACK_LOOKBACK_DAYS = 3        # 回溯 N 个交易日
 PULLBACK_ACCUMULATED_FLOW = 3.0   # 近 3 日累计主力净流入 >= N 亿
-PULLBACK_ACCUMULATED_RETURN = 2.0 # 近 3 日累计涨幅 >= N%
+PULLBACK_ACCUMULATED_RETURN = 2.0 # 近 3 日累计涨幅 >= N%（兜底值，实际使用分级阈值）
 PULLBACK_DAILY_RETURN_MAX = -0.5  # 当日涨跌幅上限（≤ -0.5% 才算回调）
 PULLBACK_DAILY_RETURN_MIN = -6.0  # 当日最大跌幅（超过则视为破位，放弃）
 PULLBACK_MAX_SECTORS = 8          # 最多输出板块数
 PULLBACK_MIN_HOT_RANK = 50        # 过去 3 天至少有一天排名 ≤ N
+
+# 板块热度分级涨幅门槛（纯主板无 20cm，需按板块规模分级要求）
+# accumulated_flow 作为板块规模代理：≥10亿=大盘，≥5亿=中型，<5亿=小题材
+PULLBACK_RETURN_THRESHOLD = {
+    'large': 5.0,   # 大盘板块：近 3 日累计涨幅 ≥ 5%
+    'medium': 4.0,  # 中型板块：≥ 4%
+    'small': 3.0,   # 小题材：≥ 3%
+}
 
 
 # ── 板块摘要持久化 ────────────────────────────────────────────
@@ -234,8 +242,18 @@ class SectorReviewer:
             if accumulated_flow < PULLBACK_ACCUMULATED_FLOW:
                 continue
 
-            # 2. 近 3 日累计涨幅达标（确认为主线板块）
-            if accumulated_return < PULLBACK_ACCUMULATED_RETURN:
+            # 2. 近 3 日累计涨幅达标（按板块规模分级）
+            if accumulated_flow >= 10:
+                min_return = PULLBACK_RETURN_THRESHOLD['large']
+                size_label = 'large'
+            elif accumulated_flow >= 5:
+                min_return = PULLBACK_RETURN_THRESHOLD['medium']
+                size_label = 'medium'
+            else:
+                min_return = PULLBACK_RETURN_THRESHOLD['small']
+                size_label = 'small'
+
+            if accumulated_return < min_return:
                 continue
 
             # 3. 必须曾是主线（有排名证据）
@@ -266,6 +284,7 @@ class SectorReviewer:
                 "name": sector_name,
                 "code": today_data.get("code", ""),
                 "type": today_data.get("type", "concept"),
+                "size_label": size_label,
                 "accumulated_flow": round(accumulated_flow, 2),
                 "accumulated_return": round(accumulated_return, 1),
                 "today_flow": round(today_flow, 2),
@@ -279,7 +298,7 @@ class SectorReviewer:
         if result:
             logger.info("回调板块: %d 个 → %s",
                          len(result),
-                         ", ".join(f"{c['name']}(累计{c['accumulated_return']:+.1f}% 当日{c['today_return']:+.1f}%)"
+                         ", ".join(f"{c['name']}[{c['size_label']}](累计{c['accumulated_return']:+.1f}% 当日{c['today_return']:+.1f}%)"
                                   for c in result[:5]))
 
         return result
@@ -304,6 +323,7 @@ def generate_daily_summary(collector=None):
                 sectors.append({
                     "name": item.get("name", ""),
                     "net_main": item.get("value", 0),
+                    "net_main_ratio": item.get("net_main_ratio", 0),
                     "pct_chg": item.get("pct_chg", 0),
                     "type": stype,
                 })

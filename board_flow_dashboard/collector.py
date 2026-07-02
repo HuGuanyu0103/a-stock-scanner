@@ -612,27 +612,38 @@ class SectorFlowCollector:
 
         # 构建时序（只包含 Top N 板块）
         series = {}
-        snap_map = {s["time"]: s["rank"] for s in snapshots}
+        # 预建索引: {time: {name: (net_main, ratio)}} — 避免每板块每分钟两次 next() 扫描
+        snap_index: dict[str, dict[str, tuple]] = {}
+        for t in minutes:
+            rank = snap_map.get(t, [])
+            snap_index[t] = {}
+            for r in rank:
+                snap_index[t][r["name"]] = (r["net_main"], r.get("net_main_ratio"))
+
         for item in top_sectors:
             sector_name = item["name"]
             values = []
+            ratio_values = []
             for t in minutes:
-                rank = snap_map.get(t, [])
-                found = next(
-                    (r["net_main"] for r in rank if r["name"] == sector_name),
-                    None,
-                )
-                values.append(found)
+                entry = snap_index[t].get(sector_name)
+                if entry is not None:
+                    values.append(entry[0])
+                    ratio_values.append(entry[1])
+                else:
+                    values.append(None)
+                    ratio_values.append(None)
             series[sector_name] = {
                 "name": sector_name,
                 "color": _hash_color(sector_name),
                 "times": minutes,
                 "values": values,
+                "ratio_values": ratio_values,
             }
 
         rank_data = [
             {"name": item["name"], "value": item["net_main"],
              "pct_chg": item.get("pct_chg", 0),
+             "net_main_ratio": item.get("net_main_ratio", 0),
              "color": _hash_color(item["name"])}
             for item in top_sectors
         ]
@@ -731,24 +742,29 @@ class SectorFlowCollector:
                 return
             seen_user_names.add(user_name)
             values = []
+            ratio_values = []
             for t in minutes:
                 item = api_data_by_time[t].get(api_name)
                 values.append(item["net_main"] if item else None)
+                ratio_values.append(item.get("net_main_ratio") if item else None)
             # 从后往前找最新有效数据
-            val, pct = 0.0, 0.0
+            val, pct, ratio = 0.0, 0.0, 0.0
             for t in reversed(minutes):
                 item = api_data_by_time[t].get(api_name)
                 if item is not None:
                     val, pct = item["net_main"], item.get("pct_chg", 0)
+                    ratio = item.get("net_main_ratio", 0)
                     break
             rank_data.append({
                 "name": user_name, "value": val, "pct_chg": pct,
+                "net_main_ratio": ratio,
                 "color": _hash_color(user_name),
                 "_synth": is_synth,
             })
             series[user_name] = {
                 "name": user_name, "color": _hash_color(user_name),
                 "times": minutes, "values": values,
+                "ratio_values": ratio_values,
             }
 
         # 精确匹配的板块
@@ -770,21 +786,30 @@ class SectorFlowCollector:
                 continue
             seen_user_names.add(user_name)
 
-            # 计算加权时间序列
+            # 计算加权时间序列（净额 + 净占比）
             values = []
+            ratio_values = []
             for t in minutes:
                 weighted = 0.0
+                weighted_ratio = 0.0
                 total_w = 0.0
                 for api_name, w in components:
                     item = api_data_by_time[t].get(api_name)
                     if item is not None:
                         weighted += item["net_main"] * w
+                        weighted_ratio += item.get("net_main_ratio", 0) * w
                         total_w += w
-                values.append(weighted / total_w if total_w > 0 else None)
+                if total_w > 0:
+                    values.append(weighted / total_w)
+                    ratio_values.append(round(weighted_ratio / total_w, 2))
+                else:
+                    values.append(None)
+                    ratio_values.append(None)
 
             # 加权最新值（从后往前找每个组件的最近有效数据）
             weighted_val = 0.0
             weighted_pct = 0.0
+            weighted_ratio = 0.0
             total_w = 0.0
             if minutes:
                 latest_map = {}
@@ -799,20 +824,24 @@ class SectorFlowCollector:
                     if item is not None:
                         weighted_val += item["net_main"] * w
                         weighted_pct += item.get("pct_chg", 0) * w
+                        weighted_ratio += item.get("net_main_ratio", 0) * w
                         total_w += w
                 if total_w > 0:
                     weighted_val /= total_w
                     weighted_pct /= total_w
+                    weighted_ratio /= total_w
 
             rank_data.append({
                 "name": user_name, "value": round(weighted_val, 2),
                 "pct_chg": round(weighted_pct, 2),
+                "net_main_ratio": round(weighted_ratio, 2),
                 "color": _hash_color(user_name),
                 "_synth": True,
             })
             series[user_name] = {
                 "name": user_name, "color": _hash_color(user_name),
                 "times": minutes, "values": values,
+                "ratio_values": ratio_values,
             }
 
         rank_data.sort(key=lambda x: x["value"], reverse=True)
@@ -839,10 +868,13 @@ class SectorFlowCollector:
         snapshot_rank = []
         for sec_name, sec_data in series.items():
             vals = sec_data["values"]
+            ratio_vals = sec_data.get("ratio_values", [])
             val = vals[time_idx] if time_idx < len(vals) else (vals[-1] if vals else 0)
+            ratio = ratio_vals[time_idx] if time_idx < len(ratio_vals) else (ratio_vals[-1] if ratio_vals else 0)
             if val is not None:
                 snapshot_rank.append({
                     "name": sec_name, "value": val, "color": sec_data["color"],
+                    "net_main_ratio": ratio if ratio is not None else 0,
                 })
         snapshot_rank.sort(key=lambda x: x["value"], reverse=True)
 
@@ -887,6 +919,7 @@ class SectorFlowCollector:
                         "code": code,
                         "name": name,
                         "net_main": item.get("net_main", 0),
+                        "net_main_ratio": item.get("net_main_ratio", 0),
                         "pct_chg": item.get("pct_chg", 0),
                         "type": stype,
                     })
@@ -916,6 +949,7 @@ class SectorFlowCollector:
                     "code": item.get("code", ""),
                     "name": name,
                     "net_main": item.get("net_main", 0),
+                    "net_main_ratio": item.get("net_main_ratio", 0),
                     "pct_chg": item.get("pct_chg", 0),
                     "type": stype,
                     "rank": i + 1,

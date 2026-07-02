@@ -30,12 +30,18 @@ try:
         fetch_dashboard_data, fetch_stock_fund_flow_rank, fetch_northbound_flow, _MOCK_STOCKS, _now_time,
     )
     from .stock_selector import select_stocks
+    from .signals import get_signal_store, compute_final_score, get_pool_allocation
+    from .sentiment_collector import SentimentCollector
+    from .news_monitor import NewsMonitor
 except ImportError:
     from collector import SectorFlowCollector, WATCH_SECTORS  # type: ignore[no-redef]
     from data_fetcher import (  # type: ignore[no-redef]
         fetch_dashboard_data, fetch_stock_fund_flow_rank, fetch_northbound_flow, _MOCK_STOCKS, _now_time,
     )
     from stock_selector import select_stocks  # type: ignore[no-redef]
+    from signals import get_signal_store, compute_final_score, get_pool_allocation  # type: ignore[no-redef]
+    from sentiment_collector import SentimentCollector  # type: ignore[no-redef]
+    from news_monitor import NewsMonitor  # type: ignore[no-redef]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -54,10 +60,34 @@ else:
     collector.start()
     logger.info("实时采集模式 — 采集器 v2 已启动")
 
+# System B: 情绪面采集器（独立线程）
+sentiment_collector = SentimentCollector()
+# System C: 消息面监控（独立线程）
+news_monitor = NewsMonitor()
+
+# 启动信号定期持久化（每 60s）
+get_signal_store().start_auto_persist(interval=60)
+
+# 非 mock 模式启动 System B/C
+if not _use_mock:
+    sentiment_collector.start()
+    logger.info("System B（情绪面）已启动")
+    news_monitor.start()
+    logger.info("System C（消息面）已启动")
+
 
 def _cleanup():
     if collector:
         collector.stop()
+    if sentiment_collector:
+        sentiment_collector.stop()
+    if news_monitor:
+        news_monitor.stop()
+    # 持久化信号存储
+    try:
+        get_signal_store().persist()
+    except Exception:
+        pass
 
 atexit.register(_cleanup)
 
@@ -230,16 +260,64 @@ def refresh():
     return jsonify({"status": "ok", "message": "模拟模式无需重置"})
 
 
-# ── 盘中选股 ────────────────────────────────────────────────
+# ── 盘中选股 + 多系统聚合 ──────────────────────────────────
 
 @app.route("/api/stocks")
 def api_stocks():
-    """返回盘中选股候选池。"""
+    """返回盘中选股候选池（多系统聚合）。
+
+    System A（技术+资金）提供基础分，System B（情绪）调节策略基调，
+    System C（消息）提供事件加分。降级：任何系统挂了自动分权。
+    """
     use_mock = _use_mock
     if request.args.get("mock", "0") == "1":
         use_mock = True
     data = select_stocks(use_mock=use_mock, collector=collector)
+
+    # 多系统聚合
+    store = get_signal_store()
+    signals = store.get_all()
+    weights = store.get_effective_weights()
+    pool_alloc = get_pool_allocation(signals)
+
+    # 对每只候选股计算聚合分
+    for pool_key in ("pool_a", "pool_b"):
+        for stock in data.get(pool_key, []):
+            stock["base_score"] = stock.get("score", 0)
+            stock["aggregated_score"] = compute_final_score(stock, signals, weights)
+            stock["signal_sources"] = {
+                k: v["status"] for k, v in signals.items()
+            }
+
+    # 按聚合分重排
+    for pool_key in ("pool_a", "pool_b"):
+        data[pool_key].sort(key=lambda x: x.get("aggregated_score", 0), reverse=True)
+
+    data["signal_weights"] = weights
+    data["pool_allocation"] = pool_alloc
+    data["signal_status"] = {
+        k: {"status": v["status"], "updated_at": v["updated_at"]}
+        for k, v in signals.items()
+    }
+
     return jsonify(data)
+
+
+@app.route("/api/signals")
+def api_signals():
+    """多系统信号健康状态 + 情绪指数。"""
+    store = get_signal_store()
+    signals = store.get_all()
+    return jsonify({
+        "signals": {
+            k: {"status": v["status"], "updated_at": v["updated_at"]}
+            for k, v in signals.items()
+        },
+        "effective_weights": store.get_effective_weights(),
+        "sentiment": signals.get("sentiment", {}).get("data", {}).get("market", {}),
+        "pool_allocation": get_pool_allocation(signals),
+        "news_events": signals.get("news", {}).get("data", {}).get("events", [])[:10],
+    })
 
 
 # ── 日评分管理 ──────────────────────────────────────────────

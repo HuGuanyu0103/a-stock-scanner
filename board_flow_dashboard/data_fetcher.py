@@ -159,16 +159,22 @@ def generate_mock_dashboard_data() -> dict:
         values = _gen_simulated_cumulative(base, n_minutes,
                                            noise_scale=abs(base) * 0.08,
                                            drift=0.03)
+        ratio = random.uniform(-15, 25)  # 模拟主力净占比
+        ratio_values = _gen_simulated_cumulative(ratio, n_minutes,
+                                                  noise_scale=abs(ratio) * 0.1,
+                                                  drift=0.02)
         series_data[sector] = {
             "name": sector,
             "color": SECTOR_COLORS[sector],
             "times": minutes,
             "values": values,
+            "ratio_values": ratio_values,
         }
         rank_data.append({
             "name": sector,
             "value": round(base, 2),
             "color": SECTOR_COLORS[sector],
+            "net_main_ratio": round(ratio, 2),
         })
 
     rank_data.sort(key=lambda x: x["value"], reverse=True)
@@ -203,101 +209,98 @@ def fetch_rank_akshare() -> Optional[pd.DataFrame]:
         return None
 
 
-def fetch_all_sectors_snapshot(timeout: float = 10.0) -> Optional[dict]:
-    """获取概念板块全量快照（分页拉取，避免漏掉净流出板块）。"""
-    try:
-        url = "https://push2.eastmoney.com/api/qt/clist/get"
-        all_items = []
-        for pn in (1, 2):
-            params = {
-                "pn": str(pn), "pz": "200", "po": "1", "np": "1",
-                "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-                "fltt": "2", "invt": "2", "fid": "f62",
-                "fs": "m:90+t:3",
-                "fields": "f12,f14,f3,f62,f184,f66,f72,f78,f84",
-                "_": str(int(time.time() * 1000)),
-            }
+def _fetch_sectors_full(fs: str, timeout: float = 10.0) -> Optional[dict]:
+    """拉取板块全量快照：分页拉取 + 双向兜底，确保覆盖净流出板块。
+
+    - 主方向降序(po=1)拉 2 页 × 200 条，覆盖绝大多数板块
+    - 反向升序(po=0)仅拉 1 页兜底，捕获降序分页截断的尾部板块
+    - 按名称去重，绝对值大者优先（数据更完整）
+    """
+    url = "https://push2.eastmoney.com/api/qt/clist/get"
+    seen: dict[str, dict] = {}
+
+    def _fetch_page(sort_dir: str, page: int) -> list:
+        params = {
+            "pn": str(page), "pz": "200", "po": sort_dir, "np": "1",
+            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            "fltt": "2", "invt": "2", "fid": "f62",
+            "fs": fs,
+            "fields": "f12,f14,f3,f62,f184,f66,f72,f78,f84",
+            "_": str(int(time.time() * 1000)),
+        }
+        try:
             resp = _http.get(url, params=params, timeout=timeout,
                            verify=False, headers=EASTMONEY_HEADERS)
             resp.raise_for_status()
-            data = resp.json()
-            items = data.get("data", {}).get("diff", [])
-            if not items:
-                break
-            all_items.extend(items)
-            if len(items) < 200:
-                break  # 最后一页
+            return resp.json().get("data", {}).get("diff", [])
+        except Exception:
+            return []
 
-        if not all_items:
-            return None
-
-        sectors = []
-        for item in all_items:
+    # 主方向：降序 2 页
+    for pn in (1, 2):
+        items = _fetch_page("1", pn)
+        if not items:
+            break
+        for item in items:
             name = item.get("f14", "")
             if not name:
                 continue
-            sectors.append({
+            net_main = round(float(item.get("f62", 0)) / 1e8, 2)
+            entry = {
                 "name": name,
                 "code": item.get("f12", ""),
-                "net_main": round(float(item.get("f62", 0)) / 1e8, 2),
+                "net_main": net_main,
+                "net_main_ratio": item.get("f184") or 0,
                 "pct_chg": item.get("f3", 0),
-            })
-        if not sectors:
-            return None
-        return {
-            "time": _now_time(),
-            "sectors": sectors,
-        }
+            }
+            if name in seen:
+                if abs(net_main) > abs(seen[name]["net_main"]):
+                    seen[name] = entry
+            else:
+                seen[name] = entry
+        if len(items) < 200:
+            break
+
+    # 反向兜底：升序 1 页（只补漏降序尾部被截断的板块）
+    reverse_items = _fetch_page("0", 1)
+    new_from_reverse = 0
+    for item in reverse_items:
+        name = item.get("f14", "")
+        if not name:
+            continue
+        if name not in seen:
+            net_main = round(float(item.get("f62", 0)) / 1e8, 2)
+            seen[name] = {
+                "name": name,
+                "code": item.get("f12", ""),
+                "net_main": net_main,
+                "net_main_ratio": item.get("f184") or 0,
+                "pct_chg": item.get("f3", 0),
+            }
+            new_from_reverse += 1
+    if new_from_reverse:
+        logger.info("反向兜底补漏 %d 个板块", new_from_reverse)
+
+    sectors = list(seen.values())
+    if not sectors:
+        return None
+    sectors.sort(key=lambda x: x["net_main"], reverse=True)
+    return {"time": _now_time(), "sectors": sectors}
+
+
+def fetch_all_sectors_snapshot(timeout: float = 10.0) -> Optional[dict]:
+    """获取概念板块全量快照（降序拉取 + 升序兜底，确保覆盖净流出板块）。"""
+    try:
+        return _fetch_sectors_full(fs="m:90+t:3", timeout=timeout)
     except Exception as e:
         logger.warning("fetch_all_sectors_snapshot failed: %s", e)
         return None
 
 
 def fetch_industry_sectors_snapshot(timeout: float = 10.0) -> Optional[dict]:
-    """获取行业板块资金流向快照（fs=m:90+t:2），分页拉全量。"""
+    """获取行业板块资金流向快照（降序拉取 + 升序兜底，确保覆盖净流出板块）。"""
     try:
-        url = "https://push2.eastmoney.com/api/qt/clist/get"
-        all_items = []
-        for pn in (1, 2):
-            params = {
-                "pn": str(pn), "pz": "200", "po": "1", "np": "1",
-                "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-                "fltt": "2", "invt": "2", "fid": "f62",
-                "fs": "m:90+t:2",  # 行业板块
-                "fields": "f12,f14,f3,f62,f184,f66,f72,f78,f84",
-                "_": str(int(time.time() * 1000)),
-            }
-            resp = _http.get(url, params=params, timeout=timeout,
-                           verify=False, headers=EASTMONEY_HEADERS)
-            resp.raise_for_status()
-            data = resp.json()
-            items = data.get("data", {}).get("diff", [])
-            if not items:
-                break
-            all_items.extend(items)
-            if len(items) < 200:
-                break
-
-        if not all_items:
-            return None
-
-        sectors = []
-        for item in all_items:
-            name = item.get("f14", "")
-            if not name:
-                continue
-            sectors.append({
-                "name": name,
-                "code": item.get("f12", ""),
-                "net_main": round(float(item.get("f62", 0)) / 1e8, 2),
-                "pct_chg": item.get("f3", 0),
-            })
-        if not sectors:
-            return None
-        return {
-            "time": _now_time(),
-            "sectors": sectors,
-        }
+        return _fetch_sectors_full(fs="m:90+t:2", timeout=timeout)
     except Exception as e:
         logger.warning("fetch_industry_sectors_snapshot failed: %s", e)
         return None
@@ -426,15 +429,19 @@ def fetch_dashboard_data(use_real: bool = True) -> dict:
     for sec in top_sectors:
         name = sec["name"]
         value = sec["net_main"]
+        ratio = sec.get("net_main_ratio", 0)
         color = SECTOR_COLORS.get(name, "#666666")
         rank_data.append({
             "name": name, "value": value, "color": color,
+            "net_main_ratio": ratio,
         })
         n = len(minutes)
         values = [None] * (n - 1) + [value] if n > 0 else [value]
+        ratio_values = [None] * (n - 1) + [ratio] if n > 0 else [ratio]
         series_data[name] = {
             "name": name, "color": color,
             "times": minutes, "values": values,
+            "ratio_values": ratio_values,
         }
 
     rank_data.sort(key=lambda x: x["value"], reverse=True)

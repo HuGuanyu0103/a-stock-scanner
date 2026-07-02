@@ -18,6 +18,7 @@ v3 改进：
   合并：各自输出 25 只，前端独立展示
 """
 
+import bisect
 import json
 import logging
 import random
@@ -43,14 +44,20 @@ except ImportError:
     from sector_reviewer import SectorReviewer, PULLBACK_MAX_SECTORS  # type: ignore[no-redef]
     from data_fetcher import _now_time  # type: ignore[no-redef]
 
+# signals 模块的函数在 _select_stocks_real 内按需导入，避免循环依赖
+
 logger = logging.getLogger(__name__)
 
 # ── 策略参数 ────────────────────────────────────────────────
 
-HOT_SECTOR_COUNT = 5           # 每种板块类型取前 N 个
-STOCKS_PER_SECTOR = 15         # 每个板块取前 N 只成分股
+HOT_SECTOR_COUNT = 5           # 资金流维度：每种板块类型取前 N 个
+HOT_SECTOR_COUNT_PCT = 3       # 价格动量维度：每种板块额外取前 N 个（涨幅最大）
+STOCKS_PER_SECTOR = 20         # 每个板块取前 N 只成分股（放宽网口）
 CANDIDATE_POOL_SIZE = 50       # 候选池总容量（= A + B）
-MAX_PER_SECTOR = 6             # 同一板块最多入选数
+DAILY_SCORE_WEIGHT = 0.25      # 日评分在最终排名中的权重
+MAX_PER_SECTOR = 8             # 同一板块最多入选数（纯主板放宽）
+MAX_PER_SECTOR_B = 8           # B 池同一板块最多入选数（纯主板放宽）
+MAX_STOCKS_PER_MEGA_SECTOR = 10  # 同一大赛道总上限（TODO Phase 2: 需先建 sector→mega_sector 映射表才能生效）
 BEAR_MARKET_POOL_SIZE = 10     # 普跌日候选池缩减至（已废弃，保留兼容）
 BEAR_MARKET_THRESHOLD = 0.16   # 上涨板块占比低于此值视为普跌
 
@@ -59,9 +66,6 @@ BEAR_MARKET_THRESHOLD = 0.16   # 上涨板块占比低于此值视为普跌
 HOT_PULLBACK_RATIO_A = 25      # A 池名额
 HOT_PULLBACK_RATIO_B = 25      # B 池名额
 
-# B 池板块集中度
-MAX_PER_SECTOR_B = 6           # 回调板块不确定性高，每个板块最多 6 只
-
 # B 池额外加成（系数，非绝对分）
 PULLBACK_BONUS_MULTIPLIER = 1.10  # B 池得分 ×1.10
 
@@ -69,38 +73,42 @@ PULLBACK_BONUS_MULTIPLIER = 1.10  # B 池得分 ×1.10
 BEAR_PULLBACK_A = 25           # 普跌时 A 池名额
 BEAR_PULLBACK_B = 25           # 普跌时 B 池名额
 
-# 流动性硬过滤
-MIN_MARKET_CAP = 50            # 最小总市值（亿元）
-MIN_TURNOVER_RATE = 0.3        # 最低换手率（%）
+# 流动性硬过滤（纯主板无 20cm 弹性，需放宽市值 + 提高换手）
+MIN_MARKET_CAP_A = 30          # A 池最小总市值（亿元）
+MIN_MARKET_CAP_B = 20          # B 池最小总市值（亿元，低吸需更宽选股面）
+MIN_TURNOVER_RATE = 0.5        # 最低换手率（%，主板要求更高活跃度）
 
 # ── 信号操作指引 ────────────────────────────────────────────
 
 SIGNAL_GUIDE = {
-    "放量上攻":   {"holding": 2,   "take_profit": "5-8%",   "stop_loss": "-3%"},
-    "放量突破":   {"holding": 2,   "take_profit": "5-8%",   "stop_loss": "-3%"},
-    "补涨潜力":   {"holding": "3-4", "take_profit": "8-12%", "stop_loss": "-4%"},
-    "资金驱动":   {"holding": 2,   "take_profit": "6%",     "stop_loss": "-3.5%"},
-    "量价齐升":   {"holding": "2-3", "take_profit": "6%",   "stop_loss": "-3.5%"},
-    "温和吸筹":   {"holding": "3-4", "take_profit": "8-12%", "stop_loss": "-4%"},
-    "滞涨关注":   {"holding": 3,   "take_profit": "5%",     "stop_loss": "-3%"},
+    # A 池信号 — 纯主板 10cm 环境，止盈下调 1-2%
+    "放量上攻":   {"holding": 2,   "take_profit": "4-6%",   "stop_loss": "-3%"},
+    "放量突破":   {"holding": 2,   "take_profit": "4-6%",   "stop_loss": "-3%"},
+    "补涨潜力":   {"holding": "3-4", "take_profit": "6-8%", "stop_loss": "-4%"},
+    "资金驱动":   {"holding": 2,   "take_profit": "5%",     "stop_loss": "-3.5%"},
+    "量价齐升":   {"holding": "2-3", "take_profit": "5%",   "stop_loss": "-3.5%"},
+    "温和吸筹":   {"holding": "3-4", "take_profit": "6-8%", "stop_loss": "-4%"},
+    "滞涨关注":   {"holding": 3,   "take_profit": "4%",     "stop_loss": "-3%"},
     "弱势回避":   {"holding": 0,   "take_profit": "-",      "stop_loss": "-"},
     "高位风险":   {"holding": 0,   "take_profit": "-",      "stop_loss": "-"},
-    "盘中观察":   {"holding": "2-3", "take_profit": "5%",   "stop_loss": "-3%"},
-    # B 池专属信号
-    "主线分歧低吸": {"holding": "3-4", "take_profit": "10-13%", "stop_loss": "-4.5%"},
-    "板块洗盘承接": {"holding": 3,   "take_profit": "8%",    "stop_loss": "-3.5%"},
-    "缩量止跌企稳": {"holding": "3-4", "take_profit": "8-10%", "stop_loss": "-4%"},
+    "盘中观察":   {"holding": "2-3", "take_profit": "4%",   "stop_loss": "-3%"},
+    # B 池专属信号 — 纯主板无 20cm，暴利机会减少，止盈下调 3%
+    "主线分歧低吸": {"holding": "3-4", "take_profit": "7-9%", "stop_loss": "-4.5%"},
+    "板块洗盘承接": {"holding": 3,   "take_profit": "6%",    "stop_loss": "-3.5%"},
+    "缩量止跌企稳": {"holding": "3-4", "take_profit": "6-8%", "stop_loss": "-4%"},
 }
 
-# v2 权重：新增 intraday_position、open_return
+# v3.5 权重：量价为主(60%)，资金确认为辅(16%)，日评融合(25%，见 DAILY_SCORE_WEIGHT)
 WEIGHTS = {
-    "net_main_ratio": 0.28,       # 主力净占比（核心）
-    "price_deviation": 0.20,      # 智能偏离（条件判断）
-    "volume_ratio": 0.15,         # 量比
-    "intraday_position": 0.12,    # 日内相对位置（新）
-    "open_return": 0.11,          # 开盘后涨幅（新）
-    "turnover_rate": 0.08,        # 换手率
-    "amp_ratio": 0.06,            # 振幅
+    "volume_ratio": 0.20,       # 量比 — 超短线量是王
+    "price_deviation": 0.16,    # 智能偏离 — 相对板块强弱
+    "net_main_ratio": 0.16,    # 主力净占比 — 确认信号（含流置信动态降权）
+    "intraday_position": 0.12, # 日内相对位置 — 入场时机
+    "open_return": 0.10,       # 开盘涨幅 — 开盘定多空
+    "turnover_rate": 0.10,     # 换手率 — 流动性
+    "amp_ratio": 0.08,         # 振幅 — 盈利空间
+    "short_momentum": 0.06,    # 短期动量（近5日涨幅）— 趋势延续性
+    "breakout_dist": 0.04,     # 突破距离（距20日高点）— 空间判断
 }
 
 HEADERS = {
@@ -223,7 +231,44 @@ def _smart_deviation_score(net_ratio: float, deviation: float) -> float:
         return 0.25
 
 
-# ── 盘中信号推断 ────────────────────────────────────────────
+# ── 资金流置信度（v3.4 新增）─────────────────────────────────
+
+def _flow_confidence(net_ratio: float, pct_chg: float,
+                     is_pullback: bool = False) -> float:
+    """资金流数据的置信度乘数：价格与资金同向→可信，背离→降权。
+
+    核心逻辑：主力净流入是统计推断（按订单大小分档），不是真实身份。
+    价格涨 + 资金进 = 可信（大单确实在推价格）
+    价格跌 + 资金进 = 可疑（大单统计可能被拆单粉饰）
+
+    Returns:
+        0.0 ~ 1.0 的置信度乘数
+    """
+    price_up = pct_chg > 0
+    flow_in = net_ratio > 0
+
+    if price_up == flow_in:
+        return 1.0  # 同向：价格和资金互相印证
+
+    # 背离：价格和资金方向相反
+    mag = abs(net_ratio)
+
+    if is_pullback:
+        # B 池回调板块中，"股跌+资金进"可能是逆势承接，给中等置信
+        if not price_up and flow_in and mag > 5:
+            return 0.60
+        elif not price_up and flow_in:
+            return 0.35
+        else:
+            return 0.15
+    else:
+        # A 池热力板块中，背离=可疑
+        if mag > 10:
+            return 0.50  # 大资金背离，有可能性
+        elif mag > 5:
+            return 0.30
+        else:
+            return 0.10  # 小资金背离，极不可信
 
 def _infer_signal(s):
     net_ratio = s.get("net_main_ratio") or 0
@@ -329,19 +374,19 @@ def _score_and_rank(stocks, pool_type: str = "A"):
 
     is_pullback = (pool_type == "B")
 
-    # 标准归一化因子（min-max）
+    # 标准归一化因子（min-max）— open_return 不再 abs，正负含义相反
     continuous_keys = ["net_main_ratio", "volume_ratio",
                        "intraday_position", "open_return",
-                       "turnover_rate", "amp_ratio"]
+                       "turnover_rate", "amp_ratio",
+                       "short_momentum", "breakout_dist"]
     norms = {}
     for key in continuous_keys:
-        raw = [abs(s.get(key) or 0) if key == "open_return" else (s.get(key) or 0)
-               for s in stocks]
+        raw = [(s.get(key) or 0) for s in stocks]
         norms[key] = _minmax_normalize(raw)
 
     for s in stocks:
         for key in continuous_keys:
-            raw_v = abs(s.get(key) or 0) if key == "open_return" else (s.get(key) or 0)
+            raw_v = (s.get(key) or 0)
             s["norm_" + key] = round(norms[key].get(raw_v, 0.5), 4)
 
         # ── 开盘涨幅惩罚 ──────────────────────────────────
@@ -393,9 +438,40 @@ def _score_and_rank(stocks, pool_type: str = "A"):
             else:
                 s["norm_intraday_position"] *= 0.6  # 低位无资金
 
-        # ── 加权总分 ──────────────────────────────────────
+        # ── 加权总分（盘中因子）──────────────────────────
+        # v3.4: 资金流置信度降权 + 日评分融合
+        pct = s.get("pct_chg") or 0
+        flow_conf = _flow_confidence(net_ratio, pct, is_pullback)
+        s["flow_confidence"] = round(flow_conf, 2)
+
+        effective_weights = dict(WEIGHTS)
+        original_flow_w = effective_weights["net_main_ratio"]
+        reduced_flow_w = original_flow_w * flow_conf
+        redist = original_flow_w - reduced_flow_w  # 砍掉的权重分给其他因子
+        effective_weights["net_main_ratio"] = reduced_flow_w
+
+        other_keys = [k for k in WEIGHTS if k != "net_main_ratio"]
+        other_total = sum(WEIGHTS[k] for k in other_keys)
+        for k in other_keys:
+            effective_weights[k] += redist * (WEIGHTS[k] / other_total)
+
+        intraday_score = sum(s["norm_" + k] * w for k, w in effective_weights.items())
+
+        # ── 日评分融合（全量百分位归一化）─────────────────
+        daily_raw = s.get("daily_combined_score")
+        if daily_raw is not None and _ALL_DAILY_SCORES_SORTED:
+            # 在全量日评分中找百分位（0~1）
+            rank = bisect.bisect_left(_ALL_DAILY_SCORES_SORTED, daily_raw)
+            daily_norm = rank / len(_ALL_DAILY_SCORES_SORTED)
+        elif daily_raw is not None:
+            daily_norm = 0.5  # 无全量数据时中性
+        else:
+            daily_norm = 0.5  # 无日评分→中性
+
+        s["daily_norm"] = round(daily_norm, 4)  # 供前端审计
+
         s["score"] = round(
-            sum(s["norm_" + k] * w for k, w in WEIGHTS.items()), 4
+            intraday_score * (1 - DAILY_SCORE_WEIGHT) + daily_norm * DAILY_SCORE_WEIGHT, 4
         )
 
         # B 池额外加成（系数，非绝对分）
@@ -505,6 +581,7 @@ def _fetch_hot_sectors(sector_type: str = "concept", top_n: int = 5) -> list:
             if code and name:
                 sectors.append({"code": code, "name": name,
                     "net_main": round(float(item.get("f62", 0)) / 1e8, 2),
+                    "net_main_ratio": item.get("f184", 0),
                     "pct_chg": item.get("f3", 0),
                     "type": sector_type})
         return sectors
@@ -584,10 +661,11 @@ def _extract_hot_sectors_from_collector(collector,
         rank = data.get("rank", [])
         for item in rank[:top_n]:
             sectors.append({
-                "code": "",  # collector 不存板块 code，需要从快照补
+                "code": item.get("code", ""),
                 "name": item["name"],
-                "net_main": item["value"],
-                "pct_chg": 0,  # collector 快照里没有涨跌幅
+                "net_main": item.get("net_main", item.get("value", 0)),
+                "net_main_ratio": item.get("net_main_ratio", 0),
+                "pct_chg": item.get("pct_chg", 0),
                 "type": stype,
             })
     return sectors
@@ -597,24 +675,26 @@ def _extract_hot_sectors_from_collector(collector,
 
 # ── 流动性硬过滤 ──────────────────────────────────────────
 
-def _apply_liquidity_filter(stocks: list) -> tuple:
-    """过滤流动性差的股票。返回 (通过, 剔除列表)。"""
+def _apply_liquidity_filter(stocks: list, pool_type: str = "A") -> tuple:
+    """过滤流动性差的股票。返回 (通过, 剔除列表)。
+
+    Args:
+        pool_type: "A" 使用 MIN_MARKET_CAP_A, "B" 使用 MIN_MARKET_CAP_B
+    """
+    min_cap = MIN_MARKET_CAP_B if pool_type == "B" else MIN_MARKET_CAP_A
     passed, removed = [], []
     for s in stocks:
         market_cap = s.get("market_cap") or 0
         turnover = s.get("turnover_rate") or 0
-        code = s.get("code", "")
-        # 科创板（688）豁免市值门槛（成长股允许小市值）
-        is_star = code.startswith("688")
-        cap_ok = is_star or market_cap >= MIN_MARKET_CAP
+        cap_ok = market_cap >= min_cap
         liq_ok = (turnover or 0) >= MIN_TURNOVER_RATE
         if cap_ok and liq_ok:
             passed.append(s)
         else:
             removed.append(s)
     if removed:
-        logger.info("流动性过滤剔除 %d 只: %s",
-                     len(removed),
+        logger.info("流动性过滤[%s池]剔除 %d 只(市值<%d亿或换手<%.1f%%): %s",
+                     pool_type, len(removed), min_cap, MIN_TURNOVER_RATE,
                      ", ".join(f"{r['name']}(市值{r.get('market_cap',0):.0f}亿,换手{r.get('turnover_rate',0):.1f}%)"
                               for r in removed[:5]))
     return passed, removed
@@ -645,11 +725,8 @@ def _apply_limit_up_filter(stocks: list) -> tuple:
         # 反推昨收价
         preclose = price / (1 + pct / 100)
 
-        # 涨跌幅限制倍数：主板 10%，创业板/科创板 20%
-        is_chinext = code.startswith("30")
-        limit_mult = 1.20 if is_chinext else 1.10
-
-        limit_price = round(preclose * limit_mult, 2)
+        # 纯主板 10% 涨跌幅限制
+        limit_price = round(preclose * 1.10, 2)
 
         # 当前价 >= 涨停价 → 已涨停（容忍 1 分钱四舍五入误差）
         if price >= limit_price - 0.01:
@@ -797,13 +874,31 @@ def _check_alerts(candidates: list, hot_sectors: list,
 
 def _select_stocks_real(collector=None):
     """实时选股：双板块引擎 + 实时因子。"""
-    # Step 1: 获取热板块 — 优先复用 collector 数据
+    # Step 1: 获取热板块 — 双维度（资金流 + 价格动量），打破单一指标回声室
     hot_sectors = []
     if collector:
-        hot_sectors = collector.get_top_sectors(top_n=HOT_SECTOR_COUNT)
-        # 验证数据是否可用（有 code 才能下钻成分股）
-        if hot_sectors and any(s.get("code") for s in hot_sectors):
-            logger.info("从 collector 获取热板块: %d 个", len(hot_sectors))
+        all_data = collector.get_all_sectors_data()
+        if all_data:
+            concept = [s for s in all_data if s["type"] == "concept"]
+            industry = [s for s in all_data if s["type"] == "industry"]
+
+            # 维度 A：资金流 Top 5
+            by_flow_c = sorted(concept, key=lambda x: x["net_main"], reverse=True)[:HOT_SECTOR_COUNT]
+            by_flow_i = sorted(industry, key=lambda x: x["net_main"], reverse=True)[:HOT_SECTOR_COUNT]
+            # 维度 B：价格动量 Top 3
+            by_pct_c = sorted(concept, key=lambda x: x.get("pct_chg", 0), reverse=True)[:HOT_SECTOR_COUNT_PCT]
+            by_pct_i = sorted(industry, key=lambda x: x.get("pct_chg", 0), reverse=True)[:HOT_SECTOR_COUNT_PCT]
+
+            # 合并去重
+            seen_names = set()
+            for s in by_flow_c + by_flow_i + by_pct_c + by_pct_i:
+                name = s.get("name", "")
+                if name and name not in seen_names:
+                    seen_names.add(name)
+                    hot_sectors.append(s)
+            logger.info("从 collector 双维度选板块: 资金流%d+%d, 动量%d+%d → 去重%d",
+                        len(by_flow_c), len(by_flow_i),
+                        len(by_pct_c), len(by_pct_i), len(hot_sectors))
         else:
             hot_sectors = []
 
@@ -834,6 +929,14 @@ def _select_stocks_real(collector=None):
             continue  # 没有 code 无法下钻
 
         stocks = _fetch_sector_stocks(code, top_n=STOCKS_PER_SECTOR)
+        # 充实因子：短动量 + 突破距离（用已有数据近似，后续可接日K线缓存）
+        for s in stocks:
+            daily = _DAILY_SCORES.get(s.get("code", ""), {})
+            factor_sc = daily.get("factor_score", 0) if daily else 0
+            s["short_momentum"] = round((factor_sc - 5) * 2, 2)  # factor_sc 5→0, 10→+10, 0→-10
+            # 突破距离：跑赢板块幅度 × 5（跑赢2%→+10, 跑输2%→-10）
+            dev = (s.get("pct_chg") or 0) - (sector.get("pct_chg") or 0)
+            s["breakout_dist"] = round(dev * 5, 2)
         for s in stocks:
             s["sector"] = sector["name"]
             s["sector_type"] = sector.get("type", "concept")
@@ -863,7 +966,7 @@ def _select_stocks_real(collector=None):
 
     # Step 4: 创业板/科创板/北交所 + 流动性过滤 + 涨停板过滤
     unique = [s for s in unique if not s["code"].startswith(("300", "301", "688", "8"))]
-    unique, _liq_removed = _apply_liquidity_filter(unique)
+    unique, _liq_removed = _apply_liquidity_filter(unique, pool_type="A")
     unique, _limit_up_removed = _apply_limit_up_filter(unique)
 
     # ── A 池：当日热力板块成分股 ──────────────────────────
@@ -912,7 +1015,7 @@ def _select_stocks_real(collector=None):
                         b_seen[code] = s
             b_unique = list(b_seen.values())
             b_unique = [s for s in b_unique if not s["code"].startswith(("300", "301", "688", "8"))]
-            b_unique, _b_liq_removed = _apply_liquidity_filter(b_unique)
+            b_unique, _b_liq_removed = _apply_liquidity_filter(b_unique, pool_type="B")
             b_unique, _b_limit_up_removed = _apply_limit_up_filter(b_unique)
             b_pullback_sectors = pullback_sectors
         else:
@@ -932,33 +1035,55 @@ def _select_stocks_real(collector=None):
     else:
         risk_level = "low"
 
-    # Step 6: 评分排序（A 池 + B 池各自独立评分）
+    # Step 6: 日评分先合并，再评分排序（日评分参与盘中排名 25%）
+    a_stocks = _merge_daily_scores(a_stocks, _DAILY_SCORES)
     a_ranked = _score_and_rank(a_stocks, pool_type="A")
-    a_ranked = _merge_daily_scores(a_ranked, _DAILY_SCORES)
     a_ranked, _a_fraud_removed = _apply_fraud_filter(a_ranked)
 
+    b_unique = _merge_daily_scores(b_unique, _DAILY_SCORES)
     b_ranked = _score_and_rank(b_unique, pool_type="B")
-    b_ranked = _merge_daily_scores(b_ranked, _DAILY_SCORES)
     b_ranked, _b_fraud_removed = _apply_fraud_filter(b_ranked)
 
-    # Step 7: 板块集中度管控（A/B 池独立控制，各目标 25 只）
+    # Step 7: 板块集中度管控（根据情绪面动态分配 A/B 池名额）
+    try:
+        from signals import get_signal_store, get_pool_allocation
+        store = get_signal_store()
+        alloc = get_pool_allocation(store.get_all())
+        a_size = min(50, max(5, alloc["pool_a"]))
+        b_size = min(50, max(5, alloc["pool_b"]))
+    except Exception:
+        a_size, b_size = 25, 25  # 降级：固定分配
+
     a_candidates = _apply_sector_concentration(
-        a_ranked, max_per=MAX_PER_SECTOR, pool_size=25
+        a_ranked, max_per=MAX_PER_SECTOR, pool_size=a_size
     )
     b_candidates = _apply_sector_concentration(
-        b_ranked, max_per=MAX_PER_SECTOR_B, pool_size=25
+        b_ranked, max_per=MAX_PER_SECTOR_B, pool_size=b_size
     )
 
-    # Step 8: 各自截断至 25 只，合并候选池（向后兼容）
-    a_candidates = a_candidates[:25]
-    b_candidates = b_candidates[:25]
+    # Step 8: 截断 + 聚合分修正（情绪/消息介入）
+    a_candidates = a_candidates[:a_size]
+    b_candidates = b_candidates[:b_size]
 
+    # 聚合分：在候选截断后计算，只影响最终排序
+    try:
+        signals = store.get_all()
+        weights = store.get_effective_weights()
+        for c in a_candidates + b_candidates:
+            c["base_score"] = c.get("score", 0)
+            c["aggregated_score"] = compute_final_score(c, signals, weights)
+        # 按聚合分重排
+        a_candidates.sort(key=lambda x: x.get("aggregated_score", 0), reverse=True)
+        b_candidates.sort(key=lambda x: x.get("aggregated_score", 0), reverse=True)
+    except Exception:
+        pass  # 聚合失败时保持原始排序
     # 简单合并（不去重），供向后兼容的 candidates 字段使用
+    # 优先按聚合分排序，无聚合分时回退到原始分
     candidates = a_candidates + b_candidates
-    candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
+    candidates.sort(key=lambda x: x.get("aggregated_score", x.get("score", 0)), reverse=True)
 
-    logger.info("候选池: A池%d + B池%d → %d 只",
-                 len(a_candidates), len(b_candidates), len(candidates))
+    logger.info("候选池: A池%d(目标%d) + B池%d(目标%d) → %d 只",
+                 len(a_candidates), a_size, len(b_candidates), b_size, len(candidates))
 
     # Step 9: 附加信号操作指引 + risk_level
     for c in candidates:
@@ -1032,13 +1157,23 @@ def _select_stocks_mock():
                 "market_cap": round(random.uniform(30, 500), 1),
                 "intraday_position": intra_pos,
                 "open_return": open_ret,
+                "short_momentum": round(random.uniform(-8, 15), 2),
+                "breakout_dist": round(random.uniform(-10, 5), 2),
                 "sector_pct": sector_pct,
                 "price_deviation": round(pct_chg - sector_pct, 2)})
 
+    a_result = _merge_daily_scores(a_result, _DAILY_SCORES)
     a_ranked = _score_and_rank(a_result, pool_type="A")
     a_ranked = [s for s in a_ranked if not s["code"].startswith(("300", "301", "688", "8"))]
-    a_ranked = _merge_daily_scores(a_ranked, _DAILY_SCORES)
-    a_candidates = _apply_sector_concentration(a_ranked, max_per=MAX_PER_SECTOR, pool_size=25)
+    # 动态池大小（mock 模式下降级为固定值）
+    try:
+        from signals import get_signal_store, get_pool_allocation
+        alloc = get_pool_allocation(get_signal_store().get_all())
+        a_mock_size = min(50, max(5, alloc["pool_a"]))
+        b_mock_size = min(50, max(5, alloc["pool_b"]))
+    except Exception:
+        a_mock_size, b_mock_size = 25, 25
+    a_candidates = _apply_sector_concentration(a_ranked, max_per=MAX_PER_SECTOR, pool_size=a_mock_size)[:a_mock_size]
 
     # ── B 池 mock（模拟回调板块个股）─────────────────────────
     pullback_sector_names = ["军工", "半导体", "新能源车", "光伏", "消费电子", "创新药"]
@@ -1063,19 +1198,20 @@ def _select_stocks_mock():
                 "market_cap": round(random.uniform(30, 500), 1),
                 "intraday_position": intra_pos,
                 "open_return": open_ret,
+                "short_momentum": round(random.uniform(-8, 10), 2),
+                "breakout_dist": round(random.uniform(-12, 3), 2),
                 "sector_pct": sector_pct,
                 "price_deviation": round(pct_chg - sector_pct, 2)})
 
+    b_result = _merge_daily_scores(b_result, _DAILY_SCORES)
     b_ranked = _score_and_rank(b_result, pool_type="B")
     b_ranked = [s for s in b_ranked if not s["code"].startswith(("300", "301", "688", "8"))]
-    b_ranked = _merge_daily_scores(b_ranked, _DAILY_SCORES)
-    b_candidates = _apply_sector_concentration(b_ranked, max_per=MAX_PER_SECTOR_B, pool_size=25)
+    b_candidates = _apply_sector_concentration(b_ranked, max_per=MAX_PER_SECTOR_B, pool_size=b_mock_size)[:b_mock_size]
 
     # ── 各自截断合并 ────────────────────────────────────────
-    a_candidates = a_candidates[:25]
-    b_candidates = b_candidates[:25]
+    # (已在上面用动态大小截断)
     ranked = a_candidates + b_candidates
-    ranked.sort(key=lambda x: x.get("score", 0), reverse=True)
+    ranked.sort(key=lambda x: x.get("aggregated_score", x.get("score", 0)), reverse=True)
 
     if not _DAILY_SCORES:
         signal_bank = ["放量突破", "MA5金叉MA10", "均线多头排列", "MACD金叉",
@@ -1083,7 +1219,7 @@ def _select_stocks_mock():
                        "平台突破", "连板梯队", "情绪周期"]
         for c in ranked:
             n_sig = random.randint(1, 5)
-            c["daily_combined_score"] = round(random.uniform(2, 12), 1)
+            c["daily_combined_score"] = round(random.uniform(2, 10), 1)
             c["daily_signal_count"] = n_sig
             c["daily_signal_names"] = " | ".join(
                 random.sample(signal_bank, min(n_sig, len(signal_bank))))
@@ -1116,6 +1252,7 @@ def _select_stocks_mock():
 # ── 全局状态 ────────────────────────────────────────────────
 
 _DAILY_SCORES = {}
+_ALL_DAILY_SCORES_SORTED = []     # 全部日评分的排序列表（用于百分位归一化）
 _LAST_REAL_RESULT: dict = {}      # 持久化最后一份真实选股结果
 _LAST_REAL_RESULT_FILE = Path(__file__).parent / "data" / "last_picks_result.json"
 _CACHE = {}
@@ -1184,6 +1321,11 @@ def select_stocks(use_mock: bool = False, collector=None) -> dict:
         else:
             logger.info("日评分缓存缺失，自动生成兜底评分...")
             _DAILY_SCORES.update(_generate_fallback_scores())
+        # 构建全量排序列表供百分位归一化
+        if _DAILY_SCORES:
+            _ALL_DAILY_SCORES_SORTED[:] = sorted(
+                v["combined_score"] for v in _DAILY_SCORES.values()
+            )
 
     # 缓存控制（仅交易时段生效）
     now = time.time()
