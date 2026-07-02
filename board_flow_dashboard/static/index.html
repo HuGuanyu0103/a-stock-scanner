@@ -202,6 +202,35 @@ body {
 .signal-tag.sig-negative { background: #f5f5f5; color: #999; }
 .signal-tag.sig-neutral  { background: #f0f5ff; color: #096dd9; }
 
+/* ── v4.0: 尾盘确认标记 ─────────────────────── */
+.final-call-badge {
+  display: inline-block; padding: 4px 14px; border-radius: 4px;
+  background: #cf1322; color: #fff; font-size: 13px; font-weight: 600;
+  animation: finalPulse 1.2s ease infinite;
+  margin-left: 12px; vertical-align: middle;
+}
+@keyframes finalPulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 8px rgba(207,19,34,0.3); }
+  50% { opacity: 0.8; box-shadow: 0 0 16px rgba(207,19,34,0.6); }
+}
+
+/* ── v4.0: ATR 止盈止损双轨 ──────────────────── */
+.atr-stops {
+  font-size: 11px; color: #1890ff; display: block; margin-top: 1px;
+}
+.fixed-stops {
+  font-size: 11px; color: #999;
+}
+.stop-guide-cell { line-height: 1.5; }
+.stop-guide-cell .avoid { color: #cf1322; font-weight: 600; }
+
+/* ── v4.0: 置信度指示 ────────────────────────── */
+.conf-low { color: #faad14; font-size: 11px; }
+.conf-ok { color: #52c41a; font-size: 11px; }
+
+/* ── v4.0: 聚合分 ────────────────────────────── */
+.agg-score { font-size: 11px; color: #722ed1; display: block; }
+
 /* ── 池切换按钮 ───────────────────────────── */
 .pool-toggle-bar {
   display: flex; gap: 0; margin-bottom: 14px;
@@ -374,7 +403,10 @@ body {
   <div class="main-tab-content" id="mainTab1">
     <div class="picks-wrapper">
       <div class="picks-header">
-        <h2>盘中选股候选池</h2>
+        <div>
+          <h2 style="display:inline">盘中选股候选池</h2>
+          <span class="final-call-badge" id="finalCallBadge" style="display:none">🔔 尾盘确认池</span>
+        </div>
         <span class="picks-meta" id="picksMeta">加载中...</span>
       </div>
       <!-- 池切换按钮 -->
@@ -870,9 +902,22 @@ function renderPicks(data) {
   const modeLabel = mode === 'live' ? '实时' : (mode === 'cached' ? '缓存' : '本地');
   const refreshInfo = date + ' ' + time + (cachedAt && mode === 'cached' ? ' (数据时间: ' + cachedAt + ')' : '');
 
+  // v4.0: 尾盘确认标记
+  const finalCall = data.final_call || false;
+  document.getElementById('finalCallBadge').style.display = finalCall ? 'inline-block' : 'none';
+
+  // v4.0: 情绪面信息
+  let sentInfo = '';
+  if (data.sentiment) {
+    const si = data.sentiment.sentiment_index;
+    const pr = data.sentiment.po_ban_rate;
+    if (si != null) sentInfo += ' 情绪' + si.toFixed(0);
+    if (pr != null && pr > 0.3) sentInfo += ' 炸板率' + (pr * 100).toFixed(0) + '%';
+  }
+
   document.getElementById('picksMeta').innerHTML =
     refreshInfo + ' | A池' + aStocks.length + ' + B池' + bStocks.length + ' | '
-    + riskInfo + ' 广度' + breadthPct + ' | ' + modeLabel;
+    + riskInfo + ' 广度' + breadthPct + sentInfo + ' | ' + modeLabel;
 
   // ── 更新池切换按钮计数 ──────────────────────────────────
   document.getElementById('poolACount').textContent = '(' + aStocks.length + ')';
@@ -913,9 +958,9 @@ function renderPicks(data) {
       + '<span class="picks-pool-title ' + poolCls + '">' + poolLabel + ' (' + stocks.length + ')</span>'
       + '<table class="picks-table"><thead><tr>'
       + '<th>#</th><th style="text-align:left">名称</th><th>板块</th>'
-      + '<th>盘中评分</th><th>日评分</th><th>涨幅%</th>'
+      + '<th>评分</th><th>日评分</th><th>涨幅%</th>'
       + '<th>信号</th><th>量比</th><th>日内位</th><th>开涨幅%</th>'
-      + '<th>主力净额</th><th>建议</th></tr></thead><tbody>';
+      + '<th>主力净额</th><th>资金置信</th><th>止盈/止损</th></tr></thead><tbody>';
 
     stocks.forEach((c, idx) => {
       const pctCls = (c.pct_chg || 0) >= 0 ? 'up' : 'down';
@@ -928,11 +973,36 @@ function renderPicks(data) {
         ? '持' + c.holding_days + '天 ' + c.take_profit + '/' + c.stop_loss
         : '规避';
 
+      // v4.0: 聚合分（紫标）— 综合三系统后的最终评分
+      const aggScore = c.aggregated_score != null ? c.aggregated_score : c.score;
+      const aggCls = aggScore >= 0.7 ? 'score-high' : (aggScore >= 0.5 ? 'score-mid' : 'score-low');
+      const aggDiff = (aggScore - c.score).toFixed(2);
+      const aggExtra = c.aggregated_score != null && Math.abs(aggScore - c.score) > 0.02
+        ? '<span class="agg-score">' + (aggDiff >= 0 ? '+' : '') + aggDiff + '</span>' : '';
+
+      // v4.0: 置信度指示
+      const flowConf = c.flow_confidence;
+      const confHtml = flowConf != null
+        ? (flowConf <= 0.3
+          ? '<span class="conf-low" title="资金数据可信度低">⚠' + flowConf.toFixed(1) + '</span>'
+          : '<span class="conf-ok" title="资金数据可信">' + flowConf.toFixed(1) + '</span>')
+        : '-';
+
+      // v4.0: ATR 动态止盈止损
+      const atrTp = c.atr_take_profit || '-';
+      const atrSl = c.atr_stop_loss || '-';
+      const atrHtml = (atrTp !== '-' && atrSl !== '-')
+        ? '<span class="atr-stops">ATR ' + atrSl + '/' + atrTp + '</span>'
+        : '';
+      const stopHtml = (c.holding_days === 0 || c.holding_days === '0')
+        ? '<div class="stop-guide-cell"><span class="avoid">规避</span></div>'
+        : '<div class="stop-guide-cell"><span class="fixed-stops">固定 ' + c.stop_loss + '/' + c.take_profit + '</span>' + atrHtml + '<span style="font-size:11px">持' + c.holding_days + '天</span></div>';
+
       t += '<tr>'
         + '<td>' + (idx + 1) + '</td>'
         + '<td>' + c.name + '<br><span style="font-size:11px;color:#999">' + c.code + '</span></td>'
         + '<td style="font-size:12px">' + c.sector + '</td>'
-        + '<td class="' + scoreCls + '">' + (c.score * 100).toFixed(1) + '</td>'
+        + '<td class="' + aggCls + '">' + (aggScore * 100).toFixed(1) + aggExtra + '</td>'
         + '<td class="' + dailyCls + '" title="' + (c.daily_signal_names || '') + '">'
         + (c.daily_combined_score != null ? c.daily_combined_score.toFixed(1) + '<span style="font-size:10px;color:#999">·' + (c.daily_signal_count || 0) + '</span>' : '-')
         + '</td>'
@@ -942,7 +1012,8 @@ function renderPicks(data) {
         + '<td class="' + intraCls + '">' + intraPos.toFixed(2) + '</td>'
         + '<td class="' + ((c.open_return || 0) >= 0 ? 'up' : 'down') + '">' + (c.open_return >= 0 ? '+' : '') + (c.open_return != null ? Number(c.open_return).toFixed(1) : '-') + '</td>'
         + '<td class="' + ((c.net_main_inflow || 0) >= 0 ? 'up' : 'down') + '">' + (c.net_main_inflow >= 0 ? '+' : '') + (c.net_main_inflow != null ? Number(c.net_main_inflow).toFixed(1) : '-') + '</td>'
-        + '<td style="font-size:12px">' + guide + '</td>'
+        + '<td>' + confHtml + '</td>'
+        + '<td>' + stopHtml + '</td>'
         + '</tr>';
     });
 

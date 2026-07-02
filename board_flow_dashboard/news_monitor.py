@@ -14,7 +14,7 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -26,7 +26,27 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).parent / "data"
 NEWS_CHECK_INTERVAL = 60       # 规则引擎检查间隔（秒）
-LLM_BATCH_INTERVAL = 1800      # LLM 批量分析间隔（秒）
+LLM_BATCH_INTERVAL = 600       # LLM 批量分析间隔（秒），v4.0 从 1800 缩短
+
+# ── v4.0: 消息事件级别与衰减周期 ───────────────────────────
+EVENT_LEVEL_CONFIG = {
+    "major_policy": {"decay_hours": 8, "impact_base": 0.8, "label": "重大政策"},
+    "industry_news": {"decay_hours": 2, "impact_base": 0.5, "label": "行业新闻"},
+    "stock_announcement": {"decay_hours": 0.5, "impact_base": 0.3, "label": "个股公告"},
+}
+
+# 重大政策关键词
+MAJOR_POLICY_KW = [
+    "降准", "降息", "政治局", "国务院", "央行", "证监会", "发改委",
+    "财政", "货币", "LPR", "MLF", "逆回购", "国常会", "深改委",
+    "中央经济", "两会", "五年规划", "专项债", "特别国债",
+]
+
+# 个股层面关键词
+STOCK_LEVEL_KW = [
+    "业绩预告", "减持", "增持", "回购", "问询函", "警示函",
+    "立案", "处罚", "ST", "退市", "重组", "停牌", "复牌",
+]
 
 # 共享 Session
 _http = req.Session()
@@ -69,6 +89,28 @@ SECTOR_KW_MAP = {
 }
 
 
+def _classify_event_level(title: str) -> tuple:
+    """根据标题关键词判断事件级别。
+
+    Returns:
+        (event_level, decay_hours, impact_base)
+    """
+    for kw in MAJOR_POLICY_KW:
+        if kw in title:
+            level = "major_policy"
+            return level, EVENT_LEVEL_CONFIG[level]["decay_hours"], \
+                   EVENT_LEVEL_CONFIG[level]["impact_base"]
+    for kw in STOCK_LEVEL_KW:
+        if kw in title:
+            level = "stock_announcement"
+            return level, EVENT_LEVEL_CONFIG[level]["decay_hours"], \
+                   EVENT_LEVEL_CONFIG[level]["impact_base"]
+    # 默认：行业新闻
+    level = "industry_news"
+    return level, EVENT_LEVEL_CONFIG[level]["decay_hours"], \
+           EVENT_LEVEL_CONFIG[level]["impact_base"]
+
+
 def _classify_rule_based(title: str) -> Optional[dict]:
     """规则引擎快速分类。返回 None 表示无法判断。"""
     sentiment = None
@@ -89,6 +131,9 @@ def _classify_rule_based(title: str) -> Optional[dict]:
     # 突发判定
     is_urgent = any(kw in title for kw in ("突发", "重磅", "紧急"))
 
+    # v4.0: 事件级别判定
+    event_level, decay_hours, impact_base = _classify_event_level(title)
+
     # 板块映射
     sectors = []
     for sec_kw, sec_names in SECTOR_KW_MAP.items():
@@ -97,9 +142,11 @@ def _classify_rule_based(title: str) -> Optional[dict]:
 
     return {
         "sentiment": sentiment,
-        "impact": 0.8 if is_urgent else impact,
+        "impact": 0.8 if is_urgent else max(impact, impact_base),
         "sectors": list(set(sectors))[:3],
         "is_urgent": is_urgent,
+        "event_level": event_level,
+        "decay_hours": decay_hours,
     }
 
 
@@ -275,6 +322,9 @@ class NewsMonitor:
             # 规则引擎
             result = _classify_rule_based(title)
             if result:
+                # v4.0: 按级别计算过期时间
+                decay_h = result.get("decay_hours", 2)
+                expires_dt = datetime.now() + timedelta(hours=decay_h)
                 new_events.append({
                     "id": f"evt_{hash(title) & 0xFFFFFF:06x}",
                     "time": datetime.now().strftime("%H:%M"),
@@ -284,7 +334,9 @@ class NewsMonitor:
                     "sectors": result["sectors"],
                     "stocks": [],
                     "source": "rule_engine",
-                    "expires_at": (datetime.now().replace(hour=int(datetime.now().strftime("%H")) + 2)).strftime("%H:%M"),
+                    "event_level": result.get("event_level", "industry_news"),
+                    "decay_hours": result.get("decay_hours", 2),
+                    "expires_at": expires_dt.strftime("%H:%M"),
                 })
 
                 # 突发 → LLM 深度分析

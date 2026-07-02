@@ -366,7 +366,7 @@ def fetch_stock_fund_flow_rank(sort_by: str = "net_main",
             "np": "1", "ut": "bd1d9ddb04089700cf9c27f6f7426281",
             "fltt": "2", "invt": "2", "fid": fid,
             "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",  # 沪深 A 股
-            "fields": "f12,f14,f2,f3,f8,f37,f62,f66,f184,f20",
+            "fields": "f12,f14,f2,f3,f8,f37,f62,f66,f184,f21",
             "_": str(int(time.time() * 1000)),
         }
         resp = _http.get(url, params=params, timeout=timeout,
@@ -389,7 +389,7 @@ def fetch_stock_fund_flow_rank(sort_by: str = "net_main",
                 "net_main": round(float(item.get("f62", 0)) / 1e8, 2),
                 "amp_ratio": item.get("f66"),
                 "net_main_ratio": item.get("f184"),
-                "market_cap": item.get("f20"),
+                "market_cap": item.get("f21"),
             })
         return stocks
     except Exception as e:

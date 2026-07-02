@@ -33,6 +33,7 @@ try:
     from .signals import get_signal_store, compute_final_score, get_pool_allocation
     from .sentiment_collector import SentimentCollector
     from .news_monitor import NewsMonitor
+    from .pre_market import PreMarketScanner
 except ImportError:
     from collector import SectorFlowCollector, WATCH_SECTORS  # type: ignore[no-redef]
     from data_fetcher import (  # type: ignore[no-redef]
@@ -42,6 +43,7 @@ except ImportError:
     from signals import get_signal_store, compute_final_score, get_pool_allocation  # type: ignore[no-redef]
     from sentiment_collector import SentimentCollector  # type: ignore[no-redef]
     from news_monitor import NewsMonitor  # type: ignore[no-redef]
+    from pre_market import PreMarketScanner  # type: ignore[no-redef]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -64,6 +66,8 @@ else:
 sentiment_collector = SentimentCollector()
 # System C: 消息面监控（独立线程）
 news_monitor = NewsMonitor()
+# v4.0: 盘前预扫描
+pre_market_scanner = PreMarketScanner()
 
 # 启动信号定期持久化（每 60s）
 get_signal_store().start_auto_persist(interval=60)
@@ -300,7 +304,38 @@ def api_stocks():
         for k, v in signals.items()
     }
 
+    # v4.0: 情绪面摘要（供前端展示）
+    sent_data = signals.get("sentiment", {}).get("data", {})
+    market = sent_data.get("market", {})
+    data["sentiment"] = {
+        "sentiment_index": market.get("sentiment_index"),
+        "po_ban_rate": market.get("po_ban_rate"),
+        "rotation_speed": market.get("rotation_speed"),
+        "lianban_rate": market.get("lianban_rate"),
+    }
+
+    # v4.0: 盘前外盘映射 + A池施加
+    pre_market = pre_market_scanner.scan()
+    data["pre_market"] = {
+        "overall_sentiment": pre_market.get("overnight", {}).get("overall_sentiment", 0),
+        "summary": pre_market.get("summary", ""),
+        "positive_sectors": pre_market.get("overnight", {}).get("positive_sectors", []),
+        "negative_sectors": pre_market.get("overnight", {}).get("negative_sectors", []),
+        "indices": pre_market.get("overnight", {}).get("indices", {}),
+    }
+    # 盘前情绪施加到 A 池
+    if pre_market.get("pre_market_open") and not _use_mock:
+        data["pool_a"] = pre_market_scanner.apply_to_candidates(
+            data["pool_a"], pool_type="A")
+
     return jsonify(data)
+
+
+@app.route("/api/pre-market")
+def api_pre_market():
+    """v4.0: 盘前预扫描数据（隔夜外盘 + 集合竞价）。"""
+    result = pre_market_scanner.scan()
+    return jsonify(result)
 
 
 @app.route("/api/signals")

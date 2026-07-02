@@ -195,9 +195,27 @@ def compute_final_score(stock: dict, signals: dict,
     sent_weight = effective_weights.get("sentiment", 0)
 
     if sent_weight > 0 and sent_data:
+        market = sent_data.get("market", {})
+
         # 轮动乘数：轮动快→降 base，轮动慢→不变
-        rotation = sent_data.get("market", {}).get("rotation_speed", 0.5)
+        rotation = market.get("rotation_speed", 0.5)
         rotation_mult = 1.0 - rotation * 0.3  # rotation=0→1.0, rotation=1→0.7
+
+        # ── v4.0: 情绪全局乘数 ──────────────────────────────
+        sentiment_index = market.get("sentiment_index", 50)
+        pool = stock.get("pool", "A")
+
+        if pool == "A" and sentiment_index > 80:
+            # 情绪过热：抑制追涨冲动
+            final *= 0.8
+        elif pool == "B" and sentiment_index < 30:
+            # 情绪冰点：鼓励左侧布局
+            final *= 1.2
+
+        # ── v4.0: 市场炸板率惩罚 ────────────────────────────
+        po_ban_rate = market.get("po_ban_rate", 0)
+        if po_ban_rate > 0.4:
+            final -= 0.1
 
         # 板块涨停热度加成
         sector_heat = sent_data.get("sector_heat", {}).get(sector, {})
@@ -213,7 +231,7 @@ def compute_final_score(stock: dict, signals: dict,
         final = final * rotation_mult + sector_bonus
         final += base * sent_weight * 0.1  # 情绪面的直接贡献
 
-    # ── 消息面 (事件加分) ────────────────────────────────────
+    # ── v4.0: 消息面 (逻辑验证+风险过滤，非追涨触发) ─────────
     news_data = signals.get("news", {}).get("data", {})
     news_weight = effective_weights.get("news", 0)
 
@@ -223,13 +241,14 @@ def compute_final_score(stock: dict, signals: dict,
         for event in news_data.get("events", []):
             # 相关性检查
             if sector in event.get("sectors", []) or stock.get("code") in event.get("stocks", []):
-                # 新鲜度衰减（2小时线性）
+                # v4.0: 按事件级别分级衰减
+                decay_h = event.get("decay_hours", 2)
                 try:
                     t = datetime.strptime(event.get("time", ""), "%H:%M")
                     age_h = (now - t).total_seconds() / 3600
                 except (ValueError, TypeError):
                     age_h = 1.0
-                freshness = max(0, 1 - age_h / 2)
+                freshness = max(0, 1 - age_h / decay_h)
                 sentiment = 1 if event.get("sentiment") == "positive" else -1
                 impact = event.get("impact", 0.3)
                 news_bonus += sentiment * impact * freshness * 0.10

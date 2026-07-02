@@ -34,6 +34,14 @@ PULLBACK_DAILY_RETURN_MIN = -6.0  # 当日最大跌幅（超过则视为破位�
 PULLBACK_MAX_SECTORS = 8          # 最多输出板块数
 PULLBACK_MIN_HOT_RANK = 50        # 过去 3 天至少有一天排名 ≤ N
 
+# ── v4.0: 回调深度分级置信度 ─────────────────────────────────
+# 浅回调：强势整理，可重仓 → 深回调：可能破位，谨慎参与
+PULLBACK_DEPTH_CONFIDENCE = [
+    (0.0,   -2.0, 1.0,  "浅回调"),   # [0, -2%)  高置信
+    (-2.0,  -4.0, 0.85, "正常回调"), # [-2, -4%)  中置信
+    (-4.0,  -6.0, 0.65, "深回调"),   # [-4, -6%)  低置信
+]
+
 # 板块热度分级涨幅门槛（纯主板无 20cm，需按板块规模分级要求）
 # accumulated_flow 作为板块规模代理：≥10亿=大盘，≥5亿=中型，<5亿=小题材
 PULLBACK_RETURN_THRESHOLD = {
@@ -280,11 +288,23 @@ class SectorReviewer:
                 max(0, (1 - abs(today_return) / 6)) * 10 * 0.3, 1
             )
 
+            # v4.0: 回调深度分级置信度
+            depth_conf = 1.0
+            depth_label = "未知"
+            for lo, hi, conf, label in PULLBACK_DEPTH_CONFIDENCE:
+                if lo >= today_return > hi:
+                    depth_conf = conf
+                    depth_label = label
+                    break
+            pullback_score = round(pullback_score * depth_conf, 1)
+
             candidates.append({
                 "name": sector_name,
                 "code": today_data.get("code", ""),
                 "type": today_data.get("type", "concept"),
                 "size_label": size_label,
+                "depth_label": depth_label,
+                "depth_confidence": depth_conf,
                 "accumulated_flow": round(accumulated_flow, 2),
                 "accumulated_return": round(accumulated_return, 1),
                 "today_flow": round(today_flow, 2),
@@ -298,7 +318,8 @@ class SectorReviewer:
         if result:
             logger.info("回调板块: %d 个 → %s",
                          len(result),
-                         ", ".join(f"{c['name']}[{c['size_label']}](累计{c['accumulated_return']:+.1f}% 当日{c['today_return']:+.1f}%)"
+                         ", ".join(f"{c['name']}[{c['size_label']}/{c.get('depth_label','?')}]"
+                                  f"(累计{c['accumulated_return']:+.1f}% 当日{c['today_return']:+.1f}%)"
                                   for c in result[:5]))
 
         return result

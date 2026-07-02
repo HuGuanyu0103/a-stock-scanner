@@ -60,6 +60,14 @@ MAX_PER_SECTOR_B = 8           # B 池同一板块最多入选数（纯主板放
 MAX_STOCKS_PER_MEGA_SECTOR = 10  # 同一大赛道总上限（TODO Phase 2: 需先建 sector→mega_sector 映射表才能生效）
 BEAR_MARKET_POOL_SIZE = 10     # 普跌日候选池缩减至（已废弃，保留兼容）
 BEAR_MARKET_THRESHOLD = 0.16   # 上涨板块占比低于此值视为普跌
+EXTREME_BEAR_THRESHOLD = 0.08  # v4.0: 极端熊市阈值，A池彻底禁用
+
+# ── v4.0: 三级系统性风控熔断参数 ─────────────────────────
+SECTOR_MELTDOWN_FLOW = -20     # 板块主力净流出超此值(亿)触发熔断
+SECTOR_MELTDOWN_PCT = -3.0     # 板块跌幅超此值(%)触发熔断
+SECTOR_MELTDOWN_PENALTY = 0.5  # 熔断板块成分股得分乘以此系数
+FLASH_CRASH_PCT = -5.0         # 个股盘中急跌超此值(%)直接剔除
+FLASH_CRASH_OPEN_GAP = -4.0    # 开盘后跌幅超此值(%)判定急跌
 
 # ── B 池（回调低吸）参数 ────────────────────────────────────
 
@@ -73,9 +81,9 @@ PULLBACK_BONUS_MULTIPLIER = 1.10  # B 池得分 ×1.10
 BEAR_PULLBACK_A = 25           # 普跌时 A 池名额
 BEAR_PULLBACK_B = 25           # 普跌时 B 池名额
 
-# 流动性硬过滤（纯主板无 20cm 弹性，需放宽市值 + 提高换手）
-MIN_MARKET_CAP_A = 30          # A 池最小总市值（亿元）
-MIN_MARKET_CAP_B = 20          # B 池最小总市值（亿元，低吸需更宽选股面）
+# 流动性硬过滤（已改用流通市值 f21 替代总市值 f20）
+MIN_MARKET_CAP_A = 30          # A 池最小流通市值（亿元）
+MIN_MARKET_CAP_B = 20          # B 池最小流通市值（亿元，低吸需更宽选股面）
 MIN_TURNOVER_RATE = 0.5        # 最低换手率（%，主板要求更高活跃度）
 
 # ── 信号操作指引 ────────────────────────────────────────────
@@ -97,6 +105,33 @@ SIGNAL_GUIDE = {
     "板块洗盘承接": {"holding": 3,   "take_profit": "6%",    "stop_loss": "-3.5%"},
     "缩量止跌企稳": {"holding": "3-4", "take_profit": "6-8%", "stop_loss": "-4%"},
 }
+
+# ── v4.0: ATR 动态止盈止损 ────────────────────────────────────
+
+def _estimate_atr_stops(stock: dict) -> dict:
+    """基于日内振幅估算 ATR 动态止盈止损位。
+
+    以振幅作为当日波动率的代理指标，ATR ≈ 振幅 × 0.65。
+    止损 = 1.5×ATR，止盈 = 2.5×ATR（均为百分比）。
+
+    未来可从 daily_scorer 的日K线数据中获取精确 ATR(14) 替代此估算。
+
+    Returns:
+        {"atr_stop_loss": str, "atr_take_profit": str}
+    """
+    amp = stock.get("amp_ratio") or 0
+    if amp <= 0:
+        # 无振幅数据时回退到信号默认值
+        return {"atr_stop_loss": "-", "atr_take_profit": "-"}
+
+    estimated_atr_pct = amp * 0.65  # ATR 通常约为振幅的 65%
+    atr_stop = round(-1.5 * estimated_atr_pct, 1)
+    atr_tp = round(2.5 * estimated_atr_pct, 1)
+
+    return {
+        "atr_stop_loss": f"{atr_stop}%",
+        "atr_take_profit": f"{atr_tp}%",
+    }
 
 # v3.5 权重：量价为主(60%)，资金确认为辅(16%)，日评融合(25%，见 DAILY_SCORE_WEIGHT)
 WEIGHTS = {
@@ -442,7 +477,6 @@ def _score_and_rank(stocks, pool_type: str = "A"):
         # v3.4: 资金流置信度降权 + 日评分融合
         pct = s.get("pct_chg") or 0
         flow_conf = _flow_confidence(net_ratio, pct, is_pullback)
-        s["flow_confidence"] = round(flow_conf, 2)
 
         effective_weights = dict(WEIGHTS)
         original_flow_w = effective_weights["net_main_ratio"]
@@ -473,6 +507,12 @@ def _score_and_rank(stocks, pool_type: str = "A"):
         s["score"] = round(
             intraday_score * (1 - DAILY_SCORE_WEIGHT) + daily_norm * DAILY_SCORE_WEIGHT, 4
         )
+
+        # v4.0: 资金流置信度直接乘总分，防止低置信度股票通过
+        # 量比/换手率等因子绕过资金真实性风控
+        if flow_conf <= 0.3:
+            s["score"] = round(s["score"] * flow_conf, 4)
+        s["flow_confidence"] = round(flow_conf, 2)
 
         # B 池额外加成（系数，非绝对分）
         if is_pullback:
@@ -599,8 +639,8 @@ def _fetch_sector_stocks(board_code: str, top_n: int = 10) -> list:
             "ut": "bd1d9ddb04089700cf9c27f6f7426281",
             "fltt": "2", "invt": "2", "fid": "f62",
             "fs": "b:" + board_code + "+f:!50",
-            # v2: 增加 f15(最高), f16(最低), f17(今开), f20(总市值)
-            "fields": "f12,f14,f2,f3,f8,f15,f16,f17,f20,f37,f62,f66,f184",
+            # v4.0: f21(流通市值)替代f20(总市值)，避免总市值幻觉
+            "fields": "f12,f14,f2,f3,f8,f15,f16,f17,f21,f37,f62,f66,f184",
             "_": str(int(time.time() * 1000))}
         resp = _http.get(url, params=params, timeout=8,
                        verify=False, headers=HEADERS)
@@ -640,8 +680,8 @@ def _fetch_sector_stocks(board_code: str, top_n: int = 10) -> list:
                                    if item.get("f62") else 0,
                 "amp_ratio": item.get("f66"),
                 "net_main_ratio": item.get("f184"),
-                "market_cap": round(float(item.get("f20", 0)) / 1e8, 2)
-                              if item.get("f20") else 0,
+                "market_cap": round(float(item.get("f21", 0)) / 1e8, 2)
+                              if item.get("f21") else 0,
                 # v2 新增实时因子
                 "intraday_position": intra_pos,
                 "open_return": open_ret,
@@ -752,13 +792,18 @@ def _apply_fraud_filter(stocks: list) -> tuple:
         net_ratio = s.get("net_main_ratio") or 0
         open_ret = s.get("open_return") or 0
 
+        pct = s.get("pct_chg") or 0
+
         # 三个条件同时满足 → 诱多嫌疑
         is_high = intra > 0.8
         is_outflow = net_ratio < 0
         is_opened_high = open_ret > 1  # 高开但...
         is_selling_off = is_high and is_outflow and is_opened_high
 
-        if is_selling_off:
+        # v4.0: 极端背离 — 价格大涨 + 主力明显流出，直接剔除
+        is_extreme_divergence = net_ratio < -5 and pct > 3
+
+        if is_selling_off or is_extreme_divergence:
             removed.append(s)
         else:
             passed.append(s)
@@ -769,6 +814,63 @@ def _apply_fraud_filter(stocks: list) -> tuple:
                      ", ".join(f"{r['name']}(位{intra:.2f},净{r.get('net_main_ratio',0):.1f}%)"
                               for r in removed[:5]))
     return passed, removed
+
+
+# ── v4.0: 三级系统性风控熔断 ──────────────────────────────
+
+def _apply_flash_crash_filter(stocks: list) -> tuple:
+    """剔除盘中急跌个股：开盘后大幅下挫，可能有利空或踩踏。
+
+    用已有数据近似：open_return < FLASH_CRASH_OPEN_GAP 且
+    pct_chg < FLASH_CRASH_PCT 表示开盘后持续下跌，有闪崩嫌疑。
+    """
+    passed, removed = [], []
+    for s in stocks:
+        open_ret = s.get("open_return") or 0
+        pct = s.get("pct_chg") or 0
+        if open_ret < FLASH_CRASH_OPEN_GAP and pct < FLASH_CRASH_PCT:
+            removed.append(s)
+        else:
+            passed.append(s)
+    if removed:
+        logger.info("急跌熔断剔除 %d 只: %s",
+                     len(removed),
+                     ", ".join(f"{r['name']}(开跌{r.get('open_return',0):+.1f}% 现跌{r.get('pct_chg',0):+.1f}%)"
+                              for r in removed[:5]))
+    return passed, removed
+
+
+def _get_meltdown_sectors(hot_sectors: list) -> set:
+    """识别触发板块熔断的板块名。
+
+    条件：主力净流出 > SECTOR_MELTDOWN_FLOW 且 跌幅 > SECTOR_MELTDOWN_PCT。
+    返回熔断板块名集合，这些板块的成分股将在评分中受惩罚。
+    """
+    meltdown = set()
+    for s in hot_sectors:
+        net_main = s.get("net_main", 0)
+        pct = s.get("pct_chg", 0)
+        if net_main < SECTOR_MELTDOWN_FLOW and pct < SECTOR_MELTDOWN_PCT:
+            meltdown.add(s.get("name", ""))
+    if meltdown:
+        logger.info("板块熔断: %s", ", ".join(
+            f"{n}" for n in meltdown))
+    return meltdown
+
+
+def _apply_sector_meltdown_penalty(stocks: list, meltdown_sectors: set) -> None:
+    """对熔断板块成分股施加得分惩罚。"""
+    if not meltdown_sectors:
+        return
+    count = 0
+    for s in stocks:
+        if s.get("sector", "") in meltdown_sectors:
+            s["score"] = round(s["score"] * SECTOR_MELTDOWN_PENALTY, 4)
+            s["meltdown_penalty"] = True
+            count += 1
+    if count:
+        logger.info("板块熔断惩罚: %d 只成分股得分 ×%.1f", count,
+                     SECTOR_MELTDOWN_PENALTY)
 
 
 # ── 大盘环境评估 ──────────────────────────────────────────
@@ -1025,9 +1127,12 @@ def _select_stocks_real(collector=None):
         b_unique = []
         b_pullback_sectors = []
 
-    # Step 5: 大盘广度 → 风险等级（仅用于展示，池大小固定 25）
+    # Step 5: 大盘广度 → 风险等级
     breadth = _get_market_breadth()
-    if breadth < BEAR_MARKET_THRESHOLD:
+    if breadth < EXTREME_BEAR_THRESHOLD:
+        risk_level = "extreme"
+        logger.info("⚠️ 极端熊市 (广度 %.0f%%) → A池禁用，全部转B池", breadth * 100)
+    elif breadth < BEAR_MARKET_THRESHOLD:
         risk_level = "high"
         logger.info("普跌环境 (广度 %.0f%%)", breadth * 100)
     elif breadth < 0.30:
@@ -1035,14 +1140,24 @@ def _select_stocks_real(collector=None):
     else:
         risk_level = "low"
 
+    # v4.0: 识别熔断板块
+    meltdown_sectors = _get_meltdown_sectors(hot_sectors)
+
     # Step 6: 日评分先合并，再评分排序（日评分参与盘中排名 25%）
     a_stocks = _merge_daily_scores(a_stocks, _DAILY_SCORES)
     a_ranked = _score_and_rank(a_stocks, pool_type="A")
+    # v4.0: 急跌过滤 + 板块熔断惩罚
+    a_ranked, _a_crash_removed = _apply_flash_crash_filter(a_ranked)
     a_ranked, _a_fraud_removed = _apply_fraud_filter(a_ranked)
 
     b_unique = _merge_daily_scores(b_unique, _DAILY_SCORES)
     b_ranked = _score_and_rank(b_unique, pool_type="B")
+    b_ranked, _b_crash_removed = _apply_flash_crash_filter(b_ranked)
     b_ranked, _b_fraud_removed = _apply_fraud_filter(b_ranked)
+
+    # v4.0: 板块熔断惩罚（在评分之后、集中度管控之前）
+    _apply_sector_meltdown_penalty(a_ranked, meltdown_sectors)
+    _apply_sector_meltdown_penalty(b_ranked, meltdown_sectors)
 
     # Step 7: 板块集中度管控（根据情绪面动态分配 A/B 池名额）
     try:
@@ -1053,6 +1168,12 @@ def _select_stocks_real(collector=None):
         b_size = min(50, max(5, alloc["pool_b"]))
     except Exception:
         a_size, b_size = 25, 25  # 降级：固定分配
+
+    # v4.0: 极端熊市 → A池强制归零，全部转B池
+    if risk_level == "extreme":
+        a_size = 0
+        b_size = min(50, b_size + a_size if a_size else 50)
+        logger.info("极端熊市熔断: A池禁用, B池扩容至%d", b_size)
 
     a_candidates = _apply_sector_concentration(
         a_ranked, max_per=MAX_PER_SECTOR, pool_size=a_size
@@ -1085,13 +1206,15 @@ def _select_stocks_real(collector=None):
     logger.info("候选池: A池%d(目标%d) + B池%d(目标%d) → %d 只",
                  len(a_candidates), a_size, len(b_candidates), b_size, len(candidates))
 
-    # Step 9: 附加信号操作指引 + risk_level
+    # Step 9: 附加信号操作指引 + risk_level + ATR动态止盈止损
     for c in candidates:
         signal = c.get("signal", "盘中观察")
         guide = SIGNAL_GUIDE.get(signal, SIGNAL_GUIDE["盘中观察"])
         c["holding_days"] = guide["holding"]
         c["take_profit"] = guide["take_profit"]
         c["stop_loss"] = guide["stop_loss"]
+        # v4.0: ATR 动态止盈止损（双轨展示）
+        c.update(_estimate_atr_stops(c))
 
     # Step 10: 告警检查
     _check_alerts(
@@ -1110,6 +1233,10 @@ def _select_stocks_real(collector=None):
     all_sector_names = ([s["name"] for s in hot_sectors] +
                         [s["name"] for s in b_pullback_sectors])
 
+    # v4.0: 尾盘确认标记 — 14:45 后为最终确认池
+    now = datetime.now()
+    final_call = (now.hour == 14 and now.minute >= 45) or (now.hour == 15 and now.minute == 0)
+
     return {"time": _now_time(),
         "date": datetime.now().strftime("%Y-%m-%d"),
         "total": len(candidates),
@@ -1120,6 +1247,7 @@ def _select_stocks_real(collector=None):
         "pullback_sectors": [s["name"] for s in b_pullback_sectors],
         "risk_level": risk_level,
         "market_breadth": round(breadth, 2),
+        "final_call": final_call,
         "filter_stats": {
             "liquidity_removed": len(_liq_removed) + len(_b_liq_removed),
             "limit_up_removed": len(_limit_up_removed) + len(_b_limit_up_removed),
@@ -1224,15 +1352,18 @@ def _select_stocks_mock():
             c["daily_signal_names"] = " | ".join(
                 random.sample(signal_bank, min(n_sig, len(signal_bank))))
 
-    # 附加信号指引
+    # 附加信号指引 + ATR动态止盈止损
     for c in ranked:
         guide = SIGNAL_GUIDE.get(c.get("signal", "盘中观察"), SIGNAL_GUIDE["盘中观察"])
         c["holding_days"] = guide["holding"]
         c["take_profit"] = guide["take_profit"]
         c["stop_loss"] = guide["stop_loss"]
+        c.update(_estimate_atr_stops(c))
 
     hot_names = sectors + list(_MOCK_INDUSTRY_SECTORS.keys())[:2]
     candidates = ranked
+    now = datetime.now()
+    final_call = (now.hour == 14 and now.minute >= 45) or (now.hour == 15 and now.minute == 0)
     return {"time": _now_time(),
         "date": datetime.now().strftime("%Y-%m-%d"),
         "total": len(candidates),
@@ -1243,6 +1374,7 @@ def _select_stocks_mock():
         "pullback_sectors": pullback_sector_names,
         "risk_level": "low",
         "market_breadth": 0.55,
+        "final_call": final_call,
         "filter_stats": {"liquidity_removed": 0, "limit_up_removed": 0,
                           "fraud_removed": 0, "pool_size": 50,
                           "pool_a": len(a_candidates), "pool_b": len(b_candidates)},
