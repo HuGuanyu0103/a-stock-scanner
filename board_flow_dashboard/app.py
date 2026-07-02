@@ -27,13 +27,13 @@ from flask import Flask, jsonify, request, send_from_directory
 try:
     from .collector import SectorFlowCollector, WATCH_SECTORS
     from .data_fetcher import (
-        fetch_dashboard_data, fetch_stock_fund_flow_rank, fetch_northbound_flow, _MOCK_STOCKS,
+        fetch_dashboard_data, fetch_stock_fund_flow_rank, fetch_northbound_flow, _MOCK_STOCKS, _now_time,
     )
     from .stock_selector import select_stocks
 except ImportError:
     from collector import SectorFlowCollector, WATCH_SECTORS  # type: ignore[no-redef]
     from data_fetcher import (  # type: ignore[no-redef]
-        fetch_dashboard_data, fetch_stock_fund_flow_rank, fetch_northbound_flow, _MOCK_STOCKS,
+        fetch_dashboard_data, fetch_stock_fund_flow_rank, fetch_northbound_flow, _MOCK_STOCKS, _now_time,
     )
     from stock_selector import select_stocks  # type: ignore[no-redef]
 
@@ -184,9 +184,8 @@ def api_stocks_flow():
         if stocks is None:
             return jsonify({"error": "数据获取失败", "stocks": []}), 500
 
-    now_str = datetime.now().strftime("%H:%M")
     return jsonify({
-        "time": now_str,
+        "time": _now_time(),
         "total": len(stocks) if stocks else 0,
         "stocks": stocks or [],
     })

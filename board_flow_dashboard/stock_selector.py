@@ -1138,7 +1138,7 @@ def _save_last_result(result: dict):
             "market_breadth": result.get("market_breadth", 0.5),
             "filter_stats": result.get("filter_stats", {}),
             "mode": "cached",
-            "cached_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "cached_at": datetime.now().strftime("%Y-%m-%d") + " " + _now_time(),
         }
         with open(_LAST_REAL_RESULT_FILE, "w", encoding="utf-8") as f:
             json.dump(saved, f, ensure_ascii=False, default=str)
