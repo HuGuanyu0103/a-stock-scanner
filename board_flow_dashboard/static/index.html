@@ -195,6 +195,37 @@ body {
 .signal-tag.s2 { background: #fff7e6; color: #d46b08; }
 .signal-tag.s3 { background: #f0f5ff; color: #096dd9; }
 .signal-tag.s4 { background: #f6ffed; color: #389e0d; }
+.signal-tag.sig-positive { background: #fff1f0; color: #cf1322; }
+.signal-tag.sig-negative { background: #f5f5f5; color: #999; }
+.signal-tag.sig-neutral  { background: #f0f5ff; color: #096dd9; }
+
+/* ── 池切换按钮 ───────────────────────────── */
+.pool-toggle-bar {
+  display: flex; gap: 0; margin-bottom: 14px;
+  border-radius: 8px; overflow: hidden;
+  border: 1px solid #e8e8e8;
+}
+.pool-toggle-btn {
+  flex: 1; padding: 8px 0; border: none; background: #fafafa;
+  font-size: 14px; font-weight: 500; color: #888; cursor: pointer;
+  transition: all 0.2s;
+}
+.pool-toggle-btn:not(:last-child) { border-right: 1px solid #eee; }
+.pool-toggle-btn:hover { color: #333; background: #f5f5f5; }
+.pool-toggle-btn.active { color: #fff; font-weight: 600; }
+.pool-toggle-btn.active.pool-a-btn { background: #f5222d; }
+.pool-toggle-btn.active.pool-b-btn { background: #389e0d; }
+.pool-toggle-btn .pool-count { font-size: 12px; opacity: 0.75; margin-left: 4px; }
+
+/* ── 池分段标题 ──────────────────────────── */
+.picks-pool-section { margin-bottom: 8px; }
+.picks-pool-title {
+  display: inline-block; padding: 4px 14px; border-radius: 4px;
+  font-size: 14px; font-weight: 600; margin-bottom: 10px;
+}
+.picks-pool-title.pool-a { background: #fff1f0; color: #cf1322; }
+.picks-pool-title.pool-b { background: #f6ffed; color: #389e0d; }
+
 .picks-hot-sectors {
   display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;
   padding-bottom: 10px; border-bottom: 1px solid #f0f0f0;
@@ -203,6 +234,7 @@ body {
   padding: 2px 10px; border-radius: 4px; font-size: 12px;
   background: #fff1f0; color: #cf1322; border: 1px solid #ffccc7;
 }
+.picks-hot-tag.pullback { background: #f6ffed; color: #389e0d; border-color: #b7eb8f; }
 
 /* ── 持仓决策（预留）───────────────────────── */
 .placeholder-panel {
@@ -264,10 +296,6 @@ body {
 
     <!-- 板块资金 -->
     <div class="flow-sub-content" id="flowSubSector">
-      <div class="sub-tab-bar" style="margin-top:-4px">
-        <button class="sub-tab-btn active" onclick="switchSectorType('concept')" style="font-size:12px;padding:4px 14px">概念板块</button>
-        <button class="sub-tab-btn" onclick="switchSectorType('industry')" style="font-size:12px;padding:4px 14px">行业板块</button>
-      </div>
       <div class="sector-grid">
         <div class="sector-left">
           <div class="chart-wrapper">
@@ -341,6 +369,15 @@ body {
         <h2>盘中选股候选池</h2>
         <span class="picks-meta" id="picksMeta">加载中...</span>
       </div>
+      <!-- 池切换按钮 -->
+      <div class="pool-toggle-bar">
+        <button class="pool-toggle-btn pool-a-btn active" id="poolABtn" onclick="switchPool('A')">
+          追涨池 A <span class="pool-count" id="poolACount">(0)</span>
+        </button>
+        <button class="pool-toggle-btn pool-b-btn" id="poolBBtn" onclick="switchPool('B')">
+          低吸池 B <span class="pool-count" id="poolBCount">(0)</span>
+        </button>
+      </div>
       <div class="picks-hot-sectors" id="picksHotSectors"></div>
       <div id="picksTableContainer"><div class="loading">加载选股数据中...</div></div>
     </div>
@@ -365,7 +402,7 @@ body {
 // ── 全局状态 ──────────────────────────────────────────────
 let mainTab = 0;
 let flowSubTab = 'sector';     // sector | northbound | stocks
-let sectorType = 'concept';    // concept | industry
+let sectorType = 'watch';      // watch | concept | industry
 let sectorData = null;
 let sectorChart = null;
 let isReplaying = false;
@@ -375,6 +412,8 @@ let nbChart = null;
 let flowSortBy = 'net_main';
 let picksInterval = null;
 let flowInterval = null;
+let sectorInterval = null;
+let activePool = 'A';  // 'A' | 'B'
 
 // ── 主标签切换 ────────────────────────────────────────────
 function switchMainTab(idx) {
@@ -384,6 +423,13 @@ function switchMainTab(idx) {
 
   if (idx === 0) {
     switchFlowSubTab(flowSubTab);  // 恢复资金流向子标签
+    // 板块资金每 15 秒刷新（与选股池同步）
+    if (sectorInterval) clearInterval(sectorInterval);
+    sectorInterval = setInterval(() => {
+      if (flowSubTab === 'sector') loadSectorData();
+    }, 15000);
+  } else {
+    if (sectorInterval) { clearInterval(sectorInterval); sectorInterval = null; }
   }
   if (idx === 1) {
     loadStockPicks();
@@ -417,9 +463,20 @@ function switchFlowSubTab(sub) {
     else b.classList.remove('active');
   });
 
-  if (sub === 'sector' && !sectorData) loadSectorData();
-  if (sub === 'northbound') loadNorthboundData();
-  if (sub === 'stocks') loadStockFlow(flowSortBy);
+  if (sub === 'sector') {
+    if (!sectorData) loadSectorData();
+    // 板块资金每 15 秒刷新
+    if (sectorInterval) clearInterval(sectorInterval);
+    sectorInterval = setInterval(loadSectorData, 15000);
+  }
+  if (sub === 'northbound') {
+    if (sectorInterval) { clearInterval(sectorInterval); sectorInterval = null; }
+    loadNorthboundData();
+  }
+  if (sub === 'stocks') {
+    if (sectorInterval) { clearInterval(sectorInterval); sectorInterval = null; }
+    loadStockFlow(flowSortBy);
+  }
 }
 
 // ── 板块类型切换 ──────────────────────────────────────────
@@ -439,8 +496,14 @@ async function loadSectorData() {
   try {
     const res = await fetch('/api/data?type=' + sectorType);
     sectorData = await res.json();
+    const now = new Date();
+    const timeStr = now.getHours().toString().padStart(2,'0') + ':'
+                  + now.getMinutes().toString().padStart(2,'0') + ':'
+                  + now.getSeconds().toString().padStart(2,'0');
+    const typeLabel = sectorType === 'watch' ? '自选' : (sectorType === 'concept' ? '概念' : '行业');
     document.getElementById('statusText').textContent =
-      sectorData.date + ' · ' + (sectorType === 'concept' ? '概念' : '行业') + ' · ' + sectorData.rank.length + ' 个板块';
+      sectorData.date + ' · ' + typeLabel + '板块 · ' + sectorData.rank.length + ' 个 · 更新 ' + timeStr;
+    document.getElementById('rankTitle').textContent = typeLabel + '板块资金流向';
     initSectorChart();
     initReplay();
   } catch (e) {
@@ -690,6 +753,16 @@ function switchFlowSort(sortBy, btn) {
   loadStockFlow(sortBy);
 }
 
+function switchPool(pool) {
+  activePool = pool;
+  document.getElementById('poolABtn').classList.toggle('active', pool === 'A');
+  document.getElementById('poolBBtn').classList.toggle('active', pool === 'B');
+  // 重新渲染缓存数据
+  if (window._lastPicksData) {
+    renderPicks(window._lastPicksData);
+  }
+}
+
 function renderStockFlow(data) {
   document.getElementById('flowMeta').textContent = data.time + ' | 共 ' + data.total + ' 只股票';
   let html = '<table class="flow-table"><thead><tr>'
@@ -721,6 +794,7 @@ async function loadStockPicks() {
   try {
     const res = await fetch('/api/stocks');
     const data = await res.json();
+    window._lastPicksData = data;
     renderPicks(data);
   } catch (e) {
     console.error('选股加载失败:', e);
@@ -729,29 +803,34 @@ async function loadStockPicks() {
 }
 
 function renderPicks(data) {
-  const { candidates, hot_sectors, pullback_sectors, time, date, mode, risk_level, market_breadth, filter_stats } = data;
+  const { candidates, pool_a, pool_b, hot_sectors, pullback_sectors, time, date, mode, risk_level, market_breadth, filter_stats } = data;
+
+  // ── 向后兼容：如果没有 pool_a/pool_b，从 candidates 中分离 ──
+  const aStocks = pool_a || (candidates || []).filter(c => c.pool !== 'B');
+  const bStocks = pool_b || (candidates || []).filter(c => c.pool === 'B');
+
+  // ── 风险标签 ──────────────────────────────────────────
   const riskLabel = { low: '低风险', medium: '中风险', high: '高风险' };
   const riskInfo = riskLabel[risk_level] || risk_level;
   const breadthPct = (market_breadth * 100).toFixed(0) + '%';
-  const poolA = filter_stats?.pool_a || 18;
-  const poolB = filter_stats?.pool_b || 7;
-
-  // 刷新时间
   const cachedAt = data.cached_at || '';
   const modeLabel = mode === 'live' ? '实时' : (mode === 'cached' ? '缓存' : '本地');
   const refreshInfo = date + ' ' + time + (cachedAt && mode === 'cached' ? ' (数据时间: ' + cachedAt + ')' : '');
-  document.getElementById('picksMeta').innerHTML =
-    refreshInfo + ' | ' + candidates.length + ' 只 (追涨' + poolA + ' + 低吸' + poolB + ') | '
-    + riskInfo + ' 广度' + breadthPct + ' | ' + modeLabel;
-  document.getElementById('picksRefreshTime').innerHTML =
-    mode === 'cached' ? '非交易时段，显示最近交易时段数据 · 更新于 ' + cachedAt : '';
 
-  // 板块标签
-  const aSectors = (hot_sectors || []).filter(s => !(pullback_sectors || []).includes(s));
-  const bSectors = pullback_sectors || [];
+  document.getElementById('picksMeta').innerHTML =
+    refreshInfo + ' | A池' + aStocks.length + ' + B池' + bStocks.length + ' | '
+    + riskInfo + ' 广度' + breadthPct + ' | ' + modeLabel;
+
+  // ── 更新池切换按钮计数 ──────────────────────────────────
+  document.getElementById('poolACount').textContent = '(' + aStocks.length + ')';
+  document.getElementById('poolBCount').textContent = '(' + bStocks.length + ')';
+
+  // ── 板块标签 ────────────────────────────────────────────
+  const aSectorNames = (hot_sectors || []).filter(s => !(pullback_sectors || []).includes(s));
+  const bSectorNames = pullback_sectors || [];
   let hsHtml = '';
-  hsHtml += aSectors.map(s => '<span class="picks-hot-tag">' + s + '</span>').join('');
-  hsHtml += bSectors.map(s => '<span class="picks-hot-tag pullback">' + s + '</span>').join('');
+  hsHtml += aSectorNames.map(s => '<span class="picks-hot-tag">' + s + '</span>').join('');
+  hsHtml += bSectorNames.map(s => '<span class="picks-hot-tag pullback">' + s + '</span>').join('');
   if (filter_stats) {
     hsHtml += '<span style="font-size:11px;color:#999;margin-left:8px">'
       + '流动性剔除 ' + (filter_stats.liquidity_removed || 0)
@@ -761,11 +840,7 @@ function renderPicks(data) {
   }
   document.getElementById('picksHotSectors').innerHTML = hsHtml;
 
-  // 分离 A/B 池
-  const aStocks = (candidates || []).filter(c => c.pool !== 'B');
-  const bStocks = (candidates || []).filter(c => c.pool === 'B');
-
-  // 信号分类
+  // ── 信号分类 ────────────────────────────────────────────
   function sigClass(signal) {
     const pos = ['放量上攻','放量突破','资金驱动','量价齐升','主线分歧低吸'];
     const neg = ['弱势回避','高位风险'];
@@ -774,6 +849,7 @@ function renderPicks(data) {
     return 'sig-neutral';
   }
 
+  // ── 渲染单个池的表格 ────────────────────────────────────
   function renderPoolTable(stocks, poolLabel, poolCls) {
     if (stocks.length === 0) {
       return '<div class="picks-pool-section">'
@@ -821,9 +897,12 @@ function renderPicks(data) {
     return t;
   }
 
-  let html = renderPoolTable(aStocks, '追涨池', 'pool-a');
-  html += renderPoolTable(bStocks, '低吸池', 'pool-b');
-  document.getElementById('picksTableContainer').innerHTML = html;
+  // ── 根据 activePool 只渲染当前池 ─────────────────────────
+  if (activePool === 'A') {
+    document.getElementById('picksTableContainer').innerHTML = renderPoolTable(aStocks, '追涨池', 'pool-a');
+  } else {
+    document.getElementById('picksTableContainer').innerHTML = renderPoolTable(bStocks, '低吸池', 'pool-b');
+  }
 }
 // ── 初始化 ────────────────────────────────────────────────
 async function init() {

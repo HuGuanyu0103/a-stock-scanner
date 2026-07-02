@@ -2,7 +2,7 @@
 """
 盘中选股引擎 v3
 
-双轨并行：A 池（当日热力追涨）+ B 池（周期回调低吸），7:3 合并输出 Top 25。
+双轨并行：A 池（当日热力追涨）+ B 池（周期回调低吸），各自独立输出 25 只。
 适用周期：超短线（2-4 天持股）
 
 v3 改进：
@@ -15,7 +15,7 @@ v3 改进：
 数据流程：
   A 池：热板块排名（概念+行业）→ 成分股行情+资金流 → 7因子评分 → 候选池
   B 池：sector_reviewer 回调板块 → 成分股行情+资金流 → 修正评分 → 候选池
-  合并：去重 + 7:3 比例 → Top 25
+  合并：各自输出 25 只，前端独立展示
 """
 
 import json
@@ -32,37 +32,36 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 try:
     from .daily_scorer import load_daily_scores
-    from .sector_reviewer import SectorReviewer
+    from .sector_reviewer import SectorReviewer, PULLBACK_MAX_SECTORS
 except ImportError:
     from daily_scorer import load_daily_scores  # type: ignore[no-redef]
-    from sector_reviewer import SectorReviewer  # type: ignore[no-redef]
+    from sector_reviewer import SectorReviewer, PULLBACK_MAX_SECTORS  # type: ignore[no-redef]
 
 logger = logging.getLogger(__name__)
 
 # ── 策略参数 ────────────────────────────────────────────────
 
 HOT_SECTOR_COUNT = 5           # 每种板块类型取前 N 个
-STOCKS_PER_SECTOR = 10         # 每个板块取前 N 只成分股
-CANDIDATE_POOL_SIZE = 25
-MAX_PER_SECTOR = 5             # 同一板块最多入选数
-BEAR_MARKET_POOL_SIZE = 10     # 普跌日候选池缩减至
+STOCKS_PER_SECTOR = 15         # 每个板块取前 N 只成分股
+CANDIDATE_POOL_SIZE = 50       # 候选池总容量（= A + B）
+MAX_PER_SECTOR = 6             # 同一板块最多入选数
+BEAR_MARKET_POOL_SIZE = 10     # 普跌日候选池缩减至（已废弃，保留兼容）
 BEAR_MARKET_THRESHOLD = 0.16   # 上涨板块占比低于此值视为普跌
 
 # ── B 池（回调低吸）参数 ────────────────────────────────────
 
-HOT_PULLBACK_RATIO_A = 18      # A 池名额
-HOT_PULLBACK_RATIO_B = 7       # B 池名额
-CANDIDATE_POOL_SIZE = 25       # 候选池总容量（= A + B）
+HOT_PULLBACK_RATIO_A = 25      # A 池名额
+HOT_PULLBACK_RATIO_B = 25      # B 池名额
 
 # B 池板块集中度
-MAX_PER_SECTOR_B = 3           # 回调板块不确定性高，每个板块最多 3 只
+MAX_PER_SECTOR_B = 6           # 回调板块不确定性高，每个板块最多 6 只
 
 # B 池额外加成（系数，非绝对分）
 PULLBACK_BONUS_MULTIPLIER = 1.10  # B 池得分 ×1.10
 
-# B 池大盘环境调节
-BEAR_PULLBACK_B = 12           # 普跌时 B 池名额
-BEAR_PULLBACK_A = 8            # 普跌时 A 池名额
+# B 池大盘环境调节（已固定为 25，保留常量兼容）
+BEAR_PULLBACK_A = 25           # 普跌时 A 池名额
+BEAR_PULLBACK_B = 25           # 普跌时 B 池名额
 
 # 流动性硬过滤
 MIN_MARKET_CAP = 50            # 最小总市值（亿元）
@@ -129,6 +128,7 @@ _MOCK_STOCKS_BY_SECTOR = {
     "半导体": [
         ("688981", "中芯国际"), ("600703", "三安光电"),
         ("688012", "中微公司"), ("300223", "北京君正"), ("688072", "拓荆科技"),
+        ("002371", "北方华创"), ("603986", "兆易创新"), ("002049", "紫光国微"),
     ],
     "低空经济": [
         ("002085", "万丰奥威"), ("300719", "安达维尔"), ("688070", "纵横股份"),
@@ -146,6 +146,22 @@ _MOCK_STOCKS_BY_SECTOR = {
         ("600760", "中航沈飞"), ("002179", "中航光电"), ("600893", "航发动力"),
         ("600862", "中航高科"), ("000768", "中航西飞"),
     ],
+    "新能源车": [
+        ("002594", "比亚迪"), ("601238", "广汽集团"), ("600104", "上汽集团"),
+        ("000625", "长安汽车"), ("601633", "长城汽车"),
+    ],
+    "光伏": [
+        ("601012", "隆基绿能"), ("002459", "晶澳科技"), ("600438", "通威股份"),
+        ("002129", "TCL中环"), ("601615", "明阳智能"),
+    ],
+    "消费电子": [
+        ("002475", "立讯精密"), ("601138", "工业富联"), ("002241", "歌尔股份"),
+        ("600183", "生益科技"), ("002456", "欧菲光"),
+    ],
+    "创新药": [
+        ("600276", "恒瑞医药"), ("000538", "云南白药"), ("002007", "华兰生物"),
+        ("600196", "复星医药"), ("000963", "华东医药"),
+    ],
 }
 
 _MOCK_INDUSTRY_SECTORS = {
@@ -154,6 +170,8 @@ _MOCK_INDUSTRY_SECTORS = {
     "军工": [("600760", "中航沈飞"), ("600893", "航发动力"), ("002179", "中航光电")],
     "电力设备": [("300750", "宁德时代"), ("002074", "国轩高科"), ("601012", "隆基绿能")],
     "医药生物": [("600276", "恒瑞医药"), ("300760", "迈瑞医疗"), ("000538", "云南白药")],
+    "汽车": [("002594", "比亚迪"), ("000625", "长安汽车"), ("601238", "广汽集团")],
+    "银行": [("601398", "工商银行"), ("600036", "招商银行"), ("000001", "平安银行")],
 }
 
 
@@ -696,19 +714,27 @@ def _get_market_breadth() -> float:
 
 def _apply_sector_concentration(candidates: list, max_per: int = MAX_PER_SECTOR,
                                  pool_size: int = CANDIDATE_POOL_SIZE) -> list:
-    """确保候选池中同一板块不超过 max_per 只。"""
+    """确保候选池中同一板块不超过 max_per 只，候选不足时放宽限制补足 pool_size。"""
     sector_counts: dict[str, int] = {}
     result = []
+    skipped = []
     for s in candidates:
         sector = s.get("sector", "未知")
         if sector_counts.get(sector, 0) >= max_per:
+            skipped.append(s)
             continue
         sector_counts[sector] = sector_counts.get(sector, 0) + 1
         result.append(s)
         if len(result) >= pool_size:
             break
-    logger.info("板块集中度管控: %d 只 → %d 只 (max %d/板块)",
-                 len(candidates), len(result), max_per)
+    # 候选不足时，从被跳过的股票中补足（放宽板块集中度）
+    if len(result) < pool_size and skipped:
+        for s in skipped:
+            result.append(s)
+            if len(result) >= pool_size:
+                break
+    logger.info("板块集中度管控: %d 只 → %d 只 (max %d/板块, 目标%d)",
+                 len(candidates), len(result), max_per, pool_size)
     return result
 
 
@@ -890,21 +916,14 @@ def _select_stocks_real(collector=None):
         b_unique = []
         b_pullback_sectors = []
 
-    # Step 5: 大盘广度 → 动态候选池大小 + 双池比例
+    # Step 5: 大盘广度 → 风险等级（仅用于展示，池大小固定 25）
     breadth = _get_market_breadth()
     if breadth < BEAR_MARKET_THRESHOLD:
-        pool_a = BEAR_PULLBACK_A
-        pool_b = BEAR_PULLBACK_B
         risk_level = "high"
-        logger.info("普跌环境 (广度 %.0f%%) A池%d B池%d",
-                     breadth * 100, pool_a, pool_b)
+        logger.info("普跌环境 (广度 %.0f%%)", breadth * 100)
     elif breadth < 0.30:
-        pool_a = HOT_PULLBACK_RATIO_A
-        pool_b = HOT_PULLBACK_RATIO_B
         risk_level = "medium"
     else:
-        pool_a = HOT_PULLBACK_RATIO_A
-        pool_b = HOT_PULLBACK_RATIO_B
         risk_level = "low"
 
     # Step 6: 评分排序（A 池 + B 池各自独立评分）
@@ -916,24 +935,24 @@ def _select_stocks_real(collector=None):
     b_ranked = _merge_daily_scores(b_ranked, _DAILY_SCORES)
     b_ranked, _b_fraud_removed = _apply_fraud_filter(b_ranked)
 
-    # Step 7: 板块集中度管控（A/B 池独立控制）
+    # Step 7: 板块集中度管控（A/B 池独立控制，各目标 25 只）
     a_candidates = _apply_sector_concentration(
-        a_ranked, max_per=MAX_PER_SECTOR, pool_size=pool_a
+        a_ranked, max_per=MAX_PER_SECTOR, pool_size=25
     )
     b_candidates = _apply_sector_concentration(
-        b_ranked, max_per=MAX_PER_SECTOR_B, pool_size=pool_b
+        b_ranked, max_per=MAX_PER_SECTOR_B, pool_size=25
     )
 
-    # Step 8: 双池合并去重（A 池优先，已在 A 池的不在 B 池重复出现）
-    a_codes = {c["code"] for c in a_candidates}
-    b_filtered = [c for c in b_candidates if c["code"] not in a_codes]
+    # Step 8: 各自截断至 25 只，合并候选池（向后兼容）
+    a_candidates = a_candidates[:25]
+    b_candidates = b_candidates[:25]
 
-    candidates = a_candidates + b_filtered
+    # 简单合并（不去重），供向后兼容的 candidates 字段使用
+    candidates = a_candidates + b_candidates
     candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
-    candidates = candidates[:CANDIDATE_POOL_SIZE]
 
-    logger.info("候选池合并: A池%d + B池%d → %d 只",
-                 len(a_candidates), len(b_filtered), len(candidates))
+    logger.info("候选池: A池%d + B池%d → %d 只",
+                 len(a_candidates), len(b_candidates), len(candidates))
 
     # Step 9: 附加信号操作指引 + risk_level
     for c in candidates:
@@ -950,6 +969,11 @@ def _select_stocks_real(collector=None):
         daily_scores_ok=bool(_DAILY_SCORES),
         api_failures=0,
     )
+    # 额外：池大小异常告警
+    if len(a_candidates) < 10:
+        _send_alert("⚠️ A池候选不足", f"A池仅 {len(a_candidates)} 只 (目标 25)")
+    if len(b_candidates) < 10:
+        _send_alert("⚠️ B池候选不足", f"B池仅 {len(b_candidates)} 只 (目标 25)")
 
     # 合并热板块名（A池 + B池）
     all_sector_names = ([s["name"] for s in hot_sectors] +
@@ -959,6 +983,8 @@ def _select_stocks_real(collector=None):
         "date": datetime.now().strftime("%Y-%m-%d"),
         "total": len(candidates),
         "candidates": candidates,
+        "pool_a": a_candidates,
+        "pool_b": b_candidates,
         "hot_sectors": all_sector_names,
         "pullback_sectors": [s["name"] for s in b_pullback_sectors],
         "risk_level": risk_level,
@@ -967,9 +993,9 @@ def _select_stocks_real(collector=None):
             "liquidity_removed": len(_liq_removed) + len(_b_liq_removed),
             "limit_up_removed": len(_limit_up_removed) + len(_b_limit_up_removed),
             "fraud_removed": len(_a_fraud_removed) + len(_b_fraud_removed),
-            "pool_size": CANDIDATE_POOL_SIZE,
-            "pool_a": pool_a,
-            "pool_b": pool_b,
+            "pool_size": 50,
+            "pool_a": len(a_candidates),
+            "pool_b": len(b_candidates),
         },
         "mode": "live"}
 
@@ -977,7 +1003,8 @@ def _select_stocks_real(collector=None):
 def _select_stocks_mock():
     """模拟选股（测试用）— A 池 + B 池双轨。"""
     # ── A 池 mock ──────────────────────────────────────────
-    sectors = list(_MOCK_STOCKS_BY_SECTOR.keys())[:HOT_SECTOR_COUNT]
+    # 使用全部板块（而非仅前 5 个），确保经过 300/688 过滤后仍有足够候选填满 25 只
+    sectors = list(_MOCK_STOCKS_BY_SECTOR.keys())[:10]
     a_result = []
     for sector in sectors:
         stocks_list = _MOCK_STOCKS_BY_SECTOR.get(sector, [])
@@ -1005,10 +1032,10 @@ def _select_stocks_mock():
     a_ranked = _score_and_rank(a_result, pool_type="A")
     a_ranked = [s for s in a_ranked if not s["code"].startswith(("300", "301", "688", "8"))]
     a_ranked = _merge_daily_scores(a_ranked, _DAILY_SCORES)
-    a_candidates = _apply_sector_concentration(a_ranked, max_per=MAX_PER_SECTOR, pool_size=HOT_PULLBACK_RATIO_A)
+    a_candidates = _apply_sector_concentration(a_ranked, max_per=MAX_PER_SECTOR, pool_size=25)
 
     # ── B 池 mock（模拟回调板块个股）─────────────────────────
-    pullback_sector_names = ["军工", "半导体"]
+    pullback_sector_names = ["军工", "半导体", "新能源车", "光伏", "消费电子", "创新药"]
     b_result = []
     for sector in pullback_sector_names:
         stocks_list = _MOCK_STOCKS_BY_SECTOR.get(sector, _MOCK_INDUSTRY_SECTORS.get(sector, []))
@@ -1036,14 +1063,13 @@ def _select_stocks_mock():
     b_ranked = _score_and_rank(b_result, pool_type="B")
     b_ranked = [s for s in b_ranked if not s["code"].startswith(("300", "301", "688", "8"))]
     b_ranked = _merge_daily_scores(b_ranked, _DAILY_SCORES)
-    b_candidates = _apply_sector_concentration(b_ranked, max_per=MAX_PER_SECTOR_B, pool_size=HOT_PULLBACK_RATIO_B)
+    b_candidates = _apply_sector_concentration(b_ranked, max_per=MAX_PER_SECTOR_B, pool_size=25)
 
-    # ── 合并去重 ────────────────────────────────────────────
-    a_codes = {c["code"] for c in a_candidates}
-    b_filtered = [c for c in b_candidates if c["code"] not in a_codes]
-    ranked = a_candidates + b_filtered
+    # ── 各自截断合并 ────────────────────────────────────────
+    a_candidates = a_candidates[:25]
+    b_candidates = b_candidates[:25]
+    ranked = a_candidates + b_candidates
     ranked.sort(key=lambda x: x.get("score", 0), reverse=True)
-    ranked = ranked[:CANDIDATE_POOL_SIZE]
 
     if not _DAILY_SCORES:
         signal_bank = ["放量突破", "MA5金叉MA10", "均线多头排列", "MACD金叉",
@@ -1064,18 +1090,20 @@ def _select_stocks_mock():
         c["stop_loss"] = guide["stop_loss"]
 
     hot_names = sectors + list(_MOCK_INDUSTRY_SECTORS.keys())[:2]
-    candidates = ranked[:CANDIDATE_POOL_SIZE]
+    candidates = ranked
     return {"time": datetime.now().strftime("%H:%M"),
         "date": datetime.now().strftime("%Y-%m-%d"),
         "total": len(candidates),
         "candidates": candidates,
+        "pool_a": a_candidates,
+        "pool_b": b_candidates,
         "hot_sectors": hot_names,
         "pullback_sectors": pullback_sector_names,
         "risk_level": "low",
         "market_breadth": 0.55,
         "filter_stats": {"liquidity_removed": 0, "limit_up_removed": 0,
-                          "fraud_removed": 0, "pool_size": CANDIDATE_POOL_SIZE,
-                          "pool_a": HOT_PULLBACK_RATIO_A, "pool_b": HOT_PULLBACK_RATIO_B},
+                          "fraud_removed": 0, "pool_size": 50,
+                          "pool_a": len(a_candidates), "pool_b": len(b_candidates)},
         "mode": "live" if _DAILY_SCORES else "standalone"}
 
 
@@ -1100,6 +1128,8 @@ def _save_last_result(result: dict):
             "date": result.get("date", ""),
             "total": result.get("total", 0),
             "candidates": result.get("candidates", []),
+            "pool_a": result.get("pool_a", []),
+            "pool_b": result.get("pool_b", []),
             "hot_sectors": result.get("hot_sectors", []),
             "pullback_sectors": result.get("pullback_sectors", []),
             "risk_level": result.get("risk_level", "low"),
@@ -1175,6 +1205,7 @@ def select_stocks(use_mock: bool = False, collector=None) -> dict:
                     "time": datetime.now().strftime("%H:%M"),
                     "date": datetime.now().strftime("%Y-%m-%d"),
                     "total": 0, "candidates": [],
+                    "pool_a": [], "pool_b": [],
                     "hot_sectors": [], "pullback_sectors": [],
                     "risk_level": "low", "market_breadth": 0.5,
                     "filter_stats": {}, "mode": "empty",
@@ -1192,7 +1223,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     data = select_stocks(use_mock=True)
     print(json.dumps(data, ensure_ascii=False, indent=2)[:800])
-    print(f"\n共 {data['total']} 只候选 · 模式={data['mode']}")
+    print(f"\n共 {data['total']} 只候选 · A池{len(data.get('pool_a', []))} B池{len(data.get('pool_b', []))} · 模式={data['mode']}")
     for c in data['candidates'][:10]:
         print(f"  {c['name']:6s} {c['sector']:6s} "
               f"涨{c['pct_chg']:>+5.1f}% "

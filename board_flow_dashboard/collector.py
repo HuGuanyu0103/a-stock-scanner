@@ -53,6 +53,13 @@ logger = logging.getLogger(__name__)
 # ── 看板展示参数 ────────────────────────────────────────────
 
 DASHBOARD_TOP_N = 25          # 看板只展示前 N 个板块
+WATCH_SECTORS = {             # 自选板块白名单（混合概念+行业）
+    "光通信模块", "通信设备", "人形机器人", "数据中心", "玻璃基板",
+    "商业航天", "AI芯片", "半导体", "军工", "消费电子",
+    "低空经济", "可控核聚变", "光伏设备", "固态电池", "证券",
+    "医药商业", "白酒", "稀土永磁", "锂电池", "银行",
+    "创新药", "黄金概念", "有色金属", "电网概念", "存储芯片",
+}
 COLOR_PALETTE = [
     "#E6194B", "#3CB44B", "#FFE119", "#4363D8", "#F58231",
     "#911EB4", "#42D4F4", "#F032E6", "#BFEF45", "#FABED4",
@@ -106,6 +113,15 @@ def _hash_color(name: str) -> str:
     return COLOR_PALETTE[idx]
 
 
+def _unwrap_rank(data) -> list:
+    """兼容 DB 存储格式：{time, rank} 整体序列化，提取 rank 列表。"""
+    if isinstance(data, dict) and "rank" in data:
+        return data["rank"]
+    if isinstance(data, list):
+        return data
+    return []
+
+
 class Storage:
     """SQLite 持久化层。"""
 
@@ -149,7 +165,7 @@ class Storage:
                     "SELECT time, data FROM concept_snapshots WHERE date = ? ORDER BY time",
                     (date_str,),
                 ).fetchall()
-                return [{"time": r[0], "rank": json.loads(r[1])} for r in rows]
+                return [{"time": r[0], "rank": _unwrap_rank(json.loads(r[1]))} for r in rows]
             finally:
                 conn.close()
 
@@ -187,7 +203,7 @@ class Storage:
                     "SELECT time, data FROM industry_snapshots WHERE date = ? ORDER BY time",
                     (date_str,),
                 ).fetchall()
-                return [{"time": r[0], "rank": json.loads(r[1])} for r in rows]
+                return [{"time": r[0], "rank": _unwrap_rank(json.loads(r[1]))} for r in rows]
             finally:
                 conn.close()
 
@@ -602,6 +618,9 @@ class SectorFlowCollector:
         }
 
     def get_dashboard_data(self, sector_type: str = "concept") -> dict:
+        if sector_type == "watch":
+            return self._build_watch_dashboard()
+
         with self._lock:
             if sector_type == "industry":
                 snapshots = list(self._industry_snapshots)
@@ -613,6 +632,72 @@ class SectorFlowCollector:
             return fetch_dashboard_data(use_real=True)
 
         return self._build_dashboard_from_snapshots(snapshots)
+
+    def _build_watch_dashboard(self) -> dict:
+        """合并概念+行业快照，仅展示白名单板块。"""
+        with self._lock:
+            concept = list(self._concept_snapshots)
+            industry = list(self._industry_snapshots)
+
+        # 按时间合并概念+行业 rank
+        merged_by_time: dict[str, list] = {}
+        for cs in concept:
+            t = cs["time"]
+            if t not in merged_by_time:
+                merged_by_time[t] = []
+            merged_by_time[t].extend(cs["rank"])
+        for ind in industry:
+            t = ind["time"]
+            if t not in merged_by_time:
+                merged_by_time[t] = []
+            merged_by_time[t].extend(ind["rank"])
+
+        minutes = sorted(merged_by_time.keys())
+
+        if len(minutes) < 2:
+            logger.info("合并快照不足 (%d)，尝试实时获取", len(minutes))
+            return fetch_dashboard_data(use_real=True)
+
+        # 最新时刻过滤白名单
+        latest_rank = merged_by_time.get(minutes[-1], [])
+        watch_rank = [s for s in latest_rank if s["name"] in WATCH_SECTORS]
+
+        # 构建时序
+        series = {}
+        for item in watch_rank:
+            sector_name = item["name"]
+            values = []
+            for t in minutes:
+                rank = merged_by_time.get(t, [])
+                found = next(
+                    (r["net_main"] for r in rank if r["name"] == sector_name),
+                    None,
+                )
+                values.append(found)
+            series[sector_name] = {
+                "name": sector_name,
+                "color": _hash_color(sector_name),
+                "times": minutes,
+                "values": values,
+            }
+
+        rank_data = [
+            {"name": item["name"], "value": item["net_main"],
+             "color": _hash_color(item["name"])}
+            for item in watch_rank
+        ]
+        rank_data.sort(key=lambda x: x["value"], reverse=True)
+
+        return {
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "time_label": minutes[-1] if minutes else "15:00",
+            "time_index": len(minutes) - 1,
+            "total_times": len(minutes),
+            "minutes": minutes,
+            "rank": rank_data,
+            "series": series,
+            "sector_type": "watch",
+        }
 
     def get_snapshot(self, time_idx: int, sector_type: str = "concept") -> dict:
         data = self.get_dashboard_data(sector_type)

@@ -25,13 +25,13 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 
 try:
-    from .collector import SectorFlowCollector
+    from .collector import SectorFlowCollector, WATCH_SECTORS
     from .data_fetcher import (
         fetch_dashboard_data, fetch_stock_fund_flow_rank, fetch_northbound_flow, _MOCK_STOCKS,
     )
     from .stock_selector import select_stocks
 except ImportError:
-    from collector import SectorFlowCollector  # type: ignore[no-redef]
+    from collector import SectorFlowCollector, WATCH_SECTORS  # type: ignore[no-redef]
     from data_fetcher import (  # type: ignore[no-redef]
         fetch_dashboard_data, fetch_stock_fund_flow_rank, fetch_northbound_flow, _MOCK_STOCKS,
     )
@@ -74,15 +74,21 @@ signal.signal(signal.SIGINT, _signal_handler)
 @app.route("/api/data")
 def api_data():
     """获取板块看板数据。?type=concept（默认）或 industry"""
-    sector_type = request.args.get("type", "concept")
-    if sector_type not in ("concept", "industry"):
-        sector_type = "concept"
+    sector_type = request.args.get("type", "watch")
+    if sector_type not in ("concept", "industry", "watch"):
+        sector_type = "watch"
 
     if collector is not None:
         data = collector.get_dashboard_data(sector_type=sector_type)
     else:
         data = fetch_dashboard_data(use_real=False)
         data["sector_type"] = sector_type
+        # mock 模式下 watch 类型需要白名单过滤
+        if sector_type == "watch":
+            data["rank"] = [r for r in data.get("rank", []) if r["name"] in WATCH_SECTORS]
+            data["series"] = {
+                k: v for k, v in data.get("series", {}).items() if k in WATCH_SECTORS
+            }
     return jsonify(data)
 
 
@@ -90,9 +96,9 @@ def api_data():
 def api_snapshot():
     """获取指定时间点的快照数据。"""
     time_idx_str = request.args.get("time", None)
-    sector_type = request.args.get("type", "concept")
-    if sector_type not in ("concept", "industry"):
-        sector_type = "concept"
+    sector_type = request.args.get("type", "watch")
+    if sector_type not in ("concept", "industry", "watch"):
+        sector_type = "watch"
 
     if collector is not None:
         if time_idx_str is not None:
