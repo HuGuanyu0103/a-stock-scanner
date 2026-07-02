@@ -33,9 +33,11 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 try:
     from .daily_scorer import load_daily_scores
     from .sector_reviewer import SectorReviewer, PULLBACK_MAX_SECTORS
+    from .data_fetcher import _now_time
 except ImportError:
     from daily_scorer import load_daily_scores  # type: ignore[no-redef]
     from sector_reviewer import SectorReviewer, PULLBACK_MAX_SECTORS  # type: ignore[no-redef]
+    from data_fetcher import _now_time  # type: ignore[no-redef]
 
 logger = logging.getLogger(__name__)
 
@@ -979,7 +981,7 @@ def _select_stocks_real(collector=None):
     all_sector_names = ([s["name"] for s in hot_sectors] +
                         [s["name"] for s in b_pullback_sectors])
 
-    return {"time": datetime.now().strftime("%H:%M"),
+    return {"time": _now_time(),
         "date": datetime.now().strftime("%Y-%m-%d"),
         "total": len(candidates),
         "candidates": candidates,
@@ -1091,7 +1093,7 @@ def _select_stocks_mock():
 
     hot_names = sectors + list(_MOCK_INDUSTRY_SECTORS.keys())[:2]
     candidates = ranked
-    return {"time": datetime.now().strftime("%H:%M"),
+    return {"time": _now_time(),
         "date": datetime.now().strftime("%Y-%m-%d"),
         "total": len(candidates),
         "candidates": candidates,
@@ -1202,7 +1204,7 @@ def select_stocks(use_mock: bool = False, collector=None) -> dict:
             else:
                 # 完全没有数据时返回空（不降级到模拟）
                 result = {
-                    "time": datetime.now().strftime("%H:%M"),
+                    "time": _now_time(),
                     "date": datetime.now().strftime("%Y-%m-%d"),
                     "total": 0, "candidates": [],
                     "pool_a": [], "pool_b": [],
