@@ -496,13 +496,10 @@ async function loadSectorData() {
   try {
     const res = await fetch('/api/data?type=' + sectorType);
     sectorData = await res.json();
-    const now = new Date();
-    const timeStr = now.getHours().toString().padStart(2,'0') + ':'
-                  + now.getMinutes().toString().padStart(2,'0') + ':'
-                  + now.getSeconds().toString().padStart(2,'0');
+    const dataTime = sectorData.time_label || '--:--';
     const typeLabel = sectorType === 'watch' ? '自选' : (sectorType === 'concept' ? '概念' : '行业');
     document.getElementById('statusText').textContent =
-      sectorData.date + ' · ' + typeLabel + '板块 · ' + sectorData.rank.length + ' 个 · 更新 ' + timeStr;
+      sectorData.date + ' · ' + typeLabel + '板块 · ' + sectorData.rank.length + ' 个 · 数据时间 ' + dataTime;
     document.getElementById('rankTitle').textContent = typeLabel + '板块资金流向';
     initSectorChart();
     initReplay();
