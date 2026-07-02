@@ -30,6 +30,10 @@ import requests as req
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# 共享 Session，绕过 macOS 系统代理
+_http = req.Session()
+_http.trust_env = False
+
 try:
     from .daily_scorer import load_daily_scores
     from .sector_reviewer import SectorReviewer, PULLBACK_MAX_SECTORS
@@ -491,7 +495,7 @@ def _fetch_hot_sectors(sector_type: str = "concept", top_n: int = 5) -> list:
             "fltt": "2", "invt": "2", "fid": "f62",
             "fs": fs, "fields": "f12,f14,f3,f62,f184",
             "_": str(int(time.time() * 1000))}
-        resp = req.get(url, params=params, timeout=8,
+        resp = _http.get(url, params=params, timeout=8,
                        verify=False, headers=HEADERS)
         resp.raise_for_status()
         items = resp.json().get("data", {}).get("diff", [])
@@ -521,7 +525,7 @@ def _fetch_sector_stocks(board_code: str, top_n: int = 10) -> list:
             # v2: 增加 f15(最高), f16(最低), f17(今开), f20(总市值)
             "fields": "f12,f14,f2,f3,f8,f15,f16,f17,f20,f37,f62,f66,f184",
             "_": str(int(time.time() * 1000))}
-        resp = req.get(url, params=params, timeout=8,
+        resp = _http.get(url, params=params, timeout=8,
                        verify=False, headers=HEADERS)
         resp.raise_for_status()
         items = resp.json().get("data", {}).get("diff", [])

@@ -18,6 +18,10 @@ import requests as req
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# 共享 Session，绕过 macOS 系统代理（东方财富 API 需直连）
+_http = req.Session()
+_http.trust_env = False
+
 logger = logging.getLogger(__name__)
 
 TRADE_DATE = datetime.now().strftime("%Y-%m-%d")
@@ -200,26 +204,35 @@ def fetch_rank_akshare() -> Optional[pd.DataFrame]:
 
 
 def fetch_all_sectors_snapshot(timeout: float = 10.0) -> Optional[dict]:
+    """获取概念板块全量快照（分页拉取，避免漏掉净流出板块）。"""
     try:
         url = "https://push2.eastmoney.com/api/qt/clist/get"
-        params = {
-            "pn": "1", "pz": "200", "po": "1", "np": "1",
-            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-            "fltt": "2", "invt": "2", "fid": "f62",
-            "fs": "m:90+t:3",
-            "fields": "f12,f14,f3,f62,f184,f66,f72,f78,f84",
-            "_": str(int(time.time() * 1000)),
-        }
-        resp = req.get(url, params=params, timeout=timeout,
-                       verify=False, headers=EASTMONEY_HEADERS)
-        resp.raise_for_status()
-        data = resp.json()
-        items = data.get("data", {}).get("diff", [])
-        if not items:
+        all_items = []
+        for pn in (1, 2):
+            params = {
+                "pn": str(pn), "pz": "200", "po": "1", "np": "1",
+                "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+                "fltt": "2", "invt": "2", "fid": "f62",
+                "fs": "m:90+t:3",
+                "fields": "f12,f14,f3,f62,f184,f66,f72,f78,f84",
+                "_": str(int(time.time() * 1000)),
+            }
+            resp = _http.get(url, params=params, timeout=timeout,
+                           verify=False, headers=EASTMONEY_HEADERS)
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get("data", {}).get("diff", [])
+            if not items:
+                break
+            all_items.extend(items)
+            if len(items) < 200:
+                break  # 最后一页
+
+        if not all_items:
             return None
 
         sectors = []
-        for item in items:
+        for item in all_items:
             name = item.get("f14", "")
             if not name:
                 continue
@@ -241,27 +254,35 @@ def fetch_all_sectors_snapshot(timeout: float = 10.0) -> Optional[dict]:
 
 
 def fetch_industry_sectors_snapshot(timeout: float = 10.0) -> Optional[dict]:
-    """获取行业板块资金流向快照（fs=m:90+t:2）。"""
+    """获取行业板块资金流向快照（fs=m:90+t:2），分页拉全量。"""
     try:
         url = "https://push2.eastmoney.com/api/qt/clist/get"
-        params = {
-            "pn": "1", "pz": "200", "po": "1", "np": "1",
-            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-            "fltt": "2", "invt": "2", "fid": "f62",
-            "fs": "m:90+t:2",  # 行业板块
-            "fields": "f12,f14,f3,f62,f184,f66,f72,f78,f84",
-            "_": str(int(time.time() * 1000)),
-        }
-        resp = req.get(url, params=params, timeout=timeout,
-                       verify=False, headers=EASTMONEY_HEADERS)
-        resp.raise_for_status()
-        data = resp.json()
-        items = data.get("data", {}).get("diff", [])
-        if not items:
+        all_items = []
+        for pn in (1, 2):
+            params = {
+                "pn": str(pn), "pz": "200", "po": "1", "np": "1",
+                "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+                "fltt": "2", "invt": "2", "fid": "f62",
+                "fs": "m:90+t:2",  # 行业板块
+                "fields": "f12,f14,f3,f62,f184,f66,f72,f78,f84",
+                "_": str(int(time.time() * 1000)),
+            }
+            resp = _http.get(url, params=params, timeout=timeout,
+                           verify=False, headers=EASTMONEY_HEADERS)
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get("data", {}).get("diff", [])
+            if not items:
+                break
+            all_items.extend(items)
+            if len(items) < 200:
+                break
+
+        if not all_items:
             return None
 
         sectors = []
-        for item in items:
+        for item in all_items:
             name = item.get("f14", "")
             if not name:
                 continue
@@ -296,7 +317,7 @@ def fetch_northbound_flow(timeout: float = 8.0) -> Optional[dict]:
         params = {
             "_": str(int(time.time() * 1000)),
         }
-        resp = req.get(url, params=params, timeout=timeout,
+        resp = _http.get(url, params=params, timeout=timeout,
                        verify=False, headers=EASTMONEY_HEADERS)
         resp.raise_for_status()
         data = resp.json()
@@ -345,7 +366,7 @@ def fetch_stock_fund_flow_rank(sort_by: str = "net_main",
             "fields": "f12,f14,f2,f3,f8,f37,f62,f66,f184,f20",
             "_": str(int(time.time() * 1000)),
         }
-        resp = req.get(url, params=params, timeout=timeout,
+        resp = _http.get(url, params=params, timeout=timeout,
                        verify=False, headers=EASTMONEY_HEADERS)
         resp.raise_for_status()
         items = resp.json().get("data", {}).get("diff", [])

@@ -27,9 +27,9 @@ logger = logging.getLogger(__name__)
 # ── 回调筛选参数 ──────────────────────────────────────────────
 
 PULLBACK_LOOKBACK_DAYS = 3        # 回溯 N 个交易日
-PULLBACK_ACCUMULATED_FLOW = 5.0   # 近 3 日累计主力净流入 >= N 亿
-PULLBACK_ACCUMULATED_RETURN = 8.0 # 近 3 日累计涨幅 >= N%
-PULLBACK_DAILY_RETURN_MAX = -1.2  # 当日涨跌幅上限（≤ -1.2% 才算回调）
+PULLBACK_ACCUMULATED_FLOW = 3.0   # 近 3 日累计主力净流入 >= N 亿
+PULLBACK_ACCUMULATED_RETURN = 2.0 # 近 3 日累计涨幅 >= N%
+PULLBACK_DAILY_RETURN_MAX = -0.5  # 当日涨跌幅上限（≤ -0.5% 才算回调）
 PULLBACK_DAILY_RETURN_MIN = -6.0  # 当日最大跌幅（超过则视为破位，放弃）
 PULLBACK_MAX_SECTORS = 8          # 最多输出板块数
 PULLBACK_MIN_HOT_RANK = 50        # 过去 3 天至少有一天排名 ≤ N

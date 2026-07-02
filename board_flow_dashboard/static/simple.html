@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>A股板块资金流向</title>
+<style>
+body{font-family:'PingFang SC',sans-serif;max-width:640px;margin:16px auto;background:#f0f2f5}
+.card{background:#fff;border-radius:10px;padding:12px 16px;margin:5px 0;box-shadow:0 1px 3px rgba(0,0,0,.06);display:flex;justify-content:space-between;align-items:center}
+.up{color:#e6194b;font-weight:600} .down{color:#3cb44b;font-weight:600} .zero{color:#999}
+h2{font-size:14px;color:#555;margin:12px 0 6px}
+.note{font-size:11px;color:#999;margin-top:12px;line-height:1.7}
+.badge{font-size:10px;padding:1px 5px;border-radius:3px;margin-left:6px}
+.badge-syn{background:#fef7e0;color:#b87000}
+</style></head>
+<body><div id="app">加载中...</div>
+<script>
+fetch('/api/data?type=watch').then(r=>r.json()).then(d=>{
+ let h='<h2>'+d.date+' '+d.time_label+' · '+d.rank.length+'板块</h2>';
+ d.rank.forEach(r=>{
+  let p=r.pct_chg||0, c=p>0.05?'up':(p<-0.05?'down':'zero'), s=p>0.05?'+':'';
+  h+='<div class="card"><b>'+r.name+'</b>'+(r._synth?'<span class="badge badge-syn">合成</span>':'')+'<span>'+r.value.toFixed(1)+'亿 <span class='+c+'>'+s+p.toFixed(2)+'%</span></span></div>';
+ });
+ h+='<div class="note"><b>数据说明</b><br>✅ 精确匹配: 有色金属 黄金概念 稀土永磁 创新药 银行<br>🔀 名称映射: 锂电池←锂矿概念 医药商业←医药生物 数据中心←数据确权 人形机器人←机器人执行器 AI芯片←华为昇腾 电网概念←绿色电力 固态电池←电池 消费电子←品牌消费电子 存储芯片←模拟芯片设计<br>⚖ 加权合成: 半导体 光通信模块 通信设备 白酒 军工 光伏设备 证券 可控核聚变<br>❌ 无数据: 玻璃基板 商业航天 低空经济(东方财富无关联板块)</div>';
+ document.getElementById('app').innerHTML=h;
+}).catch(e=>{document.getElementById('app').innerHTML='加载失败: '+e});
+</script></body></html>

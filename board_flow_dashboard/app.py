@@ -182,7 +182,7 @@ def api_stocks_flow():
     else:
         stocks = fetch_stock_fund_flow_rank(sort_by=sort_by, count=count)
         if stocks is None:
-            return jsonify({"error": "数据获取失败", "stocks": []}), 500
+            return jsonify({"error": "数据获取失败", "time": _now_time(), "stocks": []}), 500
 
     return jsonify({
         "time": _now_time(),

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>A 股短线看板</title>
-<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+<script src="/static/echarts.min.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -265,6 +265,7 @@ body {
 </head>
 <body>
 <div class="dashboard">
+  <div id="jsError" style="display:none;background:#fff3cd;border:1px solid #ffc107;padding:12px;margin:8px 0;border-radius:6px;font-family:monospace;font-size:12px;white-space:pre-wrap;color:#856404"></div>
   <div class="header">
     <div>
       <h1 id="pageTitle">A 股短线看板</h1>
@@ -492,19 +493,28 @@ function switchSectorType(type) {
 // ══════════════════════════════════════════════════════════
 // 板块资金流向
 // ══════════════════════════════════════════════════════════
+function _showErr(msg) {
+  var el = document.getElementById('jsError');
+  if (el) { el.textContent += msg + '\n'; el.style.display = 'block'; }
+}
 async function loadSectorData() {
+  _showErr('loadSectorData start, sectorType=' + sectorType);
   try {
     const res = await fetch('/api/data?type=' + sectorType);
+    _showErr('fetch OK status=' + res.status);
     sectorData = await res.json();
+    _showErr('json OK, rank=' + (sectorData.rank ? sectorData.rank.length : 'null') + ' series=' + Object.keys(sectorData.series||{}).length);
     const dataTime = sectorData.time_label || '--:--';
     const typeLabel = sectorType === 'watch' ? '自选' : (sectorType === 'concept' ? '概念' : '行业');
     document.getElementById('statusText').textContent =
       sectorData.date + ' · ' + typeLabel + '板块 · ' + sectorData.rank.length + ' 个 · 数据时间 ' + dataTime;
     document.getElementById('rankTitle').textContent = typeLabel + '板块资金流向';
+    _showErr('calling initSectorChart...');
     initSectorChart();
+    _showErr('initSectorChart done');
     initReplay();
   } catch (e) {
-    console.error('板块数据加载失败:', e);
+    _showErr('ERROR in loadSectorData: ' + e.message);
   }
 }
 
@@ -623,7 +633,7 @@ function updateSectorRank(timeIdx) {
       + '<span class="rank-index">' + (idx + 1) + '</span>'
       + '<span class="rank-dot" style="background:' + item.color + '"></span>'
       + '<span class="rank-name" title="' + item.name + '">' + item.name + '</span>'
-      + '<span class="rank-value ' + cls + '">' + (item.value >= 0 ? '+' : '') + item.value.toFixed(2) + ' 亿</span>'
+      + '<span class="rank-value ' + cls + '">' + ((item.value || 0) >= 0 ? '+' : '') + (item.value || 0).toFixed(2) + ' 亿</span>'
       + '</div>'
       + '<div class="rank-bar-wrap"><div class="rank-bar-fill ' + cls + '" style="width:' + barW + '%"></div></div>';
   });
@@ -901,11 +911,20 @@ function renderPicks(data) {
     document.getElementById('picksTableContainer').innerHTML = renderPoolTable(bStocks, '低吸池', 'pool-b');
   }
 }
+// ── JS 错误捕获 ──────────────────────────────────────────
+window.onerror = function(msg, url, line) {
+  var el = document.getElementById('jsError');
+  if (el) el.textContent += 'JS Error: ' + msg + ' (line ' + line + ')\n';
+  if (el) el.style.display = 'block';
+};
+
 // ── 初始化 ────────────────────────────────────────────────
 async function init() {
+  _showErr('init() started');
   try {
     const st = await fetch('/api/status');
     const status = await st.json();
+    _showErr('status OK: ' + JSON.stringify(status));
     const dot = document.getElementById('liveDot');
     if (status.market_open) {
       dot.classList.remove('off');
@@ -920,6 +939,7 @@ async function init() {
   } catch (e) { /* ignore */ }
 
   // 默认加载板块资金流向
+  _showErr('calling loadSectorData...');
   loadSectorData();
 
   // 北向资金每 30 秒刷新

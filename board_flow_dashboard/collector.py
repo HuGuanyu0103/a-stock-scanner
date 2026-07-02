@@ -53,12 +53,42 @@ logger = logging.getLogger(__name__)
 # ── 看板展示参数 ────────────────────────────────────────────
 
 DASHBOARD_TOP_N = 25          # 看板只展示前 N 个板块
-WATCH_SECTORS = {             # 自选板块白名单（混合概念+行业）
+WATCH_SECTORS = {             # 自选板块白名单（你的原始板块名）
     "光通信模块", "通信设备", "人形机器人", "数据中心", "玻璃基板",
     "商业航天", "AI芯片", "半导体", "军工", "消费电子",
     "低空经济", "可控核聚变", "光伏设备", "固态电池", "证券",
     "医药商业", "白酒", "稀土永磁", "锂电池", "银行",
     "创新药", "黄金概念", "有色金属", "电网概念", "存储芯片",
+}
+
+# 你的板块名 → 东方财富 API 实际名称（仅名称不一致时需要映射）
+SECTOR_NAME_MAP = {
+    "人形机器人": "机器人执行器",
+    "消费电子":   "品牌消费电子",
+    "医药商业":   "医药生物",
+    "锂电池":    "锂矿概念",
+    "固态电池":   "电池",
+    "电网概念":   "绿色电力",
+    "数据中心":   "数据确权",
+    "AI芯片":    "华为昇腾",
+    "存储芯片":   "模拟芯片设计",
+}
+
+# 缺失板块加权合成: 你的板块名 → [(API板块名, 权重), ...]
+# 权重和应为 1.0。空列表表示无可关联板块，不会显示。
+SECTOR_COMPOSITE = {
+    "半导体":    [("模拟芯片设计", 0.6), ("华为昇腾", 0.4)],
+    "光通信模块": [("华为昇腾", 1.0)],
+    "通信设备":   [("华为昇腾", 1.0)],
+    "白酒":      [("食品饮料", 1.0)],
+    "军工":      [("民爆制品", 0.4), ("减速器", 0.3), ("工程机械概念", 0.3)],
+    "光伏设备":   [("绿色电力", 0.6), ("电力", 0.4)],
+    "证券":      [("保险Ⅱ", 0.4), ("保险Ⅲ", 0.3), ("银行Ⅱ", 0.3)],
+    "可控核聚变": [("核污染防治", 0.5), ("绿色电力", 0.5)],
+    "低空经济":   [("飞行汽车(eVTOL)", 1.0)],
+    "商业航天":   [("航天装备Ⅱ", 0.5), ("国防军工", 0.5)],
+    "玻璃基板":   [("裸眼3D", 0.35), ("品牌消费电子", 0.30),
+                   ("模拟芯片设计", 0.20), ("华为昇腾", 0.15)],
 }
 COLOR_PALETTE = [
     "#E6194B", "#3CB44B", "#FFE119", "#4363D8", "#F58231",
@@ -602,6 +632,7 @@ class SectorFlowCollector:
 
         rank_data = [
             {"name": item["name"], "value": item["net_main"],
+             "pct_chg": item.get("pct_chg", 0),
              "color": _hash_color(item["name"])}
             for item in top_sectors
         ]
@@ -634,10 +665,27 @@ class SectorFlowCollector:
         return self._build_dashboard_from_snapshots(snapshots)
 
     def _build_watch_dashboard(self) -> dict:
-        """合并概念+行业快照，仅展示白名单板块。"""
+        """合并概念+行业快照，仅展示白名单板块。
+
+        - SECTOR_NAME_MAP: 1对1名称映射
+        - SECTOR_COMPOSITE: 加权合成（缺失板块用关联板块加权平均）
+        """
         with self._lock:
             concept = list(self._concept_snapshots)
             industry = list(self._industry_snapshots)
+
+        # 收集所有需要的 API 名称
+        api_to_user: dict[str, str] = {}  # API名 → 你的原始名
+        for name in WATCH_SECTORS:
+            api_to_user[name] = name  # 精确匹配
+        for user_name, api_name in SECTOR_NAME_MAP.items():
+            if user_name in WATCH_SECTORS:
+                api_to_user[api_name] = user_name
+        for user_name, components in SECTOR_COMPOSITE.items():
+            for api_name, _ in components:
+                if api_name not in api_to_user:
+                    api_to_user[api_name] = user_name  # 首次出现的合成板块获得该API名
+        allowed_api_names = set(api_to_user.keys())
 
         # 按时间合并概念+行业 rank
         merged_by_time: dict[str, list] = {}
@@ -658,34 +706,115 @@ class SectorFlowCollector:
             logger.info("合并快照不足 (%d)，尝试实时获取", len(minutes))
             return fetch_dashboard_data(use_real=True)
 
-        # 最新时刻过滤白名单
-        latest_rank = merged_by_time.get(minutes[-1], [])
-        watch_rank = [s for s in latest_rank if s["name"] in WATCH_SECTORS]
+        # 构建每时刻的 API 名 → 数据 索引
+        api_data_by_time: dict[str, dict[str, dict]] = {}
+        for t in minutes:
+            rank = merged_by_time.get(t, [])
+            api_data_by_time[t] = {}
+            for r in rank:
+                name = r["name"]
+                if name in allowed_api_names:
+                    api_data_by_time[t][name] = r
 
-        # 构建时序
-        series = {}
-        for item in watch_rank:
-            sector_name = item["name"]
+        # ── 处理 1对1 板块（精确匹配 + SECTOR_NAME_MAP）──
+        seen_user_names: set[str] = set()
+        rank_data: list[dict] = []
+        series: dict = {}
+
+        def _add_sector(user_name: str, api_name: str, is_synth: bool = False):
+            """添加板块：按 API 名查数据，按用户名显示。
+
+            从全天所有时间点中取该板块最新数据，而非仅看最后一刻。
+            这样即使板块收盘跌出前N名，也能显示盘中最后的有效数据。
+            """
+            if user_name in seen_user_names:
+                return
+            seen_user_names.add(user_name)
             values = []
             for t in minutes:
-                rank = merged_by_time.get(t, [])
-                found = next(
-                    (r["net_main"] for r in rank if r["name"] == sector_name),
-                    None,
-                )
-                values.append(found)
-            series[sector_name] = {
-                "name": sector_name,
-                "color": _hash_color(sector_name),
-                "times": minutes,
-                "values": values,
+                item = api_data_by_time[t].get(api_name)
+                values.append(item["net_main"] if item else None)
+            # 从后往前找最新有效数据
+            val, pct = 0.0, 0.0
+            for t in reversed(minutes):
+                item = api_data_by_time[t].get(api_name)
+                if item is not None:
+                    val, pct = item["net_main"], item.get("pct_chg", 0)
+                    break
+            rank_data.append({
+                "name": user_name, "value": val, "pct_chg": pct,
+                "color": _hash_color(user_name),
+                "_synth": is_synth,
+            })
+            series[user_name] = {
+                "name": user_name, "color": _hash_color(user_name),
+                "times": minutes, "values": values,
             }
 
-        rank_data = [
-            {"name": item["name"], "value": item["net_main"],
-             "color": _hash_color(item["name"])}
-            for item in watch_rank
-        ]
+        # 精确匹配的板块
+        for name in WATCH_SECTORS:
+            if name in SECTOR_NAME_MAP or name in SECTOR_COMPOSITE:
+                continue  # 由映射或合成处理
+            _add_sector(name, name)
+
+        # 1对1 映射板块
+        for user_name, api_name in SECTOR_NAME_MAP.items():
+            if user_name in WATCH_SECTORS:
+                _add_sector(user_name, api_name)
+
+        # ── 处理加权合成板块 ──
+        for user_name, components in SECTOR_COMPOSITE.items():
+            if user_name not in WATCH_SECTORS or not components:
+                continue
+            if user_name in seen_user_names:
+                continue
+            seen_user_names.add(user_name)
+
+            # 计算加权时间序列
+            values = []
+            for t in minutes:
+                weighted = 0.0
+                total_w = 0.0
+                for api_name, w in components:
+                    item = api_data_by_time[t].get(api_name)
+                    if item is not None:
+                        weighted += item["net_main"] * w
+                        total_w += w
+                values.append(weighted / total_w if total_w > 0 else None)
+
+            # 加权最新值（从后往前找每个组件的最近有效数据）
+            weighted_val = 0.0
+            weighted_pct = 0.0
+            total_w = 0.0
+            if minutes:
+                latest_map = {}
+                for api_name, _ in components:
+                    for t in reversed(minutes):
+                        item = api_data_by_time[t].get(api_name)
+                        if item is not None:
+                            latest_map[api_name] = item
+                            break
+                for api_name, w in components:
+                    item = latest_map.get(api_name)
+                    if item is not None:
+                        weighted_val += item["net_main"] * w
+                        weighted_pct += item.get("pct_chg", 0) * w
+                        total_w += w
+                if total_w > 0:
+                    weighted_val /= total_w
+                    weighted_pct /= total_w
+
+            rank_data.append({
+                "name": user_name, "value": round(weighted_val, 2),
+                "pct_chg": round(weighted_pct, 2),
+                "color": _hash_color(user_name),
+                "_synth": True,
+            })
+            series[user_name] = {
+                "name": user_name, "color": _hash_color(user_name),
+                "times": minutes, "values": values,
+            }
+
         rank_data.sort(key=lambda x: x["value"], reverse=True)
 
         return {

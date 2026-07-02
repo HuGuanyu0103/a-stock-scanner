@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Test</title>
+<script src="/static/echarts.min.js"></script>
+<style>#chart{width:800px;height:400px;border:2px solid red;margin:20px}</style>
+</head><body>
+<h2>ECharts 测试</h2>
+<div id="log" style="font-family:monospace;white-space:pre"></div>
+<div id="chart"></div>
+<script>
+var logEl = document.getElementById('log');
+function log(msg) { logEl.textContent += msg + '\n'; }
+try {
+  log('echarts type: ' + typeof echarts);
+  var dom = document.getElementById('chart');
+  var chart = echarts.init(dom);
+  log('chart instance: ' + (chart ? 'OK' : 'FAIL'));
+  chart.setOption({
+    xAxis: { data: ['A','B','C','D','E'] },
+    yAxis: {},
+    series: [{ type: 'line', data: [10, 20, 15, 25, 18] }]
+  });
+  log('setOption: OK');
+  log('DONE - you should see a red-bordered chart with a line');
+} catch(e) {
+  log('ERROR: ' + e.message);
+}
+</script>
+</body></html>
