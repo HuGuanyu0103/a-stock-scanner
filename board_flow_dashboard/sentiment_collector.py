@@ -85,6 +85,9 @@ def compute_rotation_speed(db_path: Path, lookback_minutes: int = ROTATION_LOOKB
 
         # Spearman 秩相关
         common = set(now_names) & set(past_names)
+        # v4.0: 快照不足时返回 None 而非 1.0，避免误判极快轮动
+        if len(rows) < 10:
+            return None  # 数据不足
         if len(common) < 8:
             return 1.0  # 面貌全非 = 极快轮动
 

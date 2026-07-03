@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 HOT_SECTOR_COUNT = 5           # 资金流维度：每种板块类型取前 N 个
 HOT_SECTOR_COUNT_PCT = 3       # 价格动量维度：每种板块额外取前 N 个（涨幅最大）
-STOCKS_PER_SECTOR = 20         # 每个板块取前 N 只成分股（放宽网口）
+STOCKS_PER_SECTOR = 50         # 每个板块取前 N 只成分股（v4.0 放宽至 50）
 CANDIDATE_POOL_SIZE = 50       # 候选池总容量（= A + B）
 DAILY_SCORE_WEIGHT = 0.25      # 日评分在最终排名中的权重
 MAX_PER_SECTOR = 8             # 同一板块最多入选数（纯主板放宽）
@@ -1018,7 +1018,7 @@ def _select_stocks_real(collector=None):
                 sum(1 for s in hot_sectors if s.get("type") == "industry"),
                 len(hot_sectors))
 
-    # Step 2: 下钻成分股
+    # Step 2: 下钻成分股（串行 + 间隔，避免打满连接池）
     seen_sectors = set()
     all_stocks = []
     for sector in hot_sectors:
@@ -1030,7 +1030,17 @@ def _select_stocks_real(collector=None):
         if not code:
             continue  # 没有 code 无法下钻
 
-        stocks = _fetch_sector_stocks(code, top_n=STOCKS_PER_SECTOR)
+        stocks = []
+        for attempt in range(3):
+            stocks = _fetch_sector_stocks(code, top_n=STOCKS_PER_SECTOR)
+            if stocks:
+                break
+            time.sleep(0.5)  # 重试前等待
+        if not stocks:
+            logger.warning("板块 %s(%s) 成分股3次重试均失败", sector["name"], code)
+            continue
+
+        time.sleep(0.3)  # 板块间间隔，防止并发打满连接池
         # 充实因子：短动量 + 突破距离（用已有数据近似，后续可接日K线缓存）
         for s in stocks:
             daily = _DAILY_SCORES.get(s.get("code", ""), {})
@@ -1067,7 +1077,7 @@ def _select_stocks_real(collector=None):
     unique = list(seen.values())
 
     # Step 4: 创业板/科创板/北交所 + 流动性过滤 + 涨停板过滤
-    unique = [s for s in unique if not s["code"].startswith(("300", "301", "688", "8"))]
+    unique = [s for s in unique if not s["code"].startswith(("688", "8", "9"))]
     unique, _liq_removed = _apply_liquidity_filter(unique, pool_type="A")
     unique, _limit_up_removed = _apply_limit_up_filter(unique)
 
@@ -1096,7 +1106,15 @@ def _select_stocks_real(collector=None):
                 code = ps.get("code", "")
                 if not code:
                     continue
-                stocks = _fetch_sector_stocks(code, top_n=STOCKS_PER_SECTOR)
+                stocks = []
+                for attempt in range(3):
+                    stocks = _fetch_sector_stocks(code, top_n=STOCKS_PER_SECTOR)
+                    if stocks:
+                        break
+                    time.sleep(0.5)
+                if not stocks:
+                    continue
+                time.sleep(0.3)
                 for s in stocks:
                     s["sector"] = ps["name"]
                     s["sector_type"] = ps.get("type", "concept")
@@ -1116,7 +1134,7 @@ def _select_stocks_real(collector=None):
                     if (s.get("net_main_inflow") or 0) > (b_seen[code].get("net_main_inflow") or 0):
                         b_seen[code] = s
             b_unique = list(b_seen.values())
-            b_unique = [s for s in b_unique if not s["code"].startswith(("300", "301", "688", "8"))]
+            b_unique = [s for s in b_unique if not s["code"].startswith(("688", "8", "9"))]
             b_unique, _b_liq_removed = _apply_liquidity_filter(b_unique, pool_type="B")
             b_unique, _b_limit_up_removed = _apply_limit_up_filter(b_unique)
             b_pullback_sectors = pullback_sectors
@@ -1292,7 +1310,7 @@ def _select_stocks_mock():
 
     a_result = _merge_daily_scores(a_result, _DAILY_SCORES)
     a_ranked = _score_and_rank(a_result, pool_type="A")
-    a_ranked = [s for s in a_ranked if not s["code"].startswith(("300", "301", "688", "8"))]
+    a_ranked = [s for s in a_ranked if not s["code"].startswith(("688", "8", "9"))]
     # 动态池大小（mock 模式下降级为固定值）
     try:
         from signals import get_signal_store, get_pool_allocation
@@ -1333,7 +1351,7 @@ def _select_stocks_mock():
 
     b_result = _merge_daily_scores(b_result, _DAILY_SCORES)
     b_ranked = _score_and_rank(b_result, pool_type="B")
-    b_ranked = [s for s in b_ranked if not s["code"].startswith(("300", "301", "688", "8"))]
+    b_ranked = [s for s in b_ranked if not s["code"].startswith(("688", "8", "9"))]
     b_candidates = _apply_sector_concentration(b_ranked, max_per=MAX_PER_SECTOR_B, pool_size=b_mock_size)[:b_mock_size]
 
     # ── 各自截断合并 ────────────────────────────────────────

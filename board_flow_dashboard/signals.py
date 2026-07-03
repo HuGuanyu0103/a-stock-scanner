@@ -273,6 +273,10 @@ def get_pool_allocation(signals: dict) -> dict:
     rotation = market.get("rotation_speed", 0.5)
     breadth = market.get("market_breadth", 0.5)
 
+    # v4.0: rotation=1.0 是错误兜底值(数据不足)，回退到默认分配
+    if rotation >= 0.99:
+        rotation = 0.5
+
     if rotation < 0.3:
         # 轮动慢：领头羊稳固，追涨为主
         a_size = 35
