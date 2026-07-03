@@ -925,8 +925,19 @@ def _apply_sector_concentration(candidates: list, max_per: int = MAX_PER_SECTOR,
 
 # ── 告警推送 ──────────────────────────────────────────────
 
+_ALERT_COOLDOWN: dict[str, float] = {}   # v4.0: 告警去重冷却
+_ALERT_INTERVAL = 1800                    # 同类型告警最小间隔（秒）
+
+
 def _send_alert(title: str, content: str):
     """通过 Server酱 推送告警。失败时仅打日志。"""
+    # v4.0: 去重 — 同标题告警 30 分钟内不重复发送
+    now = time.time()
+    last = _ALERT_COOLDOWN.get(title, 0)
+    if now - last < _ALERT_INTERVAL:
+        return
+    _ALERT_COOLDOWN[title] = now
+
     try:
         import os as _os
         _parent = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
@@ -941,7 +952,7 @@ def _send_alert(title: str, content: str):
 
 def _check_alerts(candidates: list, hot_sectors: list,
                   daily_scores_ok: bool, api_failures: int = 0):
-    """检查并推送关键告警。"""
+    """检查并推送关键告警（已内置 30 分钟冷却）。"""
     alerts = []
 
     # 空池告警
