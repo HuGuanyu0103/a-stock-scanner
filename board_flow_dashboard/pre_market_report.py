@@ -63,7 +63,6 @@ def fetch_overnight_indices() -> list[dict]:
         "100.SPX": "标普500",
         "100.DJIA": "道指",
         "100.HSI": "恒生指数",
-        "100.CN02": "A50期货",
     }
     indices = []
     for secid, label in symbols.items():
@@ -73,11 +72,11 @@ def fetch_overnight_indices() -> list[dict]:
             "_": str(int(time.time() * 1000)),
         })
         d = data.get("data") or {}
-        pct = d.get("f170") or d.get("f43")
-        if pct is not None:
+        pct_raw = d.get("f170")   # f170 是涨跌幅×100，不用 f43(价格)兜底
+        if pct_raw is not None:
             indices.append({
                 "name": label,
-                "pct_chg": round(float(pct), 2),
+                "pct_chg": round(float(pct_raw) / 100, 2),
             })
         else:
             indices.append({"name": label, "pct_chg": None})
@@ -226,21 +225,19 @@ def generate_report() -> str:
         pct = idx["pct_chg"]
         if name in ("纳斯达克", "标普500", "道指"):
             us_lines.append(f"{name[:2]}指{_fmt_pct(pct)}")
-        elif name == "A50期货":
-            a50_str = _fmt_pct(pct)
         elif name == "恒生指数":
             hsi_str = _fmt_pct(pct)
 
     us_str = "  ".join(us_lines)
-    ov_line = f"A50 {a50_str}  |  恒指 {hsi_str}"
+    ov_line = f"恒指 {hsi_str}"
 
-    # 判断外盘情绪
-    a50_val = next((i["pct_chg"] for i in indices if i["name"] == "A50期货"), 0)
-    if a50_val is None:
-        a50_val = 0
-    if a50_val > 0.3:
+    # 判断外盘情绪：用恒指作为主要 A 股情绪代理
+    hsi_val = next((i["pct_chg"] for i in indices if i["name"] == "恒生指数"), 0)
+    if hsi_val is None:
+        hsi_val = 0
+    if hsi_val > 0.3:
         ov_sentiment = "外盘偏暖，科技成长占优"
-    elif a50_val < -0.3:
+    elif hsi_val < -0.3:
         ov_sentiment = "外盘偏冷，开盘谨慎"
     else:
         ov_sentiment = "外盘中性"
@@ -282,9 +279,9 @@ def generate_report() -> str:
         sector_lines = ["（板块数据暂未就绪）"]
 
     # ── 5. 今日策略 ──────────────────────────────────────────
-    if breadth["status"] == "bullish" and a50_val > 0.2:
+    if breadth["status"] == "bullish" and hsi_val > 0.2:
         strategy = "外盘+竞价共振偏多 → A 池为主(65%)  方向：竞价强势板块"
-    elif breadth["status"] == "bearish" and a50_val < -0.2:
+    elif breadth["status"] == "bearish" and hsi_val < -0.2:
         strategy = "外盘+竞价共振偏空 → B 池防守(65%)  谨慎追涨"
     elif breadth["status"] == "bullish":
         strategy = "竞价偏乐观但外盘未确认 → A/B 均衡(50:50)  开盘后确认"
