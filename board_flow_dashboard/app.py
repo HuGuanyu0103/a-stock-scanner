@@ -29,6 +29,9 @@ try:
     from .data_fetcher import (
         fetch_dashboard_data, fetch_stock_fund_flow_rank, fetch_northbound_flow, _MOCK_STOCKS, _now_time,
     )
+    from .agent import get_agent
+    from .decision_store import get_decision_store
+    from .loop_analyzer import get_loop_analyzer
     from .stock_selector import select_stocks
     from .signals import get_signal_store, compute_final_score, get_pool_allocation
     from .sentiment_collector import SentimentCollector
@@ -39,6 +42,10 @@ except ImportError:
     from data_fetcher import (  # type: ignore[no-redef]
         fetch_dashboard_data, fetch_stock_fund_flow_rank, fetch_northbound_flow, _MOCK_STOCKS, _now_time,
     )
+    from agent import get_agent  # type: ignore[no-redef]
+    from decision_store import get_decision_store  # type: ignore[no-redef]
+    from loop_analyzer import get_loop_analyzer
+    from debate import get_orchestrator  # type: ignore[no-redef]
     from stock_selector import select_stocks  # type: ignore[no-redef]
     from signals import get_signal_store, compute_final_score, get_pool_allocation  # type: ignore[no-redef]
     from sentiment_collector import SentimentCollector  # type: ignore[no-redef]
@@ -399,6 +406,149 @@ def api_daily_scorer_status():
 
 
 # ── 启动时自动跑日评分 ──────────────────────────────────────
+
+
+# ── AI Agent 端点 ─────────────────────────────────────────────
+
+@app.route("/api/agent/intraday")
+def api_agent_intraday():
+    """生成盘中 AI 决策建议。"""
+    use_mock = _use_mock
+    if request.args.get("mock", "0") == "1":
+        use_mock = True
+    data = select_stocks(use_mock=use_mock, collector=collector)
+    all_candidates = data.get("pool_a", []) + data.get("pool_b", [])
+    if not all_candidates:
+        return jsonify({"error": "候选池为空", "mode": "empty"})
+
+    store = get_signal_store()
+    signals = store.get_all()
+    breadth = data.get("market_breadth", 0.5)
+    hot_sectors = data.get("hot_sectors", [])
+
+    agent = get_agent()
+    result = agent.generate_intraday_picks(
+        all_candidates, hot_sectors, signals, breadth,
+    )
+    if result:
+        result["mode"] = data.get("mode", "live")
+        result["risk_level"] = data.get("risk_level", "low")
+        return jsonify(result)
+    return jsonify({
+        "error": "Agent 不可用",
+        "mode": data.get("mode", "live"),
+        "fallback_hint": "请查看盘中选股标签页的候选池",
+    })
+
+
+@app.route("/api/agent/chat", methods=["POST"])
+def api_agent_chat():
+    """多轮对话：用户追问 AI Agent。"""
+    body = request.get_json(silent=True) or {}
+    user_message = body.get("message", "").strip()
+    if not user_message:
+        return jsonify({"error": "消息不能为空"}), 400
+
+    chat_history = body.get("history", [])
+
+    use_mock = _use_mock
+    data = select_stocks(use_mock=use_mock, collector=collector)
+    all_candidates = data.get("pool_a", []) + data.get("pool_b", [])
+    store = get_signal_store()
+    signals = store.get_all()
+    hot_sectors = data.get("hot_sectors", [])
+
+    agent = get_agent()
+    reply = agent.chat(
+        user_message, all_candidates, hot_sectors, signals, chat_history,
+    )
+    if reply:
+        return jsonify({"reply": reply})
+    return jsonify({"error": "Agent 不可用", "reply": "抱歉，AI 决策助手暂时不可用，请查看盘中选股标签页的候选池。"})
+
+
+
+# ── Multi-Agent 辩论端点 ───────────────────────────────
+
+@app.route("/api/agent/debate")
+def api_agent_debate():
+    """Multi-Agent 辩论：三位分析师 + 主席综合判断。"""
+    use_mock = _use_mock
+    if request.args.get("mock", "0") == "1":
+        use_mock = True
+    data = select_stocks(use_mock=use_mock, collector=collector)
+    all_candidates = data.get("pool_a", []) + data.get("pool_b", [])
+    if not all_candidates:
+        return jsonify({"error": "候选池为空"})
+
+    store = get_signal_store()
+    signals = store.get_all()
+    breadth = data.get("market_breadth", 0.5)
+    hot_sectors = data.get("hot_sectors", [])
+
+    do = get_orchestrator()
+    report = do.run_debate(all_candidates, signals, hot_sectors, breadth)
+    if report:
+        return jsonify(report)
+    return jsonify({"error": "辩论系统不可用", "hint": "请查看 AI 观澜标签页"})
+
+# ── Loop Engineering 端点 ───────────────────────────────
+
+@app.route("/api/loop/adopt", methods=["POST"])
+def api_loop_adopt():
+    """用户采纳 AI 推荐，记录决策。"""
+    body = request.get_json(silent=True) or {}
+    code = body.get("code", "").strip()
+    if not code:
+        return jsonify({"error": "股票代码不能为空"}), 400
+    ds = get_decision_store()
+    did = ds.record_decision(
+        stock_code=code,
+        stock_name=body.get("name", ""),
+        entry_price=float(body.get("entry_price", 0)),
+        sector=body.get("sector", ""),
+        pool=body.get("pool", ""),
+        signal=body.get("signal", ""),
+        confidence=int(body.get("confidence", 3)),
+        score=float(body.get("score", 0)),
+        source=body.get("source", "agent"),
+        notes=body.get("notes", ""),
+    )
+    return jsonify({"id": did, "status": "adopted"})
+
+
+@app.route("/api/loop/status")
+def api_loop_status():
+    """获取决策闭环状态。"""
+    ds = get_decision_store()
+    la = get_loop_analyzer()
+    return jsonify({
+        "stats": ds.get_total_stats(),
+        "signal_win_rates": ds.get_signal_win_rates(),
+        "open_decisions": ds.get_open_decisions()[:10],
+        "signal_hotness": la.get_signal_hotness()[:10],
+        "context": ds.get_loop_context(),
+    })
+
+
+@app.route("/api/loop/exit", methods=["POST"])
+def api_loop_exit():
+    """手动标记退出。"""
+    body = request.get_json(silent=True) or {}
+    ds = get_decision_store()
+    ds.mark_exited(
+        decision_id=int(body.get("id", 0)),
+        exit_price=float(body.get("exit_price", 0)),
+    )
+    return jsonify({"status": "exited"})
+
+
+@app.route("/api/loop/auto-resolve", methods=["POST"])
+def api_loop_auto_resolve():
+    """手动触发自动结算。"""
+    ds = get_decision_store()
+    n = ds.auto_resolve()
+    return jsonify({"resolved": n})
 
 def _auto_run_daily_scorer():
     """交易日上午 9:25 后启动时，自动执行日评分扫描。"""

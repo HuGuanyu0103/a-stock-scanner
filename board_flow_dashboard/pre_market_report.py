@@ -26,6 +26,13 @@ from pathlib import Path
 
 import requests as req
 import urllib3
+
+# Agent 集成
+try:
+    from agent import DecisionAgent, get_agent, agent_brief_to_markdown
+    _HAS_AGENT = True
+except ImportError:
+    _HAS_AGENT = False
 urllib3.disable_warnings()
 
 logger = logging.getLogger(__name__)
@@ -209,7 +216,7 @@ def _fmt_pct(v: float | None) -> str:
     return f"{sign}{v:.1f}%"
 
 
-def generate_report() -> str:
+def _generate_template_report() -> str:
     """生成盘前简报 Markdown 文本。"""
     now = datetime.now()
     today_str = now.strftime("%m/%d")
@@ -311,6 +318,42 @@ def generate_report() -> str:
     lines.append(f"【今日策略】{strategy}")
 
     return "\n".join(lines)
+
+
+
+# ═══════════════════════════════════════════════════════════════
+# 报告生成（Agent 优先，模板兜底）
+# ═══════════════════════════════════════════════════════════════
+
+def generate_report() -> str:
+    """生成盘前简报 Markdown 文本。
+
+    v5.0: Agent 优先模式
+    1. 先尝试 AI Agent 生成自然语言决策简报
+    2. Agent 不可用时（无 API Key / 网络异常），自动降级到模板模式
+    """
+    # 收集所有数据（数据采集逻辑不变）
+    indices = fetch_overnight_indices()
+    breadth = fetch_auction_market_breadth()
+    anomalies = fetch_auction_anomalies(top_n=5)
+    hot_sectors = fetch_auction_hot_sectors(top_n=6)
+
+    # 尝试 AI Agent 生成
+    if _HAS_AGENT:
+        try:
+            agent = get_agent()
+            brief = agent.generate_pre_market_brief(
+                indices, breadth, anomalies, hot_sectors
+            )
+            if brief:
+                logger.info("Agent 简报生成成功")
+                return agent_brief_to_markdown(brief)
+        except Exception as e:
+            logger.warning("Agent 简报生成失败，降级到模板模式: %s", e)
+
+    # Fallback: 模板模式
+    logger.info("使用模板模式生成简报")
+    return _generate_template_report()
 
 
 # ═══════════════════════════════════════════════════════════════

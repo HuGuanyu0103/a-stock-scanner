@@ -235,33 +235,55 @@ def _minmax_normalize(values):
 
 # ── 智能偏离评分（v2 核心改进）─────────────────────────────
 
-def _smart_deviation_score(net_ratio: float, deviation: float) -> float:
-    """资金流向必须印证价格方向，不能一刀切奖励跑输。
+def _smart_deviation_score(net_ratio: float, deviation: float,
+                            volume_ratio: float = 1.0, pct_chg: float = 0) -> float:
+    """资金-价格二元印证评分（v7.1 修正：加入量价时序维度）。
+
+    v7.1 修正说明（评审反馈）：
+      原版"跌了+主力进=补涨潜力(1.0)"忽视了一个关键风险——
+      放量阴跌中主力流入可能是下跌中继（接飞刀），而非补涨。
+      加入缩量/放量(volume_ratio)和急跌/阴跌(pct_chg)两个时间维度约束：
+        - 缩量微跌 + 主力进 → 洗盘承接（0.9分）
+        - 放量急跌 + 主力进 → 下跌中继风险（0.3分）
 
     Returns:
         0.0 ~ 1.0 的得分
     """
+    # 核心维度判断
+    is_shrink = volume_ratio < 0.8  # 缩量
+    is_expand = volume_ratio > 1.5  # 放量
+    is_sharp = pct_chg < -3        # 急跌
+    is_gentle = -3 <= pct_chg < 0  # 阴跌/微跌
+
     if deviation < 0 and net_ratio > 5:
-        # 跑输板块 + 资金进场 → 补涨潜力，最高分
-        return 1.0
+        # 跑输板块 + 资金进场
+        if is_expand and is_sharp:
+            # 放量急跌中主力流入 = 下跌中继风险（接飞刀）
+            return 0.30
+        elif is_shrink and is_gentle:
+            # 缩量微跌中主力流入 = 洗盘承接，最佳低吸
+            return 1.0
+        elif is_shrink and is_sharp:
+            # 缩量急跌中主力流入 = 恐慌性补跌，观望为主
+            return 0.50
+        elif is_expand:
+            # 放量 + 主力流入 = 有承接但分歧大
+            return 0.55
+        else:
+            # 温和放量/缩量 + 主力流入 = 补涨潜力
+            return 0.80
     elif deviation < 0 and net_ratio < 0:
-        # 跑输板块 + 资金流出 → 真弱势，最低分
-        return 0.0
+        return 0.0  # 跑输 + 资金流出 = 真弱势
     elif deviation > 0 and net_ratio > 10:
-        # 跑赢板块 + 资金抢筹 → 强势龙头，高分
-        return 1.0
+        return 1.0  # 跑赢 + 资金抢筹 = 强势龙头
     elif deviation > 0 and net_ratio < 0:
-        # 跑赢板块 + 资金流出 → 拉高出货嫌疑，低分
-        return 0.1
+        return 0.1  # 跑赢 + 资金流出 = 拉高出货嫌疑
     elif deviation > 0 and net_ratio > 3:
-        # 跑赢 + 温和资金 → 中等偏上
-        return 0.75
+        return 0.75  # 跑赢 + 温和资金 = 中等偏上
     elif deviation < 0 and net_ratio > 0:
-        # 跑输 + 微弱资金 → 中等偏下
-        return 0.40
+        return 0.40  # 跑输 + 微弱资金 = 中等偏下
     elif deviation > 0 and net_ratio >= 0:
-        # 跑赢 + 资金持平 → 一般
-        return 0.55
+        return 0.55  # 跑赢 + 资金持平 = 一般
     else:
         return 0.25
 
@@ -450,7 +472,7 @@ def _score_and_rank(stocks, pool_type: str = "A"):
             s["norm_price_deviation"] = _smart_deviation_score_pullback(
                 net_ratio, deviation)
         else:
-            s["norm_price_deviation"] = _smart_deviation_score(net_ratio, deviation)
+            s["norm_price_deviation"] = _smart_deviation_score(net_ratio, deviation, s.get("volume_ratio") or 0, s.get("pct_chg") or 0)
 
         # ── 日内位置因子 ──────────────────────────────────
         intra = s.get("intraday_position") or 0.5

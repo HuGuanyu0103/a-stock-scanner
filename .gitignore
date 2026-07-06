@@ -11,3 +11,4 @@ env/
 # 运行时缓存 / 数据文件
 board_flow_dashboard/data/*.json
 board_flow_dashboard/data/*.db
+board_flow_dashboard/data/deepseek_key.txt

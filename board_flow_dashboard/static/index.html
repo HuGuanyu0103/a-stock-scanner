@@ -29,6 +29,78 @@ body {
 .live-dot.off { background: #d9d9d9; animation: none; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
 
+
+/* ── AI Agent 面板 ───────────────────────────── */
+.agent-panel { max-width: 900px; margin: 0 auto; }
+.agent-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.agent-header h2 { font-size: 18px; font-weight: 600; margin: 0; }
+.agent-refresh-btn { padding: 6px 18px; background: #1890ff; color: #fff; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; }
+.agent-refresh-btn:hover { background: #096dd9; }
+.agent-refresh-btn:disabled { background: #bae7ff; cursor: not-allowed; }
+.agent-status { padding: 8px 14px; border-radius: 6px; margin-bottom: 14px; font-size: 13px; }
+.agent-status.loading { background: #f0f5ff; color: #1890ff; }
+.agent-status.ok { background: #f6ffed; color: #389e0d; }
+.agent-status.error { background: #fff1f0; color: #cf1322; }
+.agent-market-read { padding: 12px 16px; background: #fafafa; border-radius: 8px; margin-bottom: 16px; font-size: 14px; line-height: 1.6; }
+.agent-market-read strong { color: #1890ff; }
+.picks-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.pick-card { background: #fff; border: 1px solid #e8e8e8; border-radius: 8px; padding: 14px; transition: box-shadow 0.2s; }
+.pick-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+.pick-card .pick-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.pick-card .pick-name { font-size: 15px; font-weight: 600; }
+.pick-card .pick-code { font-size: 11px; color: #999; }
+.pick-card .pick-pool { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 500; }
+.pick-card .pick-pool.pool-a { background: #fff1f0; color: #cf1322; }
+.pick-card .pick-pool.pool-b { background: #f6ffed; color: #389e0d; }
+.pick-card .pick-confidence { font-size: 12px; color: #faad14; }
+.pick-card .pick-sector { font-size: 12px; color: #666; margin-bottom: 6px; }
+.pick-card .pick-reasoning { font-size: 13px; color: #333; line-height: 1.6; margin-bottom: 10px; }
+.pick-card .pick-trade { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 12px; color: #666; padding-top: 8px; border-top: 1px solid #f0f0f0; }
+.pick-card .pick-risk { font-size: 11px; color: #cf1322; margin-top: 6px; padding-top: 6px; border-top: 1px dashed #ffccc7; }
+.agent-reminder { padding: 10px 14px; background: #fffbe6; border: 1px solid #ffe58f; border-radius: 6px; font-size: 13px; margin-bottom: 16px; }
+.agent-chat-box { display: flex; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid #f0f0f0; }
+.agent-chat-box input { flex: 1; padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 13px; outline: none; }
+.agent-chat-box input:focus { border-color: #1890ff; }
+.agent-chat-box button { padding: 8px 16px; background: #1890ff; color: #fff; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; }
+.agent-chat-box button:disabled { background: #bae7ff; cursor: not-allowed; }
+.agent-chat-history { max-height: 300px; overflow-y: auto; margin-bottom: 12px; }
+.chat-msg { margin-bottom: 10px; padding: 8px 12px; border-radius: 6px; font-size: 13px; line-height: 1.6; max-width: 85%; }
+.chat-msg.user { background: #1890ff; color: #fff; margin-left: auto; }
+.chat-msg.agent { background: #f5f5f5; color: #333; }
+/* ── Loop + Debate 样式 ─────────────────────── */
+.adopt-btn { padding: 4px 12px; border: 1px solid #52c41a; background: #f6ffed; color: #52c41a; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 6px; }
+.adopt-btn:hover { background: #52c41a; color: #fff; }
+.adopt-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); z-index: 999; justify-content: center; align-items: center; }
+.adopt-modal.show { display: flex; }
+.adopt-modal-content { background: #fff; border-radius: 10px; padding: 24px; width: 360px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
+.adopt-modal-content h3 { margin: 0 0 16px; font-size: 16px; }
+.adopt-modal-content label { display: block; font-size: 13px; color: #666; margin-bottom: 4px; }
+.adopt-modal-content input { width: 100%; padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; margin-bottom: 14px; box-sizing: border-box; }
+.adopt-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+.adopt-actions button { padding: 6px 16px; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; }
+.adopt-actions .btn-confirm { background: #52c41a; color: #fff; }
+.adopt-actions .btn-cancel { background: #f5f5f5; color: #666; }
+.loop-status-bar { padding: 10px 14px; background: #f0f5ff; border-radius: 6px; margin-top: 16px; font-size: 13px; display: flex; align-items: center; justify-content: space-between; }
+.loop-status-bar .loop-stat strong { color: #1890ff; }
+.loop-refresh-btn { padding: 4px 12px; border: 1px solid #1890ff; background: #fff; color: #1890ff; border-radius: 4px; font-size: 11px; cursor: pointer; }
+.debate-btn { padding: 6px 18px; background: #722ed1; color: #fff; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; margin-top: 10px; }
+.debate-btn:hover { background: #531dab; }
+.debate-btn:disabled { background: #d3adf7; cursor: not-allowed; }
+.debate-panel { margin-top: 14px; border: 1px solid #e8e8e8; border-radius: 8px; overflow: hidden; }
+.debate-consensus { padding: 12px 16px; font-size: 13px; border-bottom: 1px solid #f0f0f0; }
+.debate-consensus.strong { background: #f6ffed; color: #389e0d; }
+.debate-consensus.split { background: #fffbe6; color: #d48806; }
+.debate-consensus.deadlock { background: #fff1f0; color: #cf1322; }
+.debate-analysts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 12px; }
+.analyst-card { background: #fafafa; border-radius: 6px; padding: 10px; font-size: 12px; }
+.analyst-card h4 { margin: 0 0 6px; font-size: 13px; }
+.analyst-tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; margin-bottom: 4px; }
+.analyst-tag.bullish { background: #fff1f0; color: #cf1322; }
+.analyst-tag.neutral { background: #f5f5f5; color: #666; }
+.analyst-tag.bearish { background: #f0f5ff; color: #1890ff; }
+.mod-card { background: linear-gradient(135deg, #f9f0ff, #efdbff); border-radius: 6px; padding: 14px; margin: 0 12px 12px; font-size: 13px; }
+.mod-card h4 { margin: 0 0 8px; font-size: 14px; color: #531dab; }
+
 /* ── 主标签栏 ───────────────────────────────── */
 .main-tab-bar {
   display: flex; gap: 0; margin-bottom: 16px; background: #fff;
@@ -313,7 +385,7 @@ body {
   <div class="main-tab-bar">
     <button class="main-tab-btn active" onclick="switchMainTab(0)">📊 资金流向</button>
     <button class="main-tab-btn" onclick="switchMainTab(1)">🎯 盘中选股</button>
-    <button class="main-tab-btn" onclick="switchMainTab(2)">📋 持仓决策</button>
+    <button class="main-tab-btn" onclick="switchMainTab(2)">🤖 AI 观澜</button>
   </div>
 
   <!-- ═══════════════════════════════════════════════════════════ -->
@@ -424,18 +496,50 @@ body {
   </div>
 
   <!-- ═══════════════════════════════════════════════════════════ -->
-  <!-- Tab 2: 持仓决策（预留）-->
+  <!-- Tab 2: AI 决策 -->
   <!-- ═══════════════════════════════════════════════════════════ -->
   <div class="main-tab-content" id="mainTab2">
-    <div class="placeholder-panel">
-      <div class="ph-icon">📋</div>
-      <div class="ph-title">持仓决策</div>
-      <div class="ph-desc">
-        功能开发中，敬请期待<br>
-        计划支持：持仓跟踪 · 止盈止损提醒 · 盈亏统计 · 交易日志
+    <div class="agent-panel">
+      <div style="padding:8px 14px;background:#fffbe6;border:1px solid #ffe58f;border-radius:6px;margin-bottom:12px;font-size:11px;color:#8c6d00;line-height:1.5">
+⚠️ <strong>风险提示</strong>：本系统仅为辅助决策工具，所有AI建议仅供参考，不构成投资建议。股市有风险，投资需谨慎。AI生成内容可能存在偏差，请结合自身判断独立决策。
+</div>
+<div class="agent-header">
+        <h2>🤖 AI 观澜 · 盘中决策</h2>
+        <button class="agent-refresh-btn" id="agentRefreshBtn" onclick="loadAgentPicks()">刷新分析</button>
+      </div>
+      <div class="agent-status loading" id="agentStatus">点击「刷新分析」获取 AI 盘中建议</div>
+      <div class="agent-market-read" id="agentMarketRead" style="display:none"></div>
+      <div class="picks-cards" id="agentPicksCards"></div>
+      <div class="agent-reminder" id="agentReminder" style="display:none"></div>
+      <button class="debate-btn" id="debateBtn" onclick="loadDebate()">🧠 启动 Multi-Agent 辩论</button>
+      <div class="debate-panel" id="debatePanel" style="display:none"></div>
+      <div class="agent-chat-history" id="agentChatHistory"></div>
+      <div class="agent-chat-box">
+        <input type="text" id="agentChatInput" placeholder="追问观澜，例如：中兴通讯能追吗？" onkeydown="if(event.key==='Enter')sendAgentChat()">
+        <button id="agentChatSendBtn" onclick="sendAgentChat()">发送</button>
+      </div>
+      <div class="loop-status-bar" id="loopStatusBar" style="display:none">
+        <span><span class="loop-stat"><strong id="loopWinRate">--</strong> 胜率</span> <span class="loop-stat"><strong id="loopTotal">--</strong> 笔记录</span></span>
+        <button class="loop-refresh-btn" onclick="loadLoopStatus()">刷新</button>
       </div>
     </div>
   </div>
+
+<!-- 采纳弹窗 -->
+<div class="adopt-modal" id="adoptModal">
+  <div class="adopt-modal-content">
+    <h3>📝 记录决策</h3>
+    <div style="font-size:13px;color:#333;margin-bottom:12px" id="adoptStockLabel"></div>
+    <label>买入价格</label>
+    <input type="number" id="adoptPrice" step="0.01" placeholder="请输入实际买入价">
+    <label>备注（可选）</label>
+    <input type="text" id="adoptNotes" placeholder="例如：追涨买入">
+    <div class="adopt-actions">
+      <button class="btn-cancel" onclick="closeAdoptModal()">取消</button>
+      <button class="btn-confirm" onclick="confirmAdopt()">确认采纳</button>
+    </div>
+  </div>
+</div>
 </div>
 
 <script>
@@ -455,6 +559,142 @@ let picksInterval = null;
 let flowInterval = null;
 let sectorInterval = null;
 let activePool = 'A';  // 'A' | 'B'
+
+// ── AI Agent 功能 ──────────────────────────────────────────
+let agentChatHistory = [];
+
+async function loadAgentPicks() {
+  const btn = document.getElementById('agentRefreshBtn');
+  const status = document.getElementById('agentStatus');
+  btn.disabled = true;
+  status.className = 'agent-status loading';
+  status.textContent = '🤖 观澜正在分析盘中数据...';
+  try {
+    const resp = await fetch('/api/agent/intraday');
+    const data = await resp.json();
+    if (data.error) { status.className = 'agent-status error'; status.textContent = '⚠️ ' + data.error; return; }
+    status.className = 'agent-status ok';
+    status.textContent = '✅ 分析完成' + (data.mode === 'cached' ? '(缓存)' : '');
+    renderAgentResult(data);
+  } catch(e) { status.className = 'agent-status error'; status.textContent = '⚠️ AI 暂不可用'; }
+  finally { btn.disabled = false; }
+}
+
+function esc(s) { if(!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function renderAgentResult(data) {
+  const mr = document.getElementById('agentMarketRead');
+  if (data.market_read) { mr.style.display=''; mr.innerHTML='<strong>📊 市场判断：</strong>'+esc(data.market_read); }
+  else mr.style.display='none';
+  const cards = document.getElementById('agentPicksCards');
+  const picks = data.top_picks || [];
+  if (picks.length === 0) { cards.innerHTML='<div style="padding:20px;text-align:center;color:#999">暂无推荐</div>'; }
+  else {
+    cards.innerHTML = picks.map(function(p) {
+      var stars = Array(Math.max(0,(p.confidence||0))).fill('★').join('') + Array(Math.max(0,5-(p.confidence||0))).fill('☆').join('');
+      var pl = (p.pool||'').includes('A') ? 'A池·追涨' : 'B池·低吸';
+      var pc = (p.pool||'').includes('A') ? 'pool-a' : 'pool-b';
+      return '<div class="pick-card">'
+        + '<div class="pick-header"><div><span class="pick-name">'+esc(p.name||'')+'</span> <span class="pick-code">'+esc(p.code||'')+'</span></div><span class="pick-pool '+pc+'">'+pl+'</span></div>'
+        + '<div class="pick-confidence">'+stars+'</div>'
+        + (p.sector?'<div class="pick-sector">📌 '+esc(p.sector)+'</div>':'')
+        + '<div class="pick-reasoning">'+esc(p.reasoning||'')+'</div>'
+        + '<div class="pick-trade">'
+        + '<span>💰 买入：'+esc(p.entry_zone||'-')+'</span><span>🎯 目标：'+esc(p.target||'-')+'</span>'
+        + '<span>🛑 止损：'+esc(p.stop_loss||'-')+'</span><span>📦 仓位：'+esc(p.position||'-')+'</span>'
+        + '</div>'
+        + (p.risk_note?'<div class="pick-risk">⚠️ '+esc(p.risk_note)+'</div>':'')
+        + '<button class="adopt-btn" onclick="adoptPick(\''+esc(p.code||'')+'\',\''+esc(p.name||'')+'\',\''+pl+'\',\''+esc(p.signal||'')+'\',\''+esc(p.sector||'')+'\','+(p.score||0)+','+(p.confidence||3)+')">✅ 采纳</button>'
+        + '</div>';
+    }).join('');
+  }
+  const rem = document.getElementById('agentReminder');
+  if (data.market_reminder) { rem.style.display=''; rem.textContent='💡 '+data.market_reminder; }
+  else rem.style.display='none';
+  agentChatHistory = [];
+  document.getElementById('agentChatHistory').innerHTML = '';
+}
+
+async function sendAgentChat() {
+  const ipt = document.getElementById('agentChatInput'); const btn = document.getElementById('agentChatSendBtn');
+  const msg = ipt.value.trim(); if(!msg) return;
+  ipt.disabled=true; btn.disabled=true; ipt.value='';
+  appendChatMsg('user',msg);
+  try {
+    const r = await fetch('/api/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,history:agentChatHistory})});
+    const d = await r.json(); const reply = d.reply||'抱歉，暂不可用。';
+    agentChatHistory.push({role:'user',content:msg}); agentChatHistory.push({role:'assistant',content:reply});
+    if(agentChatHistory.length>20) agentChatHistory=agentChatHistory.slice(-20);
+    appendChatMsg('agent',reply);
+  } catch(e) { appendChatMsg('agent','连接失败'); }
+  finally { ipt.disabled=false; btn.disabled=false; ipt.focus(); }
+}
+function appendChatMsg(role,text) {
+  const d=document.getElementById('agentChatHistory'); const e=document.createElement('div');
+  e.className='chat-msg '+role; e.textContent=text; d.appendChild(e); d.scrollTop=d.scrollHeight;
+}
+
+// ── Loop Engineering ─────────────────────────────────────
+let adoptTarget = null;
+function adoptPick(code,name,pool,signal,sector,score,confidence) {
+  adoptTarget={code,name,pool,signal,sector,score,confidence};
+  document.getElementById('adoptStockLabel').textContent=name+' '+code+' | '+pool+' '+signal;
+  document.getElementById('adoptPrice').value=''; document.getElementById('adoptNotes').value='';
+  document.getElementById('adoptModal').classList.add('show');
+}
+function closeAdoptModal() { document.getElementById('adoptModal').classList.remove('show'); adoptTarget=null; }
+async function confirmAdopt() {
+  const price=parseFloat(document.getElementById('adoptPrice').value);
+  if(!price||price<=0){alert('请输入有效价格');return;} if(!adoptTarget) return;
+  try {
+    const r=await fetch('/api/loop/adopt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:adoptTarget.code,name:adoptTarget.name,entry_price:price,pool:adoptTarget.pool,signal:adoptTarget.signal,sector:adoptTarget.sector,score:adoptTarget.score,confidence:adoptTarget.confidence,source:'agent',notes:document.getElementById('adoptNotes').value})});
+    const d=await r.json(); if(d.id){closeAdoptModal();loadLoopStatus();}
+  } catch(e) {}
+}
+async function loadLoopStatus() {
+  try {
+    const r=await fetch('/api/loop/status'); const d=await r.json();
+    const bar=document.getElementById('loopStatusBar');
+    if(d.stats&&d.stats.total_closed>0){bar.style.display='flex';document.getElementById('loopWinRate').textContent=d.stats.win_rate+'%';document.getElementById('loopTotal').textContent=d.stats.total_closed;}
+    else bar.style.display='none';
+  } catch(e) {}
+}
+
+// ── Multi-Agent Debate ─────────────────────────────────
+async function loadDebate() {
+  const btn=document.getElementById('debateBtn'); const panel=document.getElementById('debatePanel');
+  btn.disabled=true; btn.textContent='🧠 辩论中...';
+  try {
+    const r=await fetch('/api/agent/debate'); const d=await r.json();
+    if(d.error){panel.innerHTML='<div style="padding:10px;color:#999">'+d.error+'</div>';return;}
+    renderDebate(d); panel.style.display='';
+  } catch(e){panel.innerHTML='<div style="padding:10px;color:#cf1322">辩论暂不可用</div>';panel.style.display='';}
+  finally{btn.disabled=false;btn.textContent='🧠 刷新辩论';}
+}
+function renderDebate(data) {
+  const panel=document.getElementById('debatePanel');
+  const mod=data.moderator||{}; const a=data.analysts||{};
+  let lc=(data.consensus_level||'').includes('强烈')?'strong':(data.consensus_level||'').includes('分歧')?'deadlock':'split';
+  let h='<div class="debate-consensus '+lc+'"><strong>🧠 决策委员会：'+(data.consensus_level||'?')+'</strong>';
+  if(mod.final_decision){const fd=mod.final_decision;h+=' | 姿态：'+(fd.posture||'?')+' | 仓位：'+(fd.position_advice||'?');}
+  h+='</div><div class="debate-analysts">';
+  [{k:'tech',n:'📊 观象',d:'技术+资金'},{k:'sentiment',n:'📈 观势',d:'情绪面'},{k:'news',n:'📰 观闻',d:'消息面'}].forEach(function(an){
+    const op=a[an.k]||{}; const v=op.overall_view||op.mood||op.overall_rating||'?';
+    let tc='neutral'; if(v.includes('看多')||v.includes('利好')||v.includes('贪婪')) tc='bullish';
+    else if(v.includes('看空')||v.includes('利空')||v.includes('恐惧')) tc='bearish';
+    h+='<div class="analyst-card"><h4>'+an.n+' <span style="font-size:10px;color:#999">'+an.d+'</span></h4>';
+    h+='<span class="analyst-tag '+tc+'">'+v.substring(0,20)+'</span>';
+    h+='<div style="margin-top:4px;line-height:1.4">'+(op.bottom_line||'').substring(0,80)+'</div></div>';
+  });
+  h+='</div><div class="mod-card"><h4>🎯 主席 观澜 综合判断</h4>';
+  if(mod.final_decision) h+='<div>'+(mod.final_decision.key_reasoning||'')+'</div>';
+  if(mod.bottom_line) h+='<div style="margin-top:6px;font-weight:600">'+mod.bottom_line+'</div>';
+  if(mod.analyst_alignment){const al=mod.analyst_alignment;
+    h+='<div style="margin-top:6px;font-size:11px;color:#999">技术：'+(al.tech||'?')+' | 情绪：'+(al.sentiment||'?')+' | 消息：'+(al.news||'?')+'</div>';
+  }
+  h+='</div>'; panel.innerHTML=h;
+}
+
 
 // ── 主标签切换 ────────────────────────────────────────────
 function switchMainTab(idx) {
@@ -481,7 +721,8 @@ function switchMainTab(idx) {
     if (picksInterval) { clearInterval(picksInterval); picksInterval = null; }
   }
   if (idx === 2) {
-    // 持仓决策 - 预留
+    loadAgentPicks();
+    loadLoopStatus();
   }
   setTimeout(() => { if (sectorChart) sectorChart.resize(); if (nbChart) nbChart.resize(); }, 150);
 }
