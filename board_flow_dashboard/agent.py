@@ -51,6 +51,10 @@ SYSTEM_PROMPT = """你是一个 A 股超短线交易决策顾问，专精 2-4 �
 哪些板块资金流入最强？哪些竞价阶段出现异动？如果板块层面找不到明确方向，
 即使个股信号再强也不能积极推荐。
 
+### Step 2.5: 重点关注个股
+系统已经为你筛选了今日最值得关注的 3-5 只个股（已排除科创/创业板/ST，价格在 30 元以内，
+小盘股已通过额外的量比和资金门槛验证）。你在生成推荐时必须优先评估这些个股。
+
 ### Step 3: 再看个股异动
 竞价阶段出现跳空高开 + 量比异常放大的个股是超短线的重点观察对象。
 分析这些异动背后的可能逻辑：是消息驱动？是板块带动？还是独立行情？
@@ -70,6 +74,14 @@ SYSTEM_PROMPT = """你是一个 A 股超短线交易决策顾问，专精 2-4 �
 
 ## 输出格式
 你必须严格按照以下 JSON 格式输出。不要添加 JSON 之外的任何文字。
+
+## 排版要求
+在生成 auction_analysis 和 sector_watch 时，遵循以下排版逻辑：
+- 每个板块的第一条是「总述」——用一句判断性的话概括整体情况
+- 后续是「分点」——具体的子项数据
+- 不要罗列原始数据，给每个数据一个判断
+- 竞价异动个股直接合并到 sector_watch 中，不单独列「竞价异动关注」区块
+- 策略(今日判断、姿态、仓位、主攻板块)必须作为整个简报的第一段输出
 
 ```json
 {
@@ -372,6 +384,7 @@ class DecisionAgent:
         breadth: dict,
         anomalies: list[dict],
         hot_sectors: list[dict],
+        key_stocks_context: str = "",
     ) -> Optional[dict]:
         """生成盘前决策简报。
 
@@ -760,7 +773,8 @@ class DecisionAgent:
         user_message = (
             "请根据以下盘中数据，生成盘中选股决策建议。\n\n"
             "=== 盘中数据上下文 ===\n"
-            + context + "\n\n=== 历史反馈数据 ===\n" + loop_context + "\n\n=== \n\n"
+            + (("\n\n" + key_stocks_context + "\n\n") if key_stocks_context else "")
+                + context + "\n\n=== 历史反馈数据 ===\n" + loop_context + "\n\n=== \n\n"
             "=== 你的任务 ===\n"
             "1. 判断当前市场情绪和市场广度\n"
             "2. 从候选池中选出最值得关注的 3-5 只股票\n"
@@ -987,72 +1001,98 @@ def get_agent() -> DecisionAgent:
 
 
 def agent_brief_to_markdown(brief: dict) -> str:
-    """将 Agent 输出的 JSON 转换为 Markdown（供微信推送）。"""
-    today = datetime.now().strftime("%m/%d")
-    lines = [
-        f"== 盘前简报 {today} 09:25 ==",
-        "",
-        f"[今日判断] {brief.get('today_thesis', '')}",
-        "",
-    ]
+    """将 Agent 输出的 JSON 转换为 Markdown（供微信推送）。
 
+    v7.3 版式：判断+策略置顶 → 外盘 → 情绪 → 板块 → 个股 → 风险
+    """
+    today = datetime.now().strftime("%m/%d")
+    lines = [f"== 盘前简报 {today} 09:25 ==", ""]
+
+    # ── 判断 + 策略（置顶）───────────────────────────────
+    st = brief.get("strategy", {})
+    thesis = brief.get("today_thesis", "")
+    posture = st.get("posture", "")
+    ratio = st.get("a_b_ratio", "")
+    position = st.get("position_advice", "")
+    primary = "、".join(st.get("primary_sectors", []))
+    avoid = "、".join(st.get("avoid_sectors", []))
+    lines.append(f"【今日判断】{thesis}")
+    parts = [posture, ratio, position]
+    strat_line = "  ".join(p for p in parts if p)
+    lines.append(f"策略：{strat_line}")
+    if primary:
+        lines.append(f"主攻：{primary}")
+    if avoid:
+        lines.append(f"回避：{avoid}")
+    lines.append("")
+
+    # ── 外盘 ──────────────────────────────────────────────
     oa = brief.get("overnight_analysis", {})
     if oa:
-        lines.append("【外盘】")
+        impact = oa.get("overall_impact", "")
+        lines.append(f"【外盘】{impact}")
         if oa.get("us_market"):
-            lines.append(f"美股: {oa['us_market']}")
+            lines.append(f"  • 美股：{oa['us_market']}")
         if oa.get("hk_market"):
-            lines.append(f"港股: {oa['hk_market']}")
-        if oa.get("overall_impact"):
-            lines.append(f"  -> {oa['overall_impact']}")
+            lines.append(f"  • 港股：{oa['hk_market']}")
         lines.append("")
 
+    # ── 竞价情绪 ─────────────────────────────────────────
     aa = brief.get("auction_analysis", {})
     if aa:
-        lines.append("【竞价情绪】")
-        if aa.get("breadth"):
-            lines.append(aa["breadth"])
-        if aa.get("anomaly_theme"):
-            lines.append(f"异动主题: {aa['anomaly_theme']}")
-        highlights = aa.get("anomaly_highlights", [])
-        if highlights:
-            lines.append("")
-            lines.append("【竞价异动关注】")
-            for h in highlights[:5]:
-                name = h.get("name", "?")
-                why = h.get("why_notable", "")
-                lines.append(f"  - {name}: {why}")
+        theme = aa.get("anomaly_theme", "")
+        breadth = aa.get("breadth", "")
+        header = theme or breadth or ""
+        lines.append(f"【竞价情绪】{header}")
+        if breadth and breadth != theme:
+            lines.append(f"  {breadth}")
         lines.append("")
 
+    # ── 重点关注板块 ─────────────────────────────────────
     sw = brief.get("sector_watch", [])
     if sw:
-        lines.append("【开盘重点关注板块】")
+        top_theme = sw[0].get("attention_reason", "") if sw else ""
+        lines.append(f"【关注板块】{top_theme}")
         for s in sw[:6]:
-            lines.append(f"  - {s.get('name', '?')}: {s.get('attention_reason', '')}")
+            reason = s.get("attention_reason", "")
+            if reason == top_theme:
+                continue
+            lines.append(f"  • {s.get('name','?')}：{reason}")
         lines.append("")
 
-    st = brief.get("strategy", {})
-    if st:
-        posture = st.get("posture", "")
-        ratio = st.get("a_b_ratio", "")
-        position = st.get("position_advice", "")
-        primary = "、".join(st.get("primary_sectors", []))
-        avoid = "、".join(st.get("avoid_sectors", []))
-
-        lines.append(f"【今日策略】{posture}  {ratio}  {position}")
-        if primary:
-            lines.append(f"主攻: {primary}")
-        if avoid:
-            lines.append(f"回避: {avoid}")
-        if st.get("key_reminder"):
-            lines.append(f"提醒: {st['key_reminder']}")
+    # ── 重点关注个股 ─────────────────────────────────────
+    highlights = aa.get("anomaly_highlights", [])
+    top_picks = brief.get("top_picks", [])
+    key_stocks = highlights + [
+        {"name": p.get("name","?"), "code": p.get("code",""),
+         "why_notable": p.get("reasoning",""),
+         "sector": p.get("sector","")}
+        for p in top_picks[:3]
+    ]
+    if key_stocks:
+        lines.append("【关注个股】")
+        seen = set()
+        for ks in key_stocks[:5]:
+            name = ks.get("name", "?")
+            code = ks.get("code", "")
+            if code in seen:
+                continue
+            seen.add(code)
+            why = ks.get("why_notable", "")
+            sector = ks.get("sector", "")
+            sector_tag = f"({sector})" if sector else ""
+            lines.append(f"  • {name} {code} {sector_tag}：{why}")
         lines.append("")
 
+    # ── 风险提示 ─────────────────────────────────────────
     risks = brief.get("risk_alerts", [])
-    if risks:
-        lines.append("【风险提示】")
-        for r in risks:
-            lines.append(f"  - {r}")
+    reminder = st.get("key_reminder", "")
+    risk_header = reminder if reminder else (risks[0] if risks else "")
+    if risks or reminder:
+        risk_header = reminder if reminder else (risks[0] if risks else "")
+        lines.append(f"【风险】{risk_header}")
+        for r in (risks[1:] if reminder and risks else risks):
+            lines.append(f"  • {r}")
         lines.append("")
 
     lines.append("-- 由 AI 决策 Agent [观澜] 生成 --")

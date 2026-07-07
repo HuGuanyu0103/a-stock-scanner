@@ -30,6 +30,7 @@ import urllib3
 # Agent 集成
 try:
     from agent import DecisionAgent, get_agent, agent_brief_to_markdown
+    from key_stock_selector import select_key_stocks
     _HAS_AGENT = True
 except ImportError:
     _HAS_AGENT = False
@@ -216,7 +217,7 @@ def _fmt_pct(v: float | None) -> str:
     return f"{sign}{v:.1f}%"
 
 
-def _generate_template_report() -> str:
+def _generate_template_report(key_stocks=None) -> str:
     """生成盘前简报 Markdown 文本。"""
     now = datetime.now()
     today_str = now.strftime("%m/%d")
@@ -275,6 +276,18 @@ def _generate_template_report() -> str:
     if not anomaly_lines:
         anomaly_lines = ["（竞价无明显异动个股）"]
 
+    # ── 重点关注个股 ─────────────────────────────────────────
+    if key_stocks:
+        for ks in key_stocks:
+            price = ks.get("price", 0) or 0
+            price_s = "¥{:.2f}".format(price) if price else "--"
+            pct = ks.get("pct_chg", 0) or 0
+            pct_s = "{:+.1f}%".format(pct)
+            anomaly_lines.append(
+                "• {} {} | {} | {} {} | {}".format(
+                    ks["name"], ks["code"], ks.get("source",""),
+                    price_s, pct_s, ks.get("reason","")))
+
     # ── 4. 重点关注板块 ──────────────────────────────────────
     hot_sectors = fetch_auction_hot_sectors(top_n=6)
     sector_lines = []
@@ -287,35 +300,47 @@ def _generate_template_report() -> str:
 
     # ── 5. 今日策略 ──────────────────────────────────────────
     if breadth["status"] == "bullish" and hsi_val > 0.2:
-        strategy = "外盘+竞价共振偏多 → A 池为主(65%)  方向：竞价强势板块"
+        strategy = "进攻  A池为主(65%)  方向：竞价强势板块"
     elif breadth["status"] == "bearish" and hsi_val < -0.2:
-        strategy = "外盘+竞价共振偏空 → B 池防守(65%)  谨慎追涨"
+        strategy = "防守  B池防守(65%)  谨慎追涨"
     elif breadth["status"] == "bullish":
-        strategy = "竞价偏乐观但外盘未确认 → A/B 均衡(50:50)  开盘后确认"
+        strategy = "均衡  A/B 50:50  开盘后确认方向"
     elif breadth["status"] == "bearish":
-        strategy = "竞价偏冷但外盘尚可 → B 池为主(60%)  关注低吸机会"
+        strategy = "偏防守  B池为主(60%)  关注低吸机会"
     else:
-        strategy = "外盘中性、竞价中性 → 均衡策略  等待盘中方向确认"
+        strategy = "均衡  等待盘中方向确认"
 
-    # ── 组装报告 ─────────────────────────────────────────────
+    # ── 组装报告（新版式：判断+策略置顶 → 外盘 → 情绪 → 板块 → 个股）──
     lines = [
         f"══ 盘前简报 {today_str} 09:25 ══",
         "",
-        f"【外盘】{us_str}",
-        ov_line,
-        f"→ {ov_sentiment}",
+        f"【今日判断】{ov_sentiment} | {strategy}",
         "",
-        f"【竞价情绪】{auc_line}",
-        auc_sentiment,
+        f"【外盘】{ov_sentiment}",
+        f"  • 美股：{us_str}",
+        f"  • 港股：{ov_line}",
         "",
-        "【竞价异动 Top 5】",
+        f"【竞价情绪】{auc_sentiment or auc_line}",
+        "",
     ]
-    lines.extend(anomaly_lines)
-    lines.append("")
+
+    # ── 板块置前 ────────────────────────────────────────────
     lines.append("【今日重点关注板块】")
-    lines.extend(sector_lines)
+    if sector_lines:
+        lines.append(f"主力资金聚焦{'、'.join(s['name'] for s in hot_sectors[:3]) if hot_sectors else '竞价活跃板块'}")
+        lines.extend(sector_lines)
+    else:
+        lines.append("（板块数据暂未就绪）")
     lines.append("")
-    lines.append(f"【今日策略】{strategy}")
+
+    # ── 重点个股（合并竞价异动 + 筛选结果）─────────────────
+    lines.append("【今日重点关注个股】")
+    if anomaly_lines:
+        lines.append(f"竞价异动 + 技术面共振，共关注{len(anomaly_lines)}只")
+        lines.extend(anomaly_lines)
+    else:
+        lines.append("（暂无符合条件的标的）")
+    lines.append("")
 
     return "\n".join(lines)
 
@@ -337,13 +362,25 @@ def generate_report() -> str:
     breadth = fetch_auction_market_breadth()
     anomalies = fetch_auction_anomalies(top_n=5)
     hot_sectors = fetch_auction_hot_sectors(top_n=6)
+    key_stocks = select_key_stocks(anomalies, hot_sectors)
 
     # 尝试 AI Agent 生成
     if _HAS_AGENT:
         try:
             agent = get_agent()
+            ks_ctx = ""
+            if key_stocks:
+                ks_lines = ["=== 今日重点关注个股 ==="]
+                for ks in key_stocks:
+                    ks_lines.append(
+                        "{} {} | {} | ¥{:.2f} | {:+.1f}% | {}".format(
+                            ks["name"], ks["code"], ks.get("source",""),
+                            ks.get("price",0) or 0, ks.get("pct_chg",0) or 0,
+                            ks.get("reason","")))
+                ks_ctx = "\n".join(ks_lines)
             brief = agent.generate_pre_market_brief(
-                indices, breadth, anomalies, hot_sectors
+                indices, breadth, anomalies, hot_sectors,
+                key_stocks_context=ks_ctx
             )
             if brief:
                 logger.info("Agent 简报生成成功")
@@ -353,7 +390,7 @@ def generate_report() -> str:
 
     # Fallback: 模板模式
     logger.info("使用模板模式生成简报")
-    return _generate_template_report()
+    return _generate_template_report(key_stocks)
 
 
 # ═══════════════════════════════════════════════════════════════
