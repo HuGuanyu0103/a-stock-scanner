@@ -814,6 +814,7 @@ async function loadSectorData() {
     document.getElementById('statusText').textContent =
       sectorData.date + ' · ' + typeLabel + '板块 · ' + sectorData.rank.length + ' 个 · 数据时间 ' + dataTime;
     document.getElementById('rankTitle').textContent = typeLabel + '板块资金流向';
+    updateStaleBanner(sectorData);
     _showErr('calling initSectorChart...');
     initSectorChart();
     _showErr('initSectorChart done');
@@ -1154,6 +1155,8 @@ async function loadStockPicks() {
 
 function renderPicks(data) {
   const { candidates, pool_a, pool_b, hot_sectors, pullback_sectors, time, date, mode, risk_level, market_breadth, filter_stats } = data;
+
+  updateStaleBanner(data);
 
   // ── 向后兼容：如果没有 pool_a/pool_b，从 candidates 中分离 ──
   const aStocks = pool_a || (candidates || []).filter(c => c.pool !== 'B');

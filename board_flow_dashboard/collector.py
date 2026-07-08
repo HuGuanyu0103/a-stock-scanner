@@ -335,6 +335,8 @@ class SectorFlowCollector:
         self._storage = Storage(self._data_dir / "collector.db")
 
         self._today = datetime.now().strftime("%Y%m%d")
+        self._data_date: str = datetime.now().strftime("%Y-%m-%d")  # 数据真实日期（可能来自历史DB）
+        self._new_day_data_arrived: bool = False  # 新一天首次 polling 成功标记
         self._concept_snapshots: list[dict] = []
         self._industry_snapshots: list[dict] = []
         self._northbound_snapshots: list[dict] = []
@@ -416,6 +418,19 @@ class SectorFlowCollector:
             nb = fetch_northbound_flow(timeout=6.0)
             if nb:
                 self._store_northbound(minute_key, nb)
+
+        # 新一天首次成功：清空昨日快照，切换至今日
+        if any_success and not self._new_day_data_arrived:
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            if self._data_date != today_str:
+                logger.info("新交易日首次 polling 成功，清空 %s 旧数据", self._data_date)
+                with self._lock:
+                    self._concept_snapshots.clear()
+                    self._industry_snapshots.clear()
+                    self._northbound_snapshots.clear()
+                    self._last_nb_cumulative = {}
+                self._data_date = today_str
+            self._new_day_data_arrived = True
 
         # 失败处理
         if any_success:
@@ -502,14 +517,10 @@ class SectorFlowCollector:
         if new_today != self._today:
             self._today = new_today
             self._daily_summary_saved = False
-            with self._lock:
-                self._concept_snapshots.clear()
-                self._industry_snapshots.clear()
-                self._northbound_snapshots.clear()
-                self._last_nb_cumulative = {}
+            self._new_day_data_arrived = False  # 等待首次 polling 成功后清旧数据
             self._consecutive_failures = 0
             self._poll_interval = self._base_poll_interval
-            logger.info("日期切换至 %s", new_today)
+            logger.info("日期切换至 %s（保留旧数据至首次 polling 成功）", new_today)
 
     def _maybe_save_daily_summary(self):
         """收盘后（15:00+）自动保存当日板块摘要，供 B 池回溯使用。"""
@@ -576,34 +587,66 @@ class SectorFlowCollector:
         )
 
     def _load_from_db(self):
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        concept = self._storage.load_concept_snapshots(today_str)
-        industry = self._storage.load_industry_snapshots(today_str)
-        northbound = self._storage.load_northbound_snapshots(today_str)
-        if concept or industry:
-            with self._lock:
-                self._concept_snapshots = concept
-                self._industry_snapshots = industry
-                self._northbound_snapshots = northbound
-            # 恢复北向累计基准
-            if northbound:
-                last = northbound[-1]
-                self._last_nb_cumulative = {
-                    "net_inflow": last.get("net_inflow", 0),
-                    "hk2sh": last.get("hk2sh", 0),
-                    "hk2sz": last.get("hk2sz", 0),
-                }
-            logger.info("从 DB 恢复: 概念 %d, 行业 %d, 北向 %d",
-                         len(concept), len(industry), len(northbound))
+        """启动时从 DB 恢复数据。今日无数据时回溯最近交易日。"""
+        # 尝试今日 → 回溯最多 5 个交易日
+        from datetime import timedelta
+        loaded = False
+        for offset in range(6):  # 0=today, 1=yesterday, ..., 5
+            d = date.today() - timedelta(days=offset)
+            ds = d.isoformat()
+            concept = self._storage.load_concept_snapshots(ds)
+            industry = self._storage.load_industry_snapshots(ds)
+            northbound = self._storage.load_northbound_snapshots(ds)
+            if concept or industry:
+                with self._lock:
+                    self._concept_snapshots = concept
+                    self._industry_snapshots = industry
+                    self._northbound_snapshots = northbound
+                # 恢复北向累计基准
+                if northbound:
+                    last = northbound[-1]
+                    self._last_nb_cumulative = {
+                        "net_inflow": last.get("net_inflow", 0),
+                        "hk2sh": last.get("hk2sh", 0),
+                        "hk2sz": last.get("hk2sz", 0),
+                    }
+                self._data_date = ds
+                loaded = True
+                if offset == 0:
+                    logger.info("从 DB 恢复今日数据: 概念 %d, 行业 %d, 北向 %d",
+                                len(concept), len(industry), len(northbound))
+                else:
+                    logger.info("从 DB 恢复历史数据 (%s): 概念 %d, 行业 %d, 北向 %d",
+                                ds, len(concept), len(industry), len(northbound))
+                break
+        if not loaded:
+            logger.info("DB 中无近期数据，从空快照启动")
 
     # ── Dashboard 数据构建 ──────────────────────────────────
 
     def _build_dashboard_from_snapshots(self, snapshots: list[dict]) -> dict:
-        """从快照列表构建前端看板数据（仅 Top N 板块）。"""
-        if len(snapshots) < 2:
-            return fetch_dashboard_data(use_real=True)
+        """从快照列表构建前端看板数据（仅 Top N 板块）。
+
+        单快照也能构建 — 非交易时段可能只有 DB 中的最后一条数据。
+        """
+        if not snapshots:
+            # 无任何数据时返回空（不降级到 mock）
+            return {
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "time_label": "--:--",
+                "time_index": 0,
+                "total_times": 0,
+                "minutes": [],
+                "rank": [],
+                "series": {},
+                "is_trading": False,
+                "data_date": self._data_date,
+            }
 
         minutes = [s["time"] for s in snapshots]
+
+        # 构建 {time: rank} 索引
+        snap_map: dict[str, list[dict]] = {s["time"]: s["rank"] for s in snapshots}
 
         # 最新时刻的排名 — 只取 Top N
         latest_rank = snapshots[-1]["rank"] if snapshots else []
@@ -657,6 +700,8 @@ class SectorFlowCollector:
             "minutes": minutes,
             "rank": rank_data,
             "series": series,
+            "is_trading": self._is_market_open(),
+            "data_date": self._data_date,
         }
 
     def get_dashboard_data(self, sector_type: str = "concept") -> dict:
@@ -668,10 +713,6 @@ class SectorFlowCollector:
                 snapshots = list(self._industry_snapshots)
             else:
                 snapshots = list(self._concept_snapshots)
-
-        if len(snapshots) < 2:
-            logger.info("快照不足 (%d)，尝试实时获取", len(snapshots))
-            return fetch_dashboard_data(use_real=True)
 
         return self._build_dashboard_from_snapshots(snapshots)
 
@@ -713,9 +754,20 @@ class SectorFlowCollector:
 
         minutes = sorted(merged_by_time.keys())
 
-        if len(minutes) < 2:
-            logger.info("合并快照不足 (%d)，尝试实时获取", len(minutes))
-            return fetch_dashboard_data(use_real=True)
+        # 无数据时返回空
+        if not minutes:
+            return {
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "time_label": "--:--",
+                "time_index": 0,
+                "total_times": 0,
+                "minutes": [],
+                "rank": [],
+                "series": {},
+                "sector_type": "watch",
+                "is_trading": False,
+                "data_date": self._data_date,
+            }
 
         # 构建每时刻的 API 名 → 数据 索引
         api_data_by_time: dict[str, dict[str, dict]] = {}
@@ -855,6 +907,8 @@ class SectorFlowCollector:
             "rank": rank_data,
             "series": series,
             "sector_type": "watch",
+            "is_trading": self._is_market_open(),
+            "data_date": self._data_date,
         }
 
     def get_snapshot(self, time_idx: int, sector_type: str = "concept") -> dict:
@@ -1006,6 +1060,7 @@ class SectorFlowCollector:
             "market_open": self._is_market_open(),
             "is_trading_day": is_trading_day(date.today()),
             "date": datetime.now().strftime("%Y-%m-%d"),
+            "data_date": self._data_date,
         }
 
     def cleanup_history(self, keep_days: int = 30):

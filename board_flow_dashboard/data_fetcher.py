@@ -405,8 +405,18 @@ def fetch_dashboard_data(use_real: bool = True) -> dict:
     snapshot = fetch_all_sectors_snapshot()
 
     if rank_df is None and snapshot is None:
-        logger.info("真实数据不可用，降级为模拟数据")
-        return generate_mock_dashboard_data()
+        logger.info("真实数据不可用")
+        return {
+            "date": TRADE_DATE,
+            "time_label": "--:--",
+            "time_index": 0,
+            "total_times": 0,
+            "minutes": [],
+            "rank": [],
+            "series": {},
+            "is_trading": False,
+            "data_date": datetime.now().strftime("%Y-%m-%d"),
+        }
 
     if snapshot is not None:
         sectors = snapshot["sectors"]
@@ -419,7 +429,12 @@ def fetch_dashboard_data(use_real: bool = True) -> dict:
             for _, row in rank_df.head(top_count).iterrows()
         ]
     else:
-        return generate_mock_dashboard_data()
+        return {
+            "date": TRADE_DATE, "time_label": "--:--", "time_index": 0,
+            "total_times": 0, "minutes": [], "rank": [], "series": {},
+            "is_trading": False,
+            "data_date": datetime.now().strftime("%Y-%m-%d"),
+        }
 
     minutes = _build_trade_minutes()
     time_label = snapshot["time"] if snapshot else "15:00"
@@ -454,6 +469,8 @@ def fetch_dashboard_data(use_real: bool = True) -> dict:
         "minutes": minutes,
         "rank": rank_data,
         "series": series_data,
+        "is_trading": _is_trading_time(),
+        "data_date": datetime.now().strftime("%Y-%m-%d"),
     }
 
 
