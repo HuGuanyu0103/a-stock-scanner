@@ -10,7 +10,7 @@
 
 :root {
   --bg: #f5f5f7;
-  --card: #ffffff;
+  --card: #fafbfc;
   --text: #1d1d1f;
   --text-secondary: #86868b;
   --text-tertiary: #aeaeb2;
@@ -290,6 +290,11 @@ body {
 .spinner { width: 22px; height: 22px; border: 2.5px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  .live-dot { animation: none; }
+}
+
 /* ── Scrollbar ──────────────────────────── */
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-thumb { background: #d1d1d6; border-radius: 4px; }
@@ -384,19 +389,19 @@ body {
   <!-- ═══════════════════ RIGHT PANEL ═══════════════════ -->
   <div class="right-panel">
     <div class="chat-header">
-      <h2>🤖 观澜 · 股票助理</h2>
+      <h2>观澜 · 股票助理</h2>
       <div class="chat-sub">AI 驱动的智能投资决策伙伴</div>
     </div>
 
     <div class="risk-disclaimer">
-      ⚠️ 本系统仅供辅助参考，不构成投资建议。股市有风险，投资需谨慎。
+      ⚠ 本系统仅供辅助参考，不构成投资建议。股市有风险，投资需谨慎。
     </div>
 
     <div class="chat-suggestions" id="chatSuggestions">
-      <button onclick="quickAsk('今天什么板块最热？')">🔥 今日热板块</button>
-      <button onclick="loadAgentPicks()">🎯 今日推荐</button>
-      <button onclick="quickAsk('帮我诊断持仓')">🩺 持仓诊断</button>
-      <button onclick="loadDebate()">🧠 Multi-Agent 辩论</button>
+      <button onclick="quickAsk('今天什么板块最热？')">今日热板块</button>
+      <button onclick="loadAgentPicks()">今日推荐</button>
+      <button onclick="quickAsk('帮我诊断持仓')">持仓诊断</button>
+      <button onclick="loadDebate()">Multi-Agent 辩论</button>
     </div>
 
     <div class="chat-messages" id="chatMessages">
