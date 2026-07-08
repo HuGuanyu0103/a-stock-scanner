@@ -30,6 +30,12 @@ body {
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
 
 
+
+/* ── 非交易时段标注 ─────────────────────────── */
+.stale-banner { padding: 8px 14px; background: #fffbe6; border: 1px solid #ffe58f; border-radius: 6px; margin-bottom: 14px; font-size: 12px; color: #8c6d00; display: flex; align-items: center; justify-content: space-between; }
+.stale-banner .stale-label { font-weight: 600; }
+.stale-banner .stale-date { color: #d48806; }
+
 /* ── AI Agent 面板 ───────────────────────────── */
 .agent-panel { max-width: 900px; margin: 0 auto; }
 .agent-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
@@ -392,6 +398,7 @@ body {
   <!-- Tab 0: 资金流向（含三个子标签）-->
   <!-- ═══════════════════════════════════════════════════════════ -->
   <div class="main-tab-content active" id="mainTab0">
+    <div class="stale-banner" id="staleBanner0" style="display:none"><span><span class="stale-label">⏸ 非交易时段</span> — 显示最后时刻数据</span><span class="stale-date" id="staleDate0"></span></div>
     <!-- 二级标签 -->
     <div class="sub-tab-bar">
       <button class="sub-tab-btn active" onclick="switchFlowSubTab('sector')">板块资金</button>
@@ -473,6 +480,7 @@ body {
   <!-- Tab 1: 盘中选股 -->
   <!-- ═══════════════════════════════════════════════════════════ -->
   <div class="main-tab-content" id="mainTab1">
+    <div class="stale-banner" id="staleBanner1" style="display:none"><span><span class="stale-label">⏸ 非交易时段</span> — 显示最后时刻数据</span><span class="stale-date" id="staleDate1"></span></div>
     <div class="picks-wrapper">
       <div class="picks-header">
         <div>
@@ -559,6 +567,22 @@ let picksInterval = null;
 let flowInterval = null;
 let sectorInterval = null;
 let activePool = 'A';  // 'A' | 'B'
+
+// ── 非交易时段标注 ─────────────────────────────────
+function updateStaleBanner(data) {
+  const trading = data.is_trading !== false;
+  for (let i = 0; i <= 2; i++) {
+    const banner = document.getElementById('staleBanner' + i);
+    const dateEl = document.getElementById('staleDate' + i);
+    if (!banner) continue;
+    if (!trading) {
+      banner.style.display = 'flex';
+      if (dateEl && data.data_date) dateEl.textContent = data.data_date;
+    } else {
+      banner.style.display = 'none';
+    }
+  }
+}
 
 // ── AI Agent 功能 ──────────────────────────────────────────
 let agentChatHistory = [];

@@ -1477,6 +1477,12 @@ def _load_last_result() -> dict:
             with open(_LAST_REAL_RESULT_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             data["mode"] = "cached"
+            try:
+                from data_fetcher import _is_trading_time
+                data["is_trading"] = _is_trading_time()
+                data["data_date"] = data.get("date", data.get("time", "")[:10])
+            except Exception:
+                data["is_trading"] = False
             return data
     except Exception:
         pass
@@ -1517,11 +1523,18 @@ def select_stocks(use_mock: bool = False, collector=None) -> dict:
 
     if use_mock:
         result = _select_stocks_mock()
+        result["is_trading"] = True
     else:
         try:
             result = _select_stocks_real(collector=collector)
             # 成功获取实时数据，持久化
             _LAST_REAL_RESULT = result
+            try:
+                from data_fetcher import _is_trading_time
+                result["is_trading"] = _is_trading_time()
+                result["data_date"] = result.get("date", "")
+            except Exception:
+                result["is_trading"] = True
             _save_last_result(result)
         except Exception as e:
             logger.warning("实时选股失败: %s，使用持久化缓存", e)
@@ -1540,6 +1553,7 @@ def select_stocks(use_mock: bool = False, collector=None) -> dict:
                     "hot_sectors": [], "pullback_sectors": [],
                     "risk_level": "low", "market_breadth": 0.5,
                     "filter_stats": {}, "mode": "empty",
+                    "is_trading": False,
                 }
 
     if not use_mock:

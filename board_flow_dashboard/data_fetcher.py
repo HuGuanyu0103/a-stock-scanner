@@ -506,3 +506,16 @@ _MOCK_STOCKS = [
     ("000725", "京东方A", 4.2, 1.0, "消费电子"),
     ("000100", "TCL科技", 4.5, 1.5, "消费电子"),
 ]
+
+def _is_trading_time() -> bool:
+    """判断当前是否在交易时段（9:30-15:00，仅工作日）。"""
+    from datetime import datetime, date
+    now = datetime.now()
+    wd = date.today().weekday()
+    if wd >= 5:
+        return False
+    if now.hour < 9 or now.hour >= 15:
+        return False
+    if now.hour == 9 and now.minute < 30:
+        return False
+    return True
