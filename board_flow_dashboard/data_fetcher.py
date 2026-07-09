@@ -181,6 +181,7 @@ def generate_mock_dashboard_data() -> dict:
 
     return {
         "date": TRADE_DATE,
+        "is_trading": _is_trading_time(),
         "time_label": "15:00",
         "time_index": n_minutes - 1,
         "total_times": n_minutes,
@@ -414,7 +415,7 @@ def fetch_dashboard_data(use_real: bool = True) -> dict:
             "minutes": [],
             "rank": [],
             "series": {},
-            "is_trading": False,
+            "is_trading": _is_trading_time(),
             "data_date": datetime.now().strftime("%Y-%m-%d"),
         }
 
@@ -432,7 +433,7 @@ def fetch_dashboard_data(use_real: bool = True) -> dict:
         return {
             "date": TRADE_DATE, "time_label": "--:--", "time_index": 0,
             "total_times": 0, "minutes": [], "rank": [], "series": {},
-            "is_trading": False,
+            "is_trading": _is_trading_time(),
             "data_date": datetime.now().strftime("%Y-%m-%d"),
         }
 
@@ -463,6 +464,7 @@ def fetch_dashboard_data(use_real: bool = True) -> dict:
 
     return {
         "date": TRADE_DATE,
+        "is_trading": _is_trading_time(),
         "time_label": time_label,
         "time_index": len(minutes) - 1 if minutes else 0,
         "total_times": len(minutes),

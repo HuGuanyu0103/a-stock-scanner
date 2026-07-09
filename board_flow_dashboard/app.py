@@ -128,7 +128,6 @@ def api_data():
     else:
         data = fetch_dashboard_data(use_real=False)
         data["sector_type"] = sector_type
-        data["is_trading"] = False
         data["data_date"] = data.get("date", "")
         # mock 模式下 watch 类型需要白名单过滤
         if sector_type == "watch":
