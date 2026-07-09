@@ -404,6 +404,18 @@ body {
 .spinner { width: 22px; height: 22px; border: 2.5px solid var(--border-light); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Timeline ───────────────────────────── */
+.timeline-card {
+  position: relative; display: flex; align-items: flex-start; gap: 16px;
+}
+.timeline-card::before {
+  content: ''; position: absolute; left: -24px; top: 14px;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--border); border: 2px solid var(--bg);
+  z-index: 1;
+}
+.timeline-card:last-child { padding-bottom: 0; }
+
 /* ── Scrollbar ──────────────────────────── */
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -662,55 +674,61 @@ function switchLeftTab(tab) {
 // ── 研究报告卡片 ──────────────────────────────────────
 function renderResearchCards() {
   const container = document.getElementById('researchCards');
-  if (!container || container.querySelector('.brief-card')) return; // already rendered
+  if (!container || container.querySelector('.timeline-day')) return;
+
+  const today = new Date();
+  const dateStr = today.toLocaleDateString('zh-CN', {year:'numeric', month:'2-digit', day:'2-digit', weekday:'short'});
 
   const briefs = [
-    {
-      icon: 'wb_twilight', title: '早盘简报', time: '08:30',
-      color: '#f59e0b', bg: '#fffbeb',
-      highlights: ['隔夜外盘走势回顾', '集合竞价异动扫描', '今日关注方向'],
-      sample: '隔夜美股三大指数收涨，纳指+0.8%。A股竞价阶段半导体板块活跃，关注今日科技主线。',
-    },
-    {
-      icon: 'light_mode', title: '午盘盘前简报', time: '11:30',
-      color: '#0071e3', bg: '#eff6ff',
-      highlights: ['早盘资金流向总结', '午间休市消息面', '下午策略调整'],
-      sample: '早盘主力净流入前三：半导体(+65亿)、AI芯片(+42亿)、数据中心(+38亿)。北向资金净流入32亿。',
-    },
-    {
-      icon: 'wb_sunny', title: '早盘收盘简报', time: '11:35',
-      color: '#34c759', bg: '#ecfdf5',
-      highlights: ['上午涨跌幅排名', '量能分析', '午后关注要点'],
-      sample: '上午成交额突破5800亿，较昨日同期+12%。涨停42家，跌停3家。情绪指数：偏乐观。',
-    },
-    {
-      icon: 'nights_stay', title: '午盘收盘简报', time: '15:05',
-      color: '#6750a4', bg: '#f5f3ff',
-      highlights: ['全日资金流向汇总', '板块轮动回顾', '次日预判'],
-      sample: '全日成交额1.12万亿。半导体(+124亿)、数据中心(+98亿)领涨。银行(-54亿)、白酒(-47亿)承压。明日关注科技主线延续性。',
-    },
+    { icon: 'wb_twilight', title: '早盘简报', time: '08:30', color: '#f59e0b', bg: '#fffbeb',
+      highlights: ['隔夜外盘', '竞价异动', '今日方向'],
+      sample: '隔夜美股三大指数收涨，纳指+0.8%。A股竞价阶段半导体板块活跃，关注今日科技主线。' },
+    { icon: 'light_mode', title: '午盘盘前简报', time: '11:30', color: '#0071e3', bg: '#eff6ff',
+      highlights: ['早盘资金', '午间消息', '下午策略'],
+      sample: '早盘主力净流入前三：半导体(+65亿)、AI芯片(+42亿)、数据中心(+38亿)。北向资金净流入32亿。' },
+    { icon: 'wb_sunny', title: '早盘收盘简报', time: '11:35', color: '#34c759', bg: '#ecfdf5',
+      highlights: ['涨跌排名', '量能分析', '午后关注'],
+      sample: '上午成交额突破5800亿，较昨日同期+12%。涨停42家，跌停3家。情绪指数：偏乐观。' },
+    { icon: 'nights_stay', title: '午盘收盘简报', time: '15:05', color: '#6750a4', bg: '#f5f3ff',
+      highlights: ['资金汇总', '板块轮动', '次日预判'],
+      sample: '全日成交额1.12万亿。半导体(+124亿)、数据中心(+98亿)领涨。银行(-54亿)、白酒(-47亿)承压。明日关注科技主线延续性。' },
   ];
 
-  let html = '';
-  briefs.forEach(b => {
-    html += `
-    <div class="soft-card brief-card" style="padding:20px;border-left:4px solid ${b.color}">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-        <span class="material-symbols-outlined" style="font-size:24px;color:${b.color}">${b.icon}</span>
-        <div>
-          <h4 style="font-size:15px;font-weight:700">${b.title}</h4>
-          <p style="font-size:11px;color:var(--text-tertiary);font-family:var(--font-mono)">⏰ ${b.time} 推送</p>
+  let cards = '';
+  briefs.forEach((b, i) => {
+    cards += `
+      <div class="timeline-card" style="margin-top:${i === 0 ? '0' : '12px'}">
+        <div class="timeline-connector"></div>
+        <div class="soft-card" style="padding:14px 16px;border-left:3px solid ${b.color};flex:1">
+          <div style="display:flex;align-items:center;gap:10px;justify-content:space-between;margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span class="material-symbols-outlined" style="font-size:20px;color:${b.color}">${b.icon}</span>
+              <span style="font-size:14px;font-weight:700;color:var(--text)">${b.title}</span>
+            </div>
+            <span style="font-size:11px;color:var(--text-tertiary);font-family:var(--font-mono)">${b.time}</span>
+          </div>
+          <div style="background:${b.bg};border-radius:8px;padding:10px 12px">
+            <p style="font-size:12px;color:var(--text);line-height:1.55">${b.sample}</p>
+          </div>
+          <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:8px">
+            ${b.highlights.map(h => `<span style="font-size:10px;padding:2px 8px;background:${b.bg};border-radius:10px;color:${b.color};font-weight:500">${h}</span>`).join('')}
+          </div>
         </div>
-      </div>
-      <div style="background:${b.bg};border-radius:10px;padding:12px 14px;margin-bottom:12px">
-        <p style="font-size:12px;color:var(--text);line-height:1.6">${b.sample}</p>
-      </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        ${b.highlights.map(h => `<span style="font-size:11px;padding:3px 10px;background:${b.bg};border-radius:12px;color:${b.color};font-weight:500">${h}</span>`).join('')}
-      </div>
-    </div>`;
+      </div>`;
   });
-  container.innerHTML = html;
+
+  container.innerHTML = `
+    <div class="timeline-day" style="position:relative;padding-left:28px">
+      <!-- 日期标题 -->
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+        <div style="position:absolute;left:0;top:4px;width:10px;height:10px;border-radius:50%;background:var(--accent);border:2px solid var(--bg);box-shadow:0 0 0 2px var(--accent);z-index:1"></div>
+        <h3 style="font-size:17px;font-weight:700">${dateStr}</h3>
+        <span style="font-size:11px;color:var(--text-tertiary);background:var(--surface-container);padding:3px 10px;border-radius:10px">${briefs.length}份简报</span>
+      </div>
+      <!-- 纵向时间线 -->
+      <div style="position:absolute;left:4px;top:24px;bottom:0;width:2px;background:var(--border-light);border-radius:1px"></div>
+      ${cards}
+    </div>`;
 }
 
 // ── Stale Banner ──────────────────────────────────────
