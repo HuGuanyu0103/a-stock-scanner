@@ -752,6 +752,25 @@ class SectorFlowCollector:
                 merged_by_time[t] = []
             merged_by_time[t].extend(ind["rank"])
 
+        # 模糊匹配：从API实际返回的板块名中找到每个WATCH板块的真实名称
+        all_api_names = set()
+        for t in merged_by_time:
+            for r in merged_by_time[t]:
+                all_api_names.add(r["name"])
+
+        for watch_name in WATCH_SECTORS:
+            if watch_name in all_api_names:
+                continue  # 已经精确匹配
+            # 尝试模糊匹配：API名包含WATCH名 或 WATCH名包含API名
+            matched = None
+            for api_name in all_api_names:
+                if watch_name in api_name or api_name in watch_name:
+                    matched = api_name
+                    break
+            if matched:
+                api_to_user[matched] = watch_name
+                allowed_api_names.add(matched)
+
         minutes = sorted(merged_by_time.keys())
 
         # 无数据时返回空
@@ -795,19 +814,10 @@ class SectorFlowCollector:
             seen_user_names.add(user_name)
             values = []
             ratio_values = []
-            last_val = None
-            last_ratio = None
             for t in minutes:
                 item = api_data_by_time[t].get(api_name)
-                if item is not None:
-                    last_val = item["net_main"]
-                    last_ratio = item.get("net_main_ratio")
-                    values.append(last_val)
-                    ratio_values.append(last_ratio)
-                else:
-                    # 前向填充：用上一个有效值，避免断线
-                    values.append(last_val)
-                    ratio_values.append(last_ratio)
+                values.append(item["net_main"] if item else None)
+                ratio_values.append(item.get("net_main_ratio") if item else None)
             # 从后往前找最新有效数据
             val, pct, ratio = 0.0, 0.0, 0.0
             for t in reversed(minutes):
