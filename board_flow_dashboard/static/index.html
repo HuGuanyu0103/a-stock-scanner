@@ -96,33 +96,6 @@ body {
 /* ── Main Area ──────────────────────────── */
 .main-area { margin-left: 240px; height: 100vh; display: flex; flex-direction: column; }
 
-/* ── Top Bar ────────────────────────────── */
-.top-bar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 0 24px; height: 56px; flex-shrink: 0;
-  background: var(--glass-bg-strong); backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border-bottom: 1px solid var(--border-light); z-index: 40;
-}
-.top-bar-actions { display: flex; align-items: center; gap: 12px; }
-.top-bar-actions .material-symbols-outlined {
-  font-size: 20px; color: var(--text-secondary); cursor: pointer;
-  padding: 6px; border-radius: 8px; transition: all 0.15s;
-}
-.top-bar-actions .material-symbols-outlined:hover { color: var(--accent); background: var(--accent-light); }
-.btn-outline {
-  padding: 6px 14px; border: 1px solid var(--border); border-radius: 8px;
-  background: transparent; font-size: 12px; font-weight: 500; color: var(--text-secondary);
-  cursor: pointer; font-family: var(--font); transition: all 0.15s;
-}
-.btn-outline:hover { border-color: var(--accent); color: var(--accent); }
-.btn-primary {
-  padding: 6px 14px; border: none; border-radius: 8px;
-  background: var(--accent); font-size: 12px; font-weight: 600; color: #fff;
-  cursor: pointer; font-family: var(--font); transition: all 0.15s;
-}
-.btn-primary:hover { background: var(--accent-hover); }
-
 /* ── Dashboard Grid ─────────────────────── */
 .dashboard { flex: 1; display: flex; padding: 20px; gap: 20px; overflow: hidden; }
 
@@ -306,12 +279,12 @@ body {
 }
 .ai-header-left { display: flex; align-items: center; gap: 12px; }
 .ai-avatar {
-  width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0;
-  background: linear-gradient(135deg, var(--accent), #0066cc);
+  width: 42px; height: 42px; border-radius: 14px; flex-shrink: 0;
+  background: linear-gradient(135deg, #0071e3 0%, #5b9cf5 50%, #a78bfa 100%);
   display: flex; align-items: center; justify-content: center;
-  color: #fff;
+  color: #fff; box-shadow: 0 4px 12px rgba(0,113,227,0.25);
 }
-.ai-avatar .material-symbols-outlined { font-size: 20px; }
+.ai-avatar .material-symbols-outlined { font-size: 22px; }
 .ai-header h2 { font-size: 17px; font-weight: 700; letter-spacing: -0.2px; }
 .ai-status { display: flex; align-items: center; gap: 5px; margin-top: 2px; }
 .ai-status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
@@ -450,20 +423,32 @@ body {
     <h1>观澜智研</h1>
     <p>专业投资者工作台</p>
   </div>
+  <!-- 市场状态 -->
+  <div id="sidebarMarketStatus" style="margin:0 8px 16px;padding:10px 12px;border-radius:10px;background:var(--surface-container);display:flex;align-items:center;gap:10px">
+    <div id="sidebarStatusDot" style="width:9px;height:9px;border-radius:50%;background:#c1c6d6;flex-shrink:0"></div>
+    <div>
+      <p id="sidebarStatusLabel" style="font-size:12px;font-weight:600;color:var(--text)">加载中...</p>
+      <p id="sidebarStatusSub" style="font-size:10px;color:var(--text-tertiary)">--</p>
+    </div>
+  </div>
   <nav class="sidebar-nav">
-    <a onclick="switchLeftTabSidebar('flow', this)" class="active">
+    <a onclick="switchLeftTab('flow');syncSidebar(this)" class="active">
       <span class="material-symbols-outlined">payments</span> 资金流向
     </a>
-    <a onclick="switchLeftTabSidebar('picks', this)">
+    <a onclick="switchLeftTab('picks');syncSidebar(this)">
       <span class="material-symbols-outlined">query_stats</span> 盘中选股
     </a>
-    <a onclick="switchLeftTabSidebar('watchlist', this)">
+    <a onclick="switchLeftTab('watchlist');syncSidebar(this)">
       <span class="material-symbols-outlined">star</span> 自选股
     </a>
-    <a onclick="switchLeftTabSidebar('research', this)">
+    <a onclick="switchLeftTab('research');syncSidebar(this)">
       <span class="material-symbols-outlined">description</span> 研究报告
     </a>
   </nav>
+  <div style="margin:12px 8px;padding:8px 12px;border-radius:8px;background:var(--surface-container);font-size:10px;color:var(--text-tertiary)">
+    <span class="material-symbols-outlined" style="font-size:14px;vertical-align:middle;margin-right:4px">schedule</span>
+    <span id="sidebarRefreshTime">数据刷新时间: --</span>
+  </div>
   <div class="sidebar-bottom">
     <div class="sidebar-user">
       <div class="sidebar-user-avatar">G</div>
@@ -477,17 +462,6 @@ body {
 
 <!-- ═══ Main Area ═══ -->
 <div class="main-area">
-  <!-- Top Bar -->
-  <header class="top-bar">
-    <div style="font-size:14px;font-weight:500;color:var(--text-secondary)">资金流向分析</div>
-    <div class="top-bar-actions" style="display:flex;align-items:center;gap:12px">
-      <span id="statusPill" class="status-pill off">
-        <span class="live-dot"></span> 加载中...
-      </span>
-      <span class="material-symbols-outlined" onclick="location.reload()" title="刷新数据">refresh</span>
-    </div>
-  </header>
-
   <!-- Dashboard -->
   <div class="dashboard">
 
@@ -555,6 +529,51 @@ body {
           <div id="picksTableContainer"><div class="loading">加载选股数据中...</div></div>
         </div>
       </div>
+
+      <!-- Research Tab -->
+      <div id="tabResearch" style="display:none">
+        <div class="section-header">
+          <div class="section-header-left">
+            <h2>研究报告</h2>
+            <p>每日定时推送 · 四大简报</p>
+          </div>
+        </div>
+        <div id="researchCards" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+          <!-- Cards generated by JS -->
+        </div>
+      </div>
+
+      <!-- Watchlist Tab -->
+      <div id="tabWatchlist" style="display:none">
+        <div class="section-header">
+          <div class="section-header-left">
+            <h2>自选股</h2>
+            <p>我的关注列表</p>
+          </div>
+        </div>
+        <div class="soft-card" style="padding:40px;margin-top:16px;text-align:center">
+          <span class="material-symbols-outlined" style="font-size:48px;color:var(--text-tertiary);margin-bottom:16px;display:block">star</span>
+          <h3 style="font-size:18px;font-weight:600;margin-bottom:8px">自定义自选股列表</h3>
+          <p style="color:var(--text-secondary);margin-bottom:24px;font-size:14px">添加关注的股票，实时追踪价格变动和信号</p>
+          <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+            <div class="soft-card" style="padding:16px 20px;flex:1;min-width:160px;max-width:220px;text-align:center">
+              <span class="material-symbols-outlined" style="font-size:28px;color:var(--accent);margin-bottom:8px;display:block">notifications</span>
+              <p style="font-size:13px;font-weight:600">价格提醒</p>
+              <p style="font-size:11px;color:var(--text-tertiary);margin-top:4px">突破关键位即时推送</p>
+            </div>
+            <div class="soft-card" style="padding:16px 20px;flex:1;min-width:160px;max-width:220px;text-align:center">
+              <span class="material-symbols-outlined" style="font-size:28px;color:var(--accent);margin-bottom:8px;display:block">finance</span>
+              <p style="font-size:13px;font-weight:600">盈亏追踪</p>
+              <p style="font-size:11px;color:var(--text-tertiary);margin-top:4px">持仓收益一目了然</p>
+            </div>
+            <div class="soft-card" style="padding:16px 20px;flex:1;min-width:160px;max-width:220px;text-align:center">
+              <span class="material-symbols-outlined" style="font-size:28px;color:var(--accent);margin-bottom:8px;display:block">trending_up</span>
+              <p style="font-size:13px;font-weight:600">信号聚合</p>
+              <p style="font-size:11px;color:var(--text-tertiary);margin-top:4px">多因子信号集中展示</p>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- ── RIGHT PANEL: AI ── -->
@@ -562,7 +581,7 @@ body {
       <div class="ai-header">
         <div class="ai-header-left">
           <div class="ai-avatar">
-            <span class="material-symbols-outlined">auto_awesome</span>
+            <span class="material-symbols-outlined" style="font-variation-settings:'FILL'1">finance_chip</span>
           </div>
           <div>
             <h2>观澜·股票助理</h2>
@@ -572,7 +591,6 @@ body {
             </div>
           </div>
         </div>
-        <span class="material-symbols-outlined" style="cursor:pointer">history</span>
       </div>
 
       <div class="risk-disclaimer">
@@ -625,29 +643,74 @@ let agentChatHistory = [];
 let sectorType = 'watch';
 
 // ── Sidebar + Tab switch ──────────────────────────────
-function switchLeftTabSidebar(tab, el) {
-  if (tab === 'watchlist' || tab === 'research') return; // placeholder
-  leftTab = tab;
+function syncSidebar(el) {
   document.querySelectorAll('.sidebar-nav a').forEach(a => a.classList.remove('active'));
-  if (el) el.classList.add('active');
-  document.getElementById('tabFlow').style.display = tab === 'flow' ? '' : 'none';
-  document.getElementById('tabPicks').style.display = tab === 'picks' ? '' : 'none';
-  if (tab === 'picks') loadStockPicks();
-  if (tab === 'flow' && sectorChart) setTimeout(() => sectorChart.resize(), 100);
+  el.classList.add('active');
 }
 
 function switchLeftTab(tab) {
   leftTab = tab;
-  document.querySelectorAll('.section-tabs button').forEach((b, i) => {
-    b.classList.toggle('active', (i===0 && tab==='flow') || (i===1 && tab==='picks'));
-  });
-  document.querySelectorAll('.sidebar-nav a').forEach((a, i) => {
-    a.classList.toggle('active', (i===0 && tab==='flow') || (i===1 && tab==='picks'));
-  });
   document.getElementById('tabFlow').style.display = tab === 'flow' ? '' : 'none';
   document.getElementById('tabPicks').style.display = tab === 'picks' ? '' : 'none';
+  document.getElementById('tabResearch').style.display = tab === 'research' ? '' : 'none';
+  document.getElementById('tabWatchlist').style.display = tab === 'watchlist' ? '' : 'none';
   if (tab === 'picks') loadStockPicks();
+  if (tab === 'research') renderResearchCards();
   if (tab === 'flow' && sectorChart) setTimeout(() => sectorChart.resize(), 100);
+}
+
+// ── 研究报告卡片 ──────────────────────────────────────
+function renderResearchCards() {
+  const container = document.getElementById('researchCards');
+  if (!container || container.querySelector('.brief-card')) return; // already rendered
+
+  const briefs = [
+    {
+      icon: 'wb_twilight', title: '早盘简报', time: '08:30',
+      color: '#f59e0b', bg: '#fffbeb',
+      highlights: ['隔夜外盘走势回顾', '集合竞价异动扫描', '今日关注方向'],
+      sample: '隔夜美股三大指数收涨，纳指+0.8%。A股竞价阶段半导体板块活跃，关注今日科技主线。',
+    },
+    {
+      icon: 'light_mode', title: '午盘盘前简报', time: '11:30',
+      color: '#0071e3', bg: '#eff6ff',
+      highlights: ['早盘资金流向总结', '午间休市消息面', '下午策略调整'],
+      sample: '早盘主力净流入前三：半导体(+65亿)、AI芯片(+42亿)、数据中心(+38亿)。北向资金净流入32亿。',
+    },
+    {
+      icon: 'wb_sunny', title: '早盘收盘简报', time: '11:35',
+      color: '#34c759', bg: '#ecfdf5',
+      highlights: ['上午涨跌幅排名', '量能分析', '午后关注要点'],
+      sample: '上午成交额突破5800亿，较昨日同期+12%。涨停42家，跌停3家。情绪指数：偏乐观。',
+    },
+    {
+      icon: 'nights_stay', title: '午盘收盘简报', time: '15:05',
+      color: '#6750a4', bg: '#f5f3ff',
+      highlights: ['全日资金流向汇总', '板块轮动回顾', '次日预判'],
+      sample: '全日成交额1.12万亿。半导体(+124亿)、数据中心(+98亿)领涨。银行(-54亿)、白酒(-47亿)承压。明日关注科技主线延续性。',
+    },
+  ];
+
+  let html = '';
+  briefs.forEach(b => {
+    html += `
+    <div class="soft-card brief-card" style="padding:20px;border-left:4px solid ${b.color}">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <span class="material-symbols-outlined" style="font-size:24px;color:${b.color}">${b.icon}</span>
+        <div>
+          <h4 style="font-size:15px;font-weight:700">${b.title}</h4>
+          <p style="font-size:11px;color:var(--text-tertiary);font-family:var(--font-mono)">⏰ ${b.time} 推送</p>
+        </div>
+      </div>
+      <div style="background:${b.bg};border-radius:10px;padding:12px 14px;margin-bottom:12px">
+        <p style="font-size:12px;color:var(--text);line-height:1.6">${b.sample}</p>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        ${b.highlights.map(h => `<span style="font-size:11px;padding:3px 10px;background:${b.bg};border-radius:12px;color:${b.color};font-weight:500">${h}</span>`).join('')}
+      </div>
+    </div>`;
+  });
+  container.innerHTML = html;
 }
 
 // ── Stale Banner ──────────────────────────────────────
@@ -658,6 +721,14 @@ function updateStaleBanner(data) {
     if (data.data_date) document.getElementById('staleDate').textContent = data.data_date;
   } else {
     banner.style.display = 'none';
+  }
+  // 更新侧边栏刷新时间
+  const t = data.time_label || '';
+  const refreshEl = document.getElementById('sidebarRefreshTime');
+  if (data.is_trading) {
+    refreshEl.textContent = '实时轮询中 · 每3秒更新';
+  } else {
+    refreshEl.textContent = '数据时间: ' + (data.date || '') + ' ' + t + (t ? '' : ' (非交易时段)');
   }
 }
 
@@ -745,14 +816,45 @@ async function loadSectorData() {
 }
 
 function updateStatusPill(data) {
-  const pill = document.getElementById('statusPill');
-  const dot = pill.querySelector('.live-dot');
+  updateSidebarStatus(data);
+}
+
+function updateSidebarStatus(data) {
+  const dot = document.getElementById('sidebarStatusDot');
+  const label = document.getElementById('sidebarStatusLabel');
+  const sub = document.getElementById('sidebarStatusSub');
+  const refreshEl = document.getElementById('sidebarRefreshTime');
+  const container = document.getElementById('sidebarMarketStatus');
+
+  if (!data) return;
+
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+
   if (data.is_trading) {
-    pill.className = 'status-pill live';
-    pill.childNodes[1] && (pill.innerHTML = '<span class="live-dot"></span> 交易中 · ' + (data.date || ''));
+    dot.style.background = '#34c759';
+    dot.style.animation = 'pulse 2s cubic-bezier(0.4,0,0.6,1) infinite';
+    dot.style.boxShadow = '0 0 6px rgba(52,199,89,0.4)';
+    container.style.background = 'rgba(52,199,89,0.06)';
+    label.textContent = '交易进行中';
+    label.style.color = '#006e28';
+    sub.textContent = data.date || '';
   } else {
-    pill.className = 'status-pill off';
-    pill.innerHTML = '<span class="live-dot"></span> ' + (data.is_trading_day ? '非交易时段' : '休市') + ' · ' + (data.date || '');
+    dot.style.background = '#c1c6d6';
+    dot.style.animation = 'none';
+    dot.style.boxShadow = 'none';
+    container.style.background = 'var(--surface-container)';
+    label.textContent = data.is_trading_day ? '非交易时段' : '休市中';
+    label.style.color = 'var(--text)';
+    sub.textContent = (data.date || '') + ' · 无实时数据';
+  }
+
+  // 更新数据刷新时间
+  const dataTime = data.time_label || (data.date ? data.date + ' ' + (data.time_label || '') : '--');
+  if (data.is_trading) {
+    refreshEl.textContent = '数据刷新中 · 每3秒轮询';
+  } else {
+    refreshEl.textContent = '数据时间: ' + (sectorData?.time_label ? sectorData.date + ' ' + sectorData.time_label : data.data_date || data.date || '--');
   }
 }
 
@@ -889,7 +991,7 @@ function updateRank(timeIdx) {
       <span class="rank-name">${item.name}${div}</span>
       <span class="rank-val ${cls}">${primary}</span></div>
       <div style="height:2px;background:var(--surface-low);margin:0 12px 0 32px;border-radius:1px">
-        <div style="height:2px;width:${barW}%;background:${sv>=0?'#ffdad6':'#d9f7be'};border-radius:1px"></div>`;
+        <div style="height:2px;width:${barW}%;background:${sv>=0?'#ffdad6':'#d9f7be'};border-radius:1px"></div>
       </div>`;
   });
   document.getElementById('rankList').innerHTML = html;
@@ -1089,14 +1191,11 @@ async function init() {
   try {
     const st = await fetch('/api/status');
     const status = await st.json();
-    const pill = document.getElementById('statusPill');
-    if (status.market_open) {
-      pill.className = 'status-pill live';
-      pill.innerHTML = '<span class="live-dot"></span> 交易中 · ' + status.date;
-    } else {
-      pill.className = 'status-pill off';
-      pill.innerHTML = '<span class="live-dot"></span> ' + (status.is_trading_day ? '非交易时段' : '休市') + ' · ' + status.date;
-    }
+    updateSidebarStatus({
+      is_trading: status.market_open,
+      is_trading_day: status.is_trading_day,
+      date: status.date,
+    });
   } catch(e) {}
 
   loadSectorData();
