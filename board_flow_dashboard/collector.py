@@ -63,21 +63,15 @@ WATCH_SECTORS = {             # 自选板块白名单（你的原始板块名）
 
 # 你的板块名 → 东方财富 API 实际名称（仅名称不一致时需要映射）
 SECTOR_NAME_MAP = {
-    "人形机器人": "机器人执行器",
-    "消费电子":   "品牌消费电子",
-    "医药商业":   "医药生物",
-    "锂电池":    "锂矿概念",
-    "固态电池":   "电池",
-    "电网概念":   "绿色电力",
-    "数据中心":   "数据确权",
-    "AI芯片":    "华为昇腾",
-    "存储芯片":   "模拟芯片设计",
+    "消费电子":   "消费电子概念",
+    "锂电池":    "锂电池概念",
+    "半导体":    "半导体概念",
+    "银行":     "参股银行",
 }
 
 # 缺失板块加权合成: 你的板块名 → [(API板块名, 权重), ...]
 # 权重和应为 1.0。空列表表示无可关联板块，不会显示。
 SECTOR_COMPOSITE = {
-    "半导体":    [("模拟芯片设计", 0.6), ("华为昇腾", 0.4)],
     "光通信模块": [("华为昇腾", 1.0)],
     "通信设备":   [("华为昇腾", 1.0)],
     "白酒":      [("食品饮料", 1.0)],
@@ -814,23 +808,10 @@ class SectorFlowCollector:
             seen_user_names.add(user_name)
             values = []
             ratio_values = []
-            prev_val = None
             for t in minutes:
                 item = api_data_by_time[t].get(api_name)
-                if item is not None:
-                    cur = item["net_main"]
-                    cur_ratio = item.get("net_main_ratio")
-                else:
-                    cur = None
-                    cur_ratio = None
-                # 计算每分钟增量: 有前后两个累计值才能算差值
-                if cur is not None and prev_val is not None:
-                    values.append(round(cur - prev_val, 2))
-                else:
-                    values.append(None)  # 缺失数据填null，ECharts connectNulls自动跳过
-                if cur is not None:
-                    prev_val = cur
-                ratio_values.append(cur_ratio)
+                values.append(item["net_main"] if item else None)
+                ratio_values.append(item.get("net_main_ratio") if item else None)
             # 从后往前找最新有效数据
             val, pct, ratio = 0.0, 0.0, 0.0
             for t in reversed(minutes):

@@ -950,8 +950,8 @@ function updateSectorChart(timeIdx) {
       if (v !== null && v !== undefined) { if (v > maxVal) maxVal = v; if (v < minVal) minVal = v; }
     }
   }
-  const absMax = Math.max(Math.abs(maxVal), Math.abs(minVal || 0), 1);
-  let yMax = absMax < 1 ? Math.ceil(absMax * 10) / 10 : Math.ceil(absMax);
+  const absMax = Math.max(Math.abs(maxVal), Math.abs(minVal || 0), 30);
+  let yMax = Math.ceil(absMax / 30) * 30; if (yMax < 30) yMax = 30;
   let yMin = -yMax;
   if (maxVal <= 0 && minVal < 0) yMax = 0;
 
