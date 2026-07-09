@@ -104,19 +104,6 @@ body {
   -webkit-backdrop-filter: blur(24px);
   border-bottom: 1px solid var(--border-light); z-index: 40;
 }
-.top-bar-search {
-  position: relative; width: 260px;
-}
-.top-bar-search .material-symbols-outlined {
-  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
-  font-size: 18px; color: var(--text-tertiary);
-}
-.top-bar-search input {
-  width: 100%; padding: 8px 12px 8px 36px; border: none; border-radius: 10px;
-  background: var(--surface-container); font-size: 13px; font-family: var(--font);
-  outline: none; transition: all 0.2s;
-}
-.top-bar-search input:focus { box-shadow: 0 0 0 2px rgba(0,113,227,0.2); }
 .top-bar-actions { display: flex; align-items: center; gap: 12px; }
 .top-bar-actions .material-symbols-outlined {
   font-size: 20px; color: var(--text-secondary); cursor: pointer;
@@ -494,11 +481,7 @@ body {
 <div class="main-area">
   <!-- Top Bar -->
   <header class="top-bar">
-    <div class="top-bar-search">
-      <span class="material-symbols-outlined">search</span>
-      <input type="text" placeholder="搜索股票代码/简称/板块..." id="globalSearch"
-             onkeydown="if(event.key==='Enter'){document.getElementById('chatInput').value=this.value;switchLeftTabSidebar('flow',document.querySelector('.sidebar-nav a'));document.getElementById('chatInput').scrollIntoView();}">
-    </div>
+    <div style="font-size:14px;font-weight:500;color:var(--text-secondary)">资金流向分析</div>
     <div class="top-bar-actions" style="display:flex;align-items:center;gap:12px">
       <span id="statusPill" class="status-pill off">
         <span class="live-dot"></span> 加载中...
@@ -601,30 +584,14 @@ body {
 
       <div class="chat-area" id="chatMessages">
         <!-- Welcome -->
-        <div class="welcome-card">
+        <div class="welcome-card" id="welcomeCard">
           <p>您好，我是您的观澜投研助手。我可以为您提供实时的A股深度分析、异动解读及个股诊断。</p>
-          <div class="welcome-tip">💡 今日建议关注：<b style="color:var(--accent)">科技自主可控</b></div>
+          <div class="welcome-tip" id="welcomeTip">💡 数据加载中...</div>
         </div>
 
-        <!-- Quick actions -->
-        <div class="chip-group">
-          <span class="chip-label">快速指令</span>
-          <button class="chip-btn" onclick="quickAsk('今天什么板块最热？')">
-            <span class="chip-icon"><span class="material-symbols-outlined">local_fire_department</span></span>
-            <span class="chip-text">今日热门板块分析</span>
-          </button>
-          <button class="chip-btn" onclick="loadAgentPicks()">
-            <span class="chip-icon"><span class="material-symbols-outlined">verified</span></span>
-            <span class="chip-text">每日金股推荐</span>
-          </button>
-          <button class="chip-btn" onclick="quickAsk('帮我诊断持仓')">
-            <span class="chip-icon"><span class="material-symbols-outlined">monitoring</span></span>
-            <span class="chip-text">我的持股健康诊断</span>
-          </button>
-          <button class="chip-btn" onclick="loadDebate()">
-            <span class="chip-icon"><span class="material-symbols-outlined">psychology</span></span>
-            <span class="chip-text">Multi-Agent 智能辩论</span>
-          </button>
+        <!-- 猜你想问 - 动态生成 -->
+        <div class="chip-group" id="chipGroup">
+          <span class="chip-label">猜你想问</span>
         </div>
       </div>
 
@@ -704,6 +671,66 @@ function switchSector(type, btn) {
   loadSectorData();
 }
 
+// ── 猜你想问 ──────────────────────────────────────────
+function updateSuggestions() {
+  const group = document.getElementById('chipGroup');
+  if (!group) return;
+  // Remove old dynamic chips
+  group.querySelectorAll('.chip-btn').forEach(b => b.remove());
+
+  const suggestions = [];
+
+  // From sector data
+  if (sectorData && sectorData.rank && sectorData.rank.length > 0) {
+    const top = sectorData.rank.slice(0, 3);
+    top.forEach((r, i) => {
+      const dir = r.value >= 0 ? '流入' : '流出';
+      suggestions.push({
+        icon: i === 0 ? 'local_fire_department' : 'trending_up',
+        text: `${r.name}板块资金${dir}${Math.abs(r.value||0).toFixed(0)}亿，什么信号？`,
+        action: () => quickAsk(`${r.name}板块资金${dir}${Math.abs(r.value||0).toFixed(0)}亿，什么信号？`),
+      });
+    });
+
+    // Hottest sector
+    const hottest = sectorData.rank[0];
+    if (hottest) {
+      document.getElementById('welcomeTip').innerHTML =
+        `💡 今日资金最热：<b style="color:var(--accent)">${hottest.name}</b> (${(hottest.value>=0?'+':'')}${(hottest.value||0).toFixed(1)}亿)`;
+    }
+  }
+
+  // From stock picks
+  if (window._lastPicksData) {
+    const aStocks = window._lastPicksData.pool_a || [];
+    if (aStocks.length > 0) {
+      const s = aStocks[0];
+      suggestions.push({
+        icon: 'query_stats',
+        text: `帮我分析 ${s.name} ${s.code}`,
+        action: () => quickAsk(`帮我分析 ${s.name} ${s.code}`),
+      });
+    }
+  }
+
+  // Debate
+  suggestions.push({
+    icon: 'psychology',
+    text: '启动 Multi-Agent 市场辩论',
+    action: () => loadDebate(),
+  });
+
+  // Render
+  suggestions.forEach(s => {
+    const btn = document.createElement('button');
+    btn.className = 'chip-btn';
+    btn.innerHTML = `<span class="chip-icon"><span class="material-symbols-outlined">${s.icon}</span></span>
+      <span class="chip-text">${s.text}</span>`;
+    btn.onclick = s.action;
+    group.appendChild(btn);
+  });
+}
+
 // ── Sector Data ───────────────────────────────────────
 async function loadSectorData() {
   try {
@@ -718,6 +745,7 @@ async function loadSectorData() {
     updateStatusPill(sectorData);
     initSectorChart();
     initReplay();
+    updateSuggestions();
   } catch (e) { console.error(e); }
 }
 
@@ -918,6 +946,7 @@ async function loadStockPicks() {
     const data = await res.json();
     window._lastPicksData = data;
     renderPicks(data);
+    updateSuggestions();
   } catch (e) { console.error(e); }
 }
 
