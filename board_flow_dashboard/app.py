@@ -240,12 +240,31 @@ def api_stocks_flow():
 
 # ── 状态 ────────────────────────────────────────────────────
 
+def _is_market_open_now():
+    """判断当前是否在A股交易时间内"""
+    from datetime import time as dt_time
+    now = datetime.now()
+    if now.weekday() >= 5:
+        return False
+    morning_start = dt_time(9, 30)
+    morning_end = dt_time(11, 30)
+    afternoon_start = dt_time(13, 0)
+    afternoon_end = dt_time(15, 0)
+    t = now.time()
+    return (morning_start <= t <= morning_end) or (afternoon_start <= t <= afternoon_end)
+
+
 @app.route("/api/status")
 def api_status():
     if collector is not None:
         status = collector.get_status()
         status["mode"] = "live"
     else:
+        try:
+            from data_fetcher import is_trading_day
+            trading_day = is_trading_day()
+        except Exception:
+            trading_day = datetime.now().weekday() < 5
         status = {
             "running": False,
             "snapshots_concept": 0,
@@ -254,8 +273,8 @@ def api_status():
             "last_poll_iso": None,
             "consecutive_failures": 0,
             "poll_interval": 0,
-            "market_open": False,
-            "is_trading_day": False,
+            "market_open": _is_market_open_now(),
+            "is_trading_day": trading_day,
             "date": datetime.now().strftime("%Y-%m-%d"),
             "mode": "mock",
         }
