@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>观澜 · A 股智能看板</title>
 <script src="/static/echarts.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
@@ -424,6 +424,30 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* ── Responsive ─────────────────────────── */
+@media (max-width: 1100px) {
+  .sidebar { width: 200px; }
+  .main-area { margin-left: 200px; }
+  .dashboard { flex-direction: column; }
+  .left-main { flex: none; width: 100%; }
+  .right-panel { min-height: 400px; }
+}
+@media (max-width: 768px) {
+  .sidebar { width: 56px; padding: 12px 6px; }
+  .sidebar-brand h1 { font-size: 0; }
+  .sidebar-brand p, .sidebar-nav a span:last-child,
+  #sidebarMarketStatus, #sidebarRefreshTime, .sidebar-user div { display: none; }
+  .sidebar-nav a { justify-content: center; padding: 10px 0; gap: 0; }
+  .main-area { margin-left: 56px; }
+  .dashboard { padding: 10px; gap: 10px; }
+  .section-header { flex-wrap: wrap; gap: 8px; }
+  .section-header h2 { font-size: 17px; }
+  .chart-card, .table-card { padding: 14px; }
+  #sectorChart { height: 240px; }
+  .right-panel { border-radius: 10px; }
+  .chat-input-tools { display: none; }
 }
 </style>
 </head>
