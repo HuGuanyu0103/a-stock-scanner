@@ -536,24 +536,17 @@ def _extract_stock_context(user_message):
             return f"[用户询问股票 {code}，但获取数据失败: {scan['error']}]"
 
         ctx = f"""
-[用户询问的股票实时分析数据 — 按以下模板输出诊断]
+以下为脚本获取的 {code} 实时K线数据，请据此诊断，不要说你没有数据。
 
-股票: {code}
-现价: {deep.get('price', '?')} | 涨跌: {deep.get('change_pct', 0):+.1f}%
-均线: MA5={deep.get('ma5', 0):.2f} MA10={deep.get('ma10', 0):.2f} MA20={deep.get('ma20', 0):.2f}
-支撑: {deep.get('support', '?')} | 阻力: {deep.get('resistance', '?')}
+现价 {deep.get('price', '?')}  涨跌 {deep.get('change_pct', 0):+.1f}%
+MA5 {deep.get('ma5', 0):.2f}  MA10 {deep.get('ma10', 0):.2f}  MA20 {deep.get('ma20', 0):.2f}
+支撑 {deep.get('support', '?')}  阻力 {deep.get('resistance', '?')}
 概念: {', '.join(deep.get('concepts', []))}
-评分: {deep.get('combined_score', 0)} (技{deep.get('tech_score', 0)}+情{deep.get('sentiment_score', 0)}+因子{deep.get('factor_score', 0)})
-信号: {', '.join(deep.get('signal_names', []))}
-摘要: {deep.get('summary', '')}
+评分 {deep.get('combined_score', 0)}  信号: {', '.join(deep.get('signal_names', []))}
 
-K线历史(最近15日):
+最近15日K线:
 {kline_table}
-输出格式要求:
-1. 综合研判: 结构分析(回踩/突破/震荡)+关键K线标注(洗盘/放量)+量价配合+概念热度
-2. 操作建议: 入场区间+目标价+止损位+仓位建议
-3. 如果对话历史中用户提过其他股票,做对比表格(评分/结构/今日/空间/量比)
-用中文，简洁直接。"""
+请按格式输出: 综合研判→操作建议→(如有其他股票)对比表格。不用markdown标题。"""
         return ctx
     except Exception as e:
         logger.warning("个股数据获取失败 %s: %s", code, e)
