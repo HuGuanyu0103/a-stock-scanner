@@ -450,11 +450,11 @@ body {
     <a onclick="switchLeftTab('picks');syncSidebar(this)">
       <span class="material-symbols-outlined">query_stats</span> 盘中选股
     </a>
-    <a onclick="switchLeftTab('watchlist');syncSidebar(this)">
-      <span class="material-symbols-outlined">star</span> 自选股
-    </a>
     <a onclick="switchLeftTab('research');syncSidebar(this)">
       <span class="material-symbols-outlined">description</span> 研究报告
+    </a>
+    <a onclick="switchLeftTab('watchlist');syncSidebar(this)">
+      <span class="material-symbols-outlined">star</span> 自选股
     </a>
   </nav>
   <div style="margin:12px 8px;padding:8px 12px;border-radius:8px;background:var(--surface-container);font-size:10px;color:var(--text-tertiary)">
@@ -680,39 +680,52 @@ function renderResearchCards() {
   const dateStr = today.toLocaleDateString('zh-CN', {year:'numeric', month:'2-digit', day:'2-digit', weekday:'short'});
 
   const briefs = [
-    { icon: 'wb_twilight', title: '早盘简报', time: '08:30', color: '#f59e0b', bg: '#fffbeb',
-      highlights: ['隔夜外盘', '竞价异动', '今日方向'],
-      sample: '隔夜美股三大指数收涨，纳指+0.8%。A股竞价阶段半导体板块活跃，关注今日科技主线。' },
-    { icon: 'light_mode', title: '午盘盘前简报', time: '11:30', color: '#0071e3', bg: '#eff6ff',
-      highlights: ['早盘资金', '午间消息', '下午策略'],
-      sample: '早盘主力净流入前三：半导体(+65亿)、AI芯片(+42亿)、数据中心(+38亿)。北向资金净流入32亿。' },
-    { icon: 'wb_sunny', title: '早盘收盘简报', time: '11:35', color: '#34c759', bg: '#ecfdf5',
-      highlights: ['涨跌排名', '量能分析', '午后关注'],
-      sample: '上午成交额突破5800亿，较昨日同期+12%。涨停42家，跌停3家。情绪指数：偏乐观。' },
-    { icon: 'nights_stay', title: '午盘收盘简报', time: '15:05', color: '#6750a4', bg: '#f5f3ff',
-      highlights: ['资金汇总', '板块轮动', '次日预判'],
-      sample: '全日成交额1.12万亿。半导体(+124亿)、数据中心(+98亿)领涨。银行(-54亿)、白酒(-47亿)承压。明日关注科技主线延续性。' },
+    { icon: 'wb_twilight', title: '盘前速览', time: '09:25', bg: 'var(--accent-light)',
+      sections: [
+        { label: '隔夜外盘', content: '美股三大指数：道指+0.5% 纳指+0.8% 标普+0.6%。A50期货+0.3%，人民币汇率稳定。' },
+        { label: '竞价异动', content: '集合竞价阶段：半导体、AI芯片板块高开，涨停家数12家。跌停2家。' },
+        { label: '今日关注', content: '① 科技自主可控主线延续性 ② 北向资金开盘流向 ③ 新能源板块反弹力度' },
+      ]},
+    { icon: 'wb_sunny',  title: '早盘收盘', time: '11:30', bg: 'var(--accent-light)',
+      sections: [
+        { label: '资金流向', content: '主力净流入前三：半导体(+65亿)、AI芯片(+42亿)、数据中心(+38亿)。北向资金净流入32亿。' },
+        { label: '涨跌统计', content: '上涨1856家 / 下跌1243家。涨停42家，跌停3家。涨幅>5%：128家。' },
+        { label: '午后关注', content: '① 早盘量能持续性 ② 午后热点切换方向 ③ 尾盘资金动向预判' },
+      ]},
+    { icon: 'light_mode', title: '午盘前瞻', time: '12:55', bg: 'var(--accent-light)',
+      sections: [
+        { label: '午间消息', content: '午间公告：3家公司发布业绩预增，1家重大资产重组停牌。政策面：发改委发布新能源支持政策。' },
+        { label: '上午总结', content: '成交额5800亿，较昨日同期+12%。半导体板块领涨，银行板块承压。情绪偏乐观。' },
+        { label: '下午策略', content: '① 关注尾盘资金是否流入 ② 科技板块仓位管理 ③ 回避高位放量滞涨个股' },
+      ]},
+    { icon: 'nights_stay', title: '全日复盘', time: '15:05', bg: 'var(--accent-light)',
+      sections: [
+        { label: '资金汇总', content: '全日成交1.12万亿。半导体(+124亿)、数据中心(+98亿)领涨。银行(-54亿)、白酒(-47亿)承压。北向净流入58亿。' },
+        { label: '板块轮动', content: '早盘科技→午后消费→尾盘金融。轮动速度偏快，短线情绪活跃。涨停78家，跌停5家。' },
+        { label: '次日预判', content: '① 科技主线能否延续 ② 关注量能变化(万亿以上为强势) ③ 警惕高位股回调风险' },
+      ]},
   ];
 
   let cards = '';
   briefs.forEach((b, i) => {
+    const sections = b.sections.map(s => `
+      <div style="margin-bottom:6px">
+        <span style="font-size:11px;font-weight:700;color:var(--accent);display:block;margin-bottom:1px">${s.label}</span>
+        <span style="font-size:12px;color:var(--text);line-height:1.55">${s.content}</span>
+      </div>
+    `).join('');
+
     cards += `
-      <div class="timeline-card" style="margin-top:${i === 0 ? '0' : '12px'}">
-        <div class="timeline-connector"></div>
-        <div class="soft-card" style="padding:14px 16px;border-left:3px solid ${b.color};flex:1">
-          <div style="display:flex;align-items:center;gap:10px;justify-content:space-between;margin-bottom:8px">
+      <div class="timeline-card" style="margin-top:${i === 0 ? '0' : '14px'}">
+        <div class="soft-card" style="padding:16px 18px;border-left:3px solid var(--accent);flex:1">
+          <div style="display:flex;align-items:center;gap:10px;justify-content:space-between;margin-bottom:10px">
             <div style="display:flex;align-items:center;gap:8px">
-              <span class="material-symbols-outlined" style="font-size:20px;color:${b.color}">${b.icon}</span>
-              <span style="font-size:14px;font-weight:700;color:var(--text)">${b.title}</span>
+              <span class="material-symbols-outlined" style="font-size:20px;color:var(--accent)">${b.icon}</span>
+              <span style="font-size:15px;font-weight:700;color:var(--text)">${b.title}</span>
             </div>
-            <span style="font-size:11px;color:var(--text-tertiary);font-family:var(--font-mono)">${b.time}</span>
+            <span style="font-size:11px;color:var(--text-tertiary);font-family:var(--font-mono);background:${b.bg};padding:2px 10px;border-radius:10px">${b.time}</span>
           </div>
-          <div style="background:${b.bg};border-radius:8px;padding:10px 12px">
-            <p style="font-size:12px;color:var(--text);line-height:1.55">${b.sample}</p>
-          </div>
-          <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:8px">
-            ${b.highlights.map(h => `<span style="font-size:10px;padding:2px 8px;background:${b.bg};border-radius:10px;color:${b.color};font-weight:500">${h}</span>`).join('')}
-          </div>
+          ${sections}
         </div>
       </div>`;
   });
