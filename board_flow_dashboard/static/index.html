@@ -965,7 +965,7 @@ function updateSectorChart(timeIdx) {
         valid.sort((a, b) => b.value - a.value);
         let h = `<div style="font-weight:600;margin-bottom:4px">${timeLabel}</div>`;
         valid.slice(0, 8).forEach(p => {
-          h += `<div style="display:flex;justify-content:space-between;gap:12px">${p.marker}${p.seriesName}<b style="font-family:var(--font-mono)">${(p.value>=0?'+':'')}${p.value.toFixed(2)}亿</b></div>`;
+          h += `<div style="display:flex;justify-content:space-between;gap:12px">${p.marker}${p.seriesName}<b style="font-family:var(--font-mono)">${(p.value>=0?'+':'')}${p.value.toFixed(2)}亿/分</b></div>`;
         });
         return h;
       }

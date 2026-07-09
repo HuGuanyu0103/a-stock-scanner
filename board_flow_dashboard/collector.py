@@ -814,9 +814,16 @@ class SectorFlowCollector:
             seen_user_names.add(user_name)
             values = []
             ratio_values = []
+            prev_val = None
             for t in minutes:
                 item = api_data_by_time[t].get(api_name)
-                values.append(item["net_main"] if item else None)
+                cur = item["net_main"] if item else None
+                # 计算每分钟增量（当前累计 - 上一分钟累计）
+                if cur is not None and prev_val is not None:
+                    values.append(round(cur - prev_val, 2))
+                else:
+                    values.append(0 if prev_val is not None else None)
+                prev_val = cur
                 ratio_values.append(item.get("net_main_ratio") if item else None)
             # 从后往前找最新有效数据
             val, pct, ratio = 0.0, 0.0, 0.0
