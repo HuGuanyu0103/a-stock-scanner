@@ -484,13 +484,13 @@ def api_agent_chat():
 
     agent = get_agent()
     # 检测用户消息中的股票代码并获取实时数据
-    stock_data_context = _extract_stock_context(user_message)
+    stock_data_context, kline_data = _extract_stock_context(user_message)
     reply = agent.chat(
         user_message, all_candidates, hot_sectors, signals, chat_history,
         stock_context=stock_data_context,
     )
     if reply:
-        return jsonify({"reply": reply})
+        return jsonify({"reply": reply, "kline": kline_data})
     return jsonify({"error": "Agent 不可用", "reply": "抱歉，AI 助手暂时不可用，请稍后重试。"})
 
 
@@ -502,10 +502,10 @@ def _extract_stock_code(text):
     return m.group(1) if m else None
 
 def _extract_stock_context(user_message):
-    """如果用户消息包含股票代码，获取该股票的K线历史+实时分析数据"""
+    """返回 (LLM上下文, K线表格数据) 的元组"""
     code = _extract_stock_code(user_message)
     if not code:
-        return ""
+        return "", ""
     try:
         from layer1_data.fetcher import DataFetcher
         from layer2_scan.screener import StockScreener
@@ -517,26 +517,25 @@ def _extract_stock_context(user_message):
         scan = screener.quick_scan(code)
         deep = analyzer.analyze_stock(code)
 
-        # K线历史（最近15个交易日）
-        kline_table = ""
+        # K线表格（纯文本，前端渲染为HTML表格）
+        kline_csv = ""
         kline = scan.get("kline") if "error" not in scan else None
         if kline is not None and hasattr(kline, 'tail'):
             recent = kline.tail(15)
-            kline_table = "```\n 日期       开盘   收盘   涨幅%     成交量(亿)\n" + "-"*48 + "\n"
+            kline_csv = "日期 开盘 收盘 涨幅 成交量(亿)\n"
             for idx, row in recent.iterrows():
                 date_str = str(idx)[:10]
                 o = float(row.get('open', 0))
                 c = float(row.get('close', 0))
                 chg = ((c - o) / o * 100) if o > 0 else 0
                 vol = float(row.get('volume', 0)) / 1e8
-                kline_table += f" {date_str}  {o:>7.2f}  {c:>7.2f}  {chg:>+5.1f}%  {vol:>5.0f}亿\n"
-            kline_table += "```\n"
+                kline_csv += f"{date_str} {o:.2f} {c:.2f} {chg:+.1f}% {vol:.1f}\n"
 
         if "error" in scan:
-            return f"[用户询问股票 {code}，但获取数据失败: {scan['error']}]"
+            return f"[用户询问股票 {code}，数据获取失败: {scan['error']}]", ""
 
         ctx = f"""
-以下为脚本获取的 {code} 实时K线数据，请据此诊断，不要说你没有数据。
+以下为脚本获取的 {code} 实时K线数据，请据此诊断。
 
 现价 {deep.get('price', '?')}  涨跌 {deep.get('change_pct', 0):+.1f}%
 MA5 {deep.get('ma5', 0):.2f}  MA10 {deep.get('ma10', 0):.2f}  MA20 {deep.get('ma20', 0):.2f}
@@ -544,13 +543,11 @@ MA5 {deep.get('ma5', 0):.2f}  MA10 {deep.get('ma10', 0):.2f}  MA20 {deep.get('ma
 概念: {', '.join(deep.get('concepts', []))}
 评分 {deep.get('combined_score', 0)}  信号: {', '.join(deep.get('signal_names', []))}
 
-最近15日K线:
-{kline_table}
-请按格式输出: 综合研判→操作建议→(如有其他股票)对比表格。不用markdown标题。"""
-        return ctx
+K线数据已在UI表格中展示，你不需要重复列出。请直接输出: 综合研判→操作建议→对比表格。"""
+        return ctx, kline_csv
     except Exception as e:
         logger.warning("个股数据获取失败 %s: %s", code, e)
-        return ""
+        return "", ""
 
 
 @app.route("/api/stock/analyze")

@@ -1149,9 +1149,8 @@ function switchPool(pool) {
 }
 
 // ── AI Chat ───────────────────────────────────────────
-function appendChat(role, text) {
+function appendChat(role, text, kline) {
   const msgs = document.getElementById('chatMessages');
-  // Remove welcome + suggestions on first interaction
   const welcome = msgs.querySelector('.welcome-card');
   if (welcome) welcome.remove();
   const chips = msgs.querySelector('.chip-group');
@@ -1160,8 +1159,33 @@ function appendChat(role, text) {
   const div = document.createElement('div');
   div.className = 'chat-msg ' + role;
   if (role === 'assistant') {
+    let html = text.replace(/\n/g, '<br>');
+    // Render K-line table if provided
+    let klineHtml = '';
+    if (kline) {
+      klineHtml = '<div style="margin-bottom:12px;overflow-x:auto"><table style="font-size:11px;border-collapse:collapse;width:100%"><thead><tr style="color:var(--text-tertiary);border-bottom:1px solid var(--border-light)">';
+      const rows = kline.trim().split('\n');
+      if (rows.length > 1) {
+        const headers = rows[0].trim().split(/\s+/);
+        headers.forEach(h => { klineHtml += `<th style="padding:4px 6px;text-align:right;font-weight:500">${h}</th>`; });
+        klineHtml += '</tr></thead><tbody>';
+        for (let i = 1; i < rows.length; i++) {
+          const cells = rows[i].trim().split(/\s+/);
+          if (cells.length >= 4) {
+            klineHtml += '<tr style="border-bottom:1px solid var(--surface-container)">';
+            cells.forEach((c, j) => {
+              const align = j === 0 ? 'left' : 'right';
+              const cls = c.startsWith('+') ? 'up' : (c.startsWith('-') && j === 3 ? 'down' : '');
+              klineHtml += `<td style="padding:3px 6px;text-align:${align};font-family:var(--font-mono)" class="${cls}">${c}</td>`;
+            });
+            klineHtml += '</tr>';
+          }
+        }
+        klineHtml += '</tbody></table></div>';
+      }
+    }
     div.innerHTML = `<div class="msg-avatar"><span class="material-symbols-outlined">smart_toy</span></div>
-      <div class="msg-bubble"><div class="msg-label">观澜</div>${text}</div>`;
+      <div class="msg-bubble"><div class="msg-label">观澜</div>${klineHtml}${html}</div>`;
   } else {
     div.textContent = text;
   }
@@ -1188,7 +1212,7 @@ async function sendChat() {
       body: JSON.stringify({message: msg, history: agentChatHistory})
     });
     const d = await r.json();
-    appendChat('assistant', d.reply || '抱歉，暂时无法回答。');
+    appendChat('assistant', d.reply || '抱歉，暂时无法回答。', d.kline || '');
     agentChatHistory.push({role:'user',content:msg});
     agentChatHistory.push({role:'assistant',content:d.reply||''});
     if (agentChatHistory.length > 20) agentChatHistory = agentChatHistory.slice(-20);
