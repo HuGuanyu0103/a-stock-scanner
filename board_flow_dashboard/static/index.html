@@ -6,7 +6,7 @@
 <title>观澜 · A 股智能看板</title>
 <script src="/static/echarts.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" onerror="this.onerror=null;this.href='https://fonts.loli.net/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap'">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -83,6 +83,21 @@ body {
 }
 .sidebar-nav a:hover { background: var(--surface-container); color: var(--text); }
 .sidebar-nav a.active { color: var(--accent); font-weight: 600; background: var(--accent-light); }
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
 .sidebar-nav a .material-symbols-outlined { font-size: 20px; }
 .sidebar-bottom { margin-top: auto; padding-top: 16px; border-top: 1px solid var(--border-light); }
 .sidebar-user { display: flex; align-items: center; gap: 10px; padding: 8px; }
