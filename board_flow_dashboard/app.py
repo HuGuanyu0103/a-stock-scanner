@@ -483,8 +483,8 @@ def _extract_stock_code(text):
     m = re.search(r'\b(\d{6})\b', text)
     return m.group(1) if m else None
 
-def _extract_stock_context(user_message: str) -> str:
-    """如果用户消息包含股票代码，获取该股票的实时分析数据"""
+def _extract_stock_context(user_message):
+    """如果用户消息包含股票代码，获取该股票的K线历史+实时分析数据"""
     code = _extract_stock_code(user_message)
     if not code:
         return ""
@@ -497,22 +497,45 @@ def _extract_stock_context(user_message: str) -> str:
         analyzer = StockAnalyzer(fetcher=fetcher)
 
         scan = screener.quick_scan(code)
+        deep = analyzer.analyze_stock(code)
+
+        # K线历史（最近15个交易日）
+        kline_table = ""
+        kline = scan.get("kline") if "error" not in scan else None
+        if kline is not None and hasattr(kline, 'tail'):
+            recent = kline.tail(15)
+            kline_table = "```\n 日期       开盘   收盘   涨幅%     成交量(亿)\n" + "-"*48 + "\n"
+            for idx, row in recent.iterrows():
+                date_str = str(idx)[:10]
+                o = float(row.get('open', 0))
+                c = float(row.get('close', 0))
+                chg = ((c - o) / o * 100) if o > 0 else 0
+                vol = float(row.get('volume', 0)) / 1e8
+                kline_table += f" {date_str}  {o:>7.2f}  {c:>7.2f}  {chg:>+5.1f}%  {vol:>5.0f}亿\n"
+            kline_table += "```\n"
+
         if "error" in scan:
             return f"[用户询问股票 {code}，但获取数据失败: {scan['error']}]"
 
-        deep = analyzer.analyze_stock(code)
         ctx = f"""
-[用户询问的股票实时分析数据 - 请基于此数据回答]
-股票代码: {code}
-现价: {deep.get('price', '?')}
-涨跌幅: {deep.get('change_pct', 0):+.1f}%
+[用户询问的股票实时分析数据 — 按以下模板输出诊断]
+
+股票: {code}
+现价: {deep.get('price', '?')} | 涨跌: {deep.get('change_pct', 0):+.1f}%
 均线: MA5={deep.get('ma5', 0):.2f} MA10={deep.get('ma10', 0):.2f} MA20={deep.get('ma20', 0):.2f}
-支撑位: {deep.get('support', '?')}  阻力位: {deep.get('resistance', '?')}
-所属概念: {', '.join(deep.get('concepts', []))}
-综合评分: {deep.get('combined_score', 0)} (技术{deep.get('tech_score', 0)}+情绪{deep.get('sentiment_score', 0)}+因子{deep.get('factor_score', 0)})
+支撑: {deep.get('support', '?')} | 阻力: {deep.get('resistance', '?')}
+概念: {', '.join(deep.get('concepts', []))}
+评分: {deep.get('combined_score', 0)} (技{deep.get('tech_score', 0)}+情{deep.get('sentiment_score', 0)}+因子{deep.get('factor_score', 0)})
 信号: {', '.join(deep.get('signal_names', []))}
-分析摘要: {deep.get('summary', '')}
-"""
+摘要: {deep.get('summary', '')}
+
+K线历史(最近15日):
+{kline_table}
+输出格式要求:
+1. 综合研判: 结构分析(回踩/突破/震荡)+关键K线标注(洗盘/放量)+量价配合+概念热度
+2. 操作建议: 入场区间+目标价+止损位+仓位建议
+3. 如果对话历史中用户提过其他股票,做对比表格(评分/结构/今日/空间/量比)
+用中文，简洁直接。"""
         return ctx
     except Exception as e:
         logger.warning("个股数据获取失败 %s: %s", code, e)
