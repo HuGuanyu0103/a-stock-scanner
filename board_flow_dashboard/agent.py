@@ -687,13 +687,13 @@ class DecisionAgent:
 
     def chat(
         self,
-        user_message: str,
-        candidates: list[dict],
-        hot_sectors: list[str],
-        signals: dict,
-        chat_history: list[dict] | None = None,
-        stock_context: str = "",
-    ) -> str | None:
+        user_message,
+        candidates,
+        hot_sectors,
+        signals,
+        chat_history=None,
+        stock_context="",
+    ):
         """多轮对话：用户可以追问 Agent。
 
         Args:
@@ -860,35 +860,6 @@ class DecisionAgent:
         except Exception as e:
             logger.warning("Intraday Agent 调用失败: %s", e)
         return None
-
-    # ── 多轮对话 ─────────────────────────────────────────────
-
-    def chat(self, user_message, candidates, hot_sectors, signals, chat_history=None):
-        """多轮对话：用户追问 Agent。"""
-        if not self._init_client():
-            return None
-
-        context = self._build_intraday_context(candidates, hot_sectors, signals, 0.5)
-        system_msg = CHAT_SYSTEM_PROMPT + "\n\n=== 当前盘中数据 ===\n" + context
-
-        messages = [{"role": "system", "content": system_msg}]
-        if chat_history:
-            messages.extend(list(chat_history))
-        messages.append({"role": "user", "content": user_message})
-
-        try:
-            resp = self._client.chat.completions.create(
-                model=self._model,
-                messages=messages,
-                temperature=0.6,
-                max_tokens=1500,
-            )
-            return resp.choices[0].message.content
-        except Exception as e:
-            logger.warning("Chat 调用失败: %s", e)
-            return None
-
-
 
     @staticmethod
     def _hard_validate(picks: list[dict], candidates: list[dict]) -> list[dict]:
