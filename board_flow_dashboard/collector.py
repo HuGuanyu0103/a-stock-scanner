@@ -795,10 +795,19 @@ class SectorFlowCollector:
             seen_user_names.add(user_name)
             values = []
             ratio_values = []
+            last_val = None
+            last_ratio = None
             for t in minutes:
                 item = api_data_by_time[t].get(api_name)
-                values.append(item["net_main"] if item else None)
-                ratio_values.append(item.get("net_main_ratio") if item else None)
+                if item is not None:
+                    last_val = item["net_main"]
+                    last_ratio = item.get("net_main_ratio")
+                    values.append(last_val)
+                    ratio_values.append(last_ratio)
+                else:
+                    # 前向填充：用上一个有效值，避免断线
+                    values.append(last_val)
+                    ratio_values.append(last_ratio)
             # 从后往前找最新有效数据
             val, pct, ratio = 0.0, 0.0, 0.0
             for t in reversed(minutes):
