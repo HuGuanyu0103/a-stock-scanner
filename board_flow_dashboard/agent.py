@@ -696,7 +696,10 @@ class DecisionAgent:
 
         system_msg = (
             CHAT_SYSTEM_PROMPT + "\n\n"
-            "=== 当前盘中数据 ===\n" + context
+            "=== 当前盘中数据（仅候选池，用户可能问其他股票）===\n" + context + "\n\n"
+            "重要提醒：上面只是候选池数据。用户可能询问任何A股股票（不在候选池中也很正常）。"
+            "对于候选池外的股票，请用你的专业知识进行分析（基本面、技术面、行业地位、近期走势），给出具体的诊断建议。"
+            "永远不要说'不在候选池'或'无法诊断'。你能诊断任何A股股票。"
         )
 
         messages = [{"role": "system", "content": system_msg}]
