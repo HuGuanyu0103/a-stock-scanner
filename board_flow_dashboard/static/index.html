@@ -213,11 +213,9 @@ body {
 .table-card { padding: 24px; flex: 1; }
 .table-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
 .table-header h3 { font-size: 18px; font-weight: 600; letter-spacing: -0.2px; }
-.table-header .table-link { font-size: 12px; color: var(--accent); font-weight: 600; cursor: pointer; }
-.table-header .table-link:hover { text-decoration: underline; }
 
-/* Rank sort */
-.rank-sort-bar { display: flex; gap: 2px; margin-bottom: 16px; background: var(--surface-container); padding: 3px; border-radius: 10px; width: fit-content; }
+/* Rank sort — in header right side */
+.rank-sort-bar { display: flex; gap: 2px; background: var(--surface-container); padding: 3px; border-radius: 10px; }
 .rank-sort-bar button {
   padding: 5px 14px; border: none; border-radius: 8px;
   background: transparent; font-size: 12px; font-weight: 500; color: var(--text-secondary);
@@ -501,7 +499,7 @@ body {
         <div class="section-header">
           <div class="section-header-left">
             <h2>资金流向分析</h2>
-            <p id="chartMeta">自选板块 · 加载中...</p>
+            <p id="chartMeta">热门板块 · 加载中...</p>
           </div>
         </div>
 
@@ -530,12 +528,11 @@ body {
 
         <div class="soft-card table-card" style="margin-top:20px">
           <div class="table-header">
-            <h3 id="rankTitle">板块排名</h3>
-            <span class="table-link">查看全市场 →</span>
-          </div>
-          <div class="rank-sort-bar">
-            <button class="active" onclick="switchRankSort('net_main', this)">主力净额</button>
-            <button onclick="switchRankSort('net_ratio', this)">主力净占比</button>
+            <h3 id="rankTitle">热门板块排名</h3>
+            <div class="rank-sort-bar">
+              <button class="active" onclick="switchRankSort('net_main', this)">主力净额</button>
+              <button onclick="switchRankSort('net_ratio', this)">主力净占比</button>
+            </div>
           </div>
           <div id="rankList"><div class="loading">加载中...</div></div>
         </div>
@@ -738,10 +735,8 @@ async function loadSectorData() {
     sectorData = await res.json();
     updateStaleBanner(sectorData);
     document.getElementById('chartMeta').textContent =
-      (sectorType === 'watch' ? '自选' : sectorType === 'concept' ? '概念' : '行业')
-      + '板块 · ' + (sectorData.rank ? sectorData.rank.length : 0) + ' 个 · 数据时间 ' + (sectorData.time_label || '--:--');
-    document.getElementById('rankTitle').textContent =
-      (sectorType === 'watch' ? '自选' : sectorType === 'concept' ? '概念' : '行业') + '板块排名';
+      '热门板块 · ' + (sectorData.rank ? sectorData.rank.length : 0) + ' 个 · 数据时间 ' + (sectorData.time_label || '--:--');
+    document.getElementById('rankTitle').textContent = '热门板块排名';
     updateStatusPill(sectorData);
     initSectorChart();
     initReplay();
@@ -834,7 +829,12 @@ function updateSectorChart(timeIdx) {
     xAxis: {
       type: 'category', data: minutes, boundaryGap: false,
       axisLabel: { fontSize: 10, color: '#717785', interval: 0,
-        formatter: v => { const p = parseInt(v.split(':')[1]); return p === 0 || p === 30 ? v : ''; }
+        formatter: v => {
+          const [h, m] = v.split(':').map(Number);
+          if (h === 11 && m === 30) return '11:30/13:00';
+          if (h === 13 && m === 0) return '';
+          return m === 0 || m === 30 ? v : '';
+        }
       },
       axisLine: { lineStyle: { color: '#e3e2e7' } }
     },
@@ -874,13 +874,12 @@ function updateRank(timeIdx) {
 
   let html = '';
   ranked.forEach((item, idx) => {
-    const sv = sectorSortBy === 'net_ratio' ? item.ratio : item.value;
+    const isRatio = sectorSortBy === 'net_ratio';
+    const sv = isRatio ? item.ratio : item.value;
     const cls = sv >= 0 ? 'up' : 'down';
     const barW = Math.min(100, Math.abs(sv) / maxAbs * 100);
-    const ratioStr = item.ratio !== 0
-      ? `<span class="rank-ratio ${item.ratio>=0?'up':'down'}">${(item.ratio>=0?'+':'')}${item.ratio.toFixed(1)}%</span>` : '';
-    const div = (item.pct < 0 && item.ratio > 0) ? ' ⚠' : '';
-    const primary = sectorSortBy === 'net_ratio'
+    const div = (item.pct < 0 && item.ratio > 0 && !isRatio) ? ' ⚠' : '';
+    const primary = isRatio
       ? `${(item.ratio>=0?'+':'')}${item.ratio.toFixed(2)}%`
       : `${(item.value>=0?'+':'')}${item.value.toFixed(2)} 亿`;
 
@@ -888,10 +887,9 @@ function updateRank(timeIdx) {
       <span class="rank-idx">${String(idx+1).padStart(2,'0')}</span>
       <span class="rank-dot" style="background:${item.color}"></span>
       <span class="rank-name">${item.name}${div}</span>
-      <span class="rank-val ${cls}">${primary}</span>
-      ${ratioStr}</div>
+      <span class="rank-val ${cls}">${primary}</span></div>
       <div style="height:2px;background:var(--surface-low);margin:0 12px 0 32px;border-radius:1px">
-        <div style="height:2px;width:${barW}%;background:${sv>=0?'#ffdad6':'#d9f7be'};border-radius:1px"></div>
+        <div style="height:2px;width:${barW}%;background:${sv>=0?'#ffdad6':'#d9f7be'};border-radius:1px"></div>`;
       </div>`;
   });
   document.getElementById('rankList').innerHTML = html;
