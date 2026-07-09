@@ -990,7 +990,7 @@ function updateSectorChart(timeIdx) {
     },
     series: Object.entries(series).map(([name, sdata]) => ({
       name, type: 'line', data: sdata.values.slice(0, timeIdx + 1).map((v, i) => i < sdata.values.length ? v : null),
-      smooth: true, symbol: 'none',
+      smooth: true, symbol: 'none', connectNulls: true,
       lineStyle: { width: 1.5, color: sdata.color },
       emphasis: { focus: 'series', lineStyle: { width: 3 } },
     })),
