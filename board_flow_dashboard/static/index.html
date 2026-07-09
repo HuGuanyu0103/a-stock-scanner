@@ -520,17 +520,6 @@ body {
             <h2>资金流向分析</h2>
             <p id="chartMeta">自选板块 · 加载中...</p>
           </div>
-          <div style="display:flex;align-items:center;gap:12px">
-            <div style="display:flex;gap:4px">
-              <button class="sector-type-btn active" onclick="switchSector('watch', this)">自选</button>
-              <button class="sector-type-btn" onclick="switchSector('concept', this)">概念</button>
-              <button class="sector-type-btn" onclick="switchSector('industry', this)">行业</button>
-            </div>
-            <div class="section-tabs">
-              <button class="active">资金流向</button>
-              <button onclick="switchLeftTab('picks')">盘中选股</button>
-            </div>
-          </div>
         </div>
 
         <div class="stale-banner" id="staleBanner">
@@ -575,10 +564,6 @@ body {
           <div class="section-header-left">
             <h2>盘中选股</h2>
             <p id="picksMeta">加载中...</p>
-          </div>
-          <div class="section-tabs">
-            <button onclick="switchLeftTab('flow')">资金流向</button>
-            <button class="active">盘中选股</button>
           </div>
         </div>
 
@@ -790,10 +775,12 @@ function updateSectorChart(timeIdx) {
   if (minutes.length === 0) return;
   const timeLabel = minutes[timeIdx] || '15:00';
 
+  // Calculate axis range from ALL data (not just visible) to keep view stable
   let maxVal = -Infinity, minVal = Infinity;
   for (const s of Object.values(series)) {
-    const v = s.values[timeIdx];
-    if (v !== null && v !== undefined) { if (v > maxVal) maxVal = v; if (v < minVal) minVal = v; }
+    for (const v of s.values) {
+      if (v !== null && v !== undefined) { if (v > maxVal) maxVal = v; if (v < minVal) minVal = v; }
+    }
   }
   const absMax = Math.max(Math.abs(maxVal), Math.abs(minVal || 0), 30);
   let yMax = Math.ceil(absMax / 30) * 30; if (yMax < 30) yMax = 30;

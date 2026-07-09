@@ -466,7 +466,7 @@ def api_agent_chat():
     )
     if reply:
         return jsonify({"reply": reply})
-    return jsonify({"error": "Agent 不可用", "reply": "抱歉，AI 决策助手暂时不可用，请查看盘中选股标签页的候选池。"})
+    return jsonify({"error": "Agent 不可用", "reply": "抱歉，AI 助手暂时不可用，请稍后重试。"})
 
 
 
