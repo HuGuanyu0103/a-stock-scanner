@@ -17,10 +17,14 @@ import atexit
 import json
 import logging
 import os
+import re
 import signal
 import sys
 from datetime import datetime
 from pathlib import Path
+
+# 确保项目根目录在 sys.path 中（用于导入 layer1_data 等模块）
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from flask import Flask, jsonify, request, send_from_directory
 
@@ -461,12 +465,98 @@ def api_agent_chat():
     hot_sectors = data.get("hot_sectors", [])
 
     agent = get_agent()
+    # 检测用户消息中的股票代码并获取实时数据
+    stock_data_context = _extract_stock_context(user_message)
     reply = agent.chat(
         user_message, all_candidates, hot_sectors, signals, chat_history,
+        stock_context=stock_data_context,
     )
     if reply:
         return jsonify({"reply": reply})
     return jsonify({"error": "Agent 不可用", "reply": "抱歉，AI 助手暂时不可用，请稍后重试。"})
+
+
+# ── 个股分析端点 ──────────────────────────────────────────────
+
+def _extract_stock_code(text):
+    """从文本中提取6位股票代码"""
+    m = re.search(r'\b(\d{6})\b', text)
+    return m.group(1) if m else None
+
+def _extract_stock_context(user_message: str) -> str:
+    """如果用户消息包含股票代码，获取该股票的实时分析数据"""
+    code = _extract_stock_code(user_message)
+    if not code:
+        return ""
+    try:
+        from layer1_data.fetcher import DataFetcher
+        from layer2_scan.screener import StockScreener
+        from layer4_analysis.analyzer import StockAnalyzer
+        fetcher = DataFetcher()
+        screener = StockScreener(fetcher=fetcher)
+        analyzer = StockAnalyzer(fetcher=fetcher)
+
+        scan = screener.quick_scan(code)
+        if "error" in scan:
+            return f"[用户询问股票 {code}，但获取数据失败: {scan['error']}]"
+
+        deep = analyzer.analyze_stock(code)
+        ctx = f"""
+[用户询问的股票实时分析数据 - 请基于此数据回答]
+股票代码: {code}
+现价: {deep.get('price', '?')}
+涨跌幅: {deep.get('change_pct', 0):+.1f}%
+均线: MA5={deep.get('ma5', 0):.2f} MA10={deep.get('ma10', 0):.2f} MA20={deep.get('ma20', 0):.2f}
+支撑位: {deep.get('support', '?')}  阻力位: {deep.get('resistance', '?')}
+所属概念: {', '.join(deep.get('concepts', []))}
+综合评分: {deep.get('combined_score', 0)} (技术{deep.get('tech_score', 0)}+情绪{deep.get('sentiment_score', 0)}+因子{deep.get('factor_score', 0)})
+信号: {', '.join(deep.get('signal_names', []))}
+分析摘要: {deep.get('summary', '')}
+"""
+        return ctx
+    except Exception as e:
+        logger.warning("个股数据获取失败 %s: %s", code, e)
+        return ""
+
+
+@app.route("/api/stock/analyze")
+def api_stock_analyze():
+    """获取单只股票的实时分析数据"""
+    code = request.args.get("code", "").strip()
+    if not code or not re.match(r'^\d{6}$', code):
+        return jsonify({"error": "请提供6位股票代码"}), 400
+
+    try:
+        from layer1_data.fetcher import DataFetcher
+        from layer2_scan.screener import StockScreener
+        from layer4_analysis.analyzer import StockAnalyzer
+        fetcher = DataFetcher()
+        screener = StockScreener(fetcher=fetcher)
+        analyzer = StockAnalyzer(fetcher=fetcher)
+
+        scan = screener.quick_scan(code)
+        deep = analyzer.analyze_stock(code)
+
+        return jsonify({
+            "stock_code": code,
+            "price": deep.get("price"),
+            "change_pct": deep.get("change_pct"),
+            "support": deep.get("support"),
+            "resistance": deep.get("resistance"),
+            "concepts": deep.get("concepts", []),
+            "signal_score": deep.get("combined_score"),
+            "tech_score": deep.get("tech_score"),
+            "sentiment_score": deep.get("sentiment_score"),
+            "factor_score": deep.get("factor_score"),
+            "signal_names": deep.get("signal_names", []),
+            "summary": deep.get("summary", ""),
+            "ma5": deep.get("ma5"),
+            "ma10": deep.get("ma10"),
+            "ma20": deep.get("ma20"),
+        })
+    except Exception as e:
+        logger.error("个股分析失败: %s", e)
+        return jsonify({"error": str(e)}), 500
 
 
 

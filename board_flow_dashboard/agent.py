@@ -674,6 +674,7 @@ class DecisionAgent:
         hot_sectors: list[str],
         signals: dict,
         chat_history: list[dict] | None = None,
+        stock_context: str = "",
     ) -> str | None:
         """多轮对话：用户可以追问 Agent。
 
@@ -682,7 +683,8 @@ class DecisionAgent:
             candidates: 当前候选池
             hot_sectors: 热板块
             signals: 三系统信号
-            chat_history: 历史对话 [{"role": "user/assistant", "content": "..."}]
+            chat_history: 历史对话
+            stock_context: 用户消息中提到的个股实时分析数据
 
         Returns:
             Agent 的文本回复，或 None
@@ -696,10 +698,17 @@ class DecisionAgent:
 
         system_msg = (
             CHAT_SYSTEM_PROMPT + "\n\n"
-            "=== 当前盘中数据（仅候选池，用户可能问其他股票）===\n" + context + "\n\n"
-            "重要提醒：上面只是候选池数据。用户可能询问任何A股股票（不在候选池中也很正常）。"
-            "对于候选池外的股票，请用你的专业知识进行分析（基本面、技术面、行业地位、近期走势），给出具体的诊断建议。"
-            "永远不要说'不在候选池'或'无法诊断'。你能诊断任何A股股票。"
+            "=== 当前盘中数据（仅候选池，用户可能问其他股票）===\n" + context
+        )
+        if stock_context:
+            system_msg += "\n\n=== 用户询问的股票实时数据（脚本获取，非LLM编造）===\n" + stock_context
+            system_msg += "\n请基于以上实时数据进行分析诊断，给出买卖建议、入场价位、目标价和止损位。"
+
+        system_msg += "\n\n"
+        system_msg += (
+            "重要提醒：上面候选池只是部分数据。用户可能询问任何A股股票。"
+            "如果提供了该股的实时数据，请基于数据回答。如果没有实时数据，用你的专业知识分析。"
+            "永远不要说'不在候选池'或'无法诊断'。给出具体的诊断建议。"
         )
 
         messages = [{"role": "system", "content": system_msg}]
