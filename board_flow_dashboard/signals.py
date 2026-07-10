@@ -273,9 +273,11 @@ def get_pool_allocation(signals: dict) -> dict:
     rotation = market.get("rotation_speed", 0.5)
     breadth = market.get("market_breadth", 0.5)
 
-    # v4.0: rotation=1.0 是错误兜底值(数据不足)，回退到默认分配
-    if rotation >= 0.99:
-        rotation = 0.5
+    # v4.0: rotation 边界处理
+    # rotation=1.0 可能来自两方面：(1) compute_rotation_speed 返回的极快轮动信号
+    # (2) 数据不足时的兜底。后者由 SentimentCollector 在 None→0.5 处统一处理。
+    # 此处 rotation∈[0,1] 已是有效值，不做二次兜底。
+    rotation = max(0.0, min(1.0, rotation))
 
     if rotation < 0.3:
         # 轮动慢：领头羊稳固，追涨为主

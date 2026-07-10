@@ -170,12 +170,26 @@ class AlphaFactors:
         return val
 
     def factor_turnover_change(self) -> float:
-        """换手率变化 — 当日换手率 / 5日平均换手率（近似用成交量/流通市值代理）"""
-        if len(self.df) < 6:
-            return 1.0
-        cur = float(self.df["volume"].iloc[-1])
-        avg = float(self.df["volume"].tail(6).iloc[:-1].mean())
-        val = cur / avg if avg > 0 else 1.0
+        """量比加速度 — 当日量比相对于 5 日前量比的变化率。
+
+        量比 = 当日量 / 5日均量，量比加速度 = (今日量比 - 5日前量比) / 5日前量比。
+        正值表示放量加速，负值表示缩量。
+        与 volume_ratio（量比水平）正交：高量比+正加速=持续放量，高量比+负加速=放量见顶。
+        """
+        if len(self.df) < 11:
+            return 0.0
+        cur_vol = float(self.df["volume"].iloc[-1])
+        prev_vol = float(self.df["volume"].iloc[-6])
+        cur_avg = float(self.df["volume"].tail(6).iloc[:-1].mean())
+        prev_avg = float(self.df["volume"].iloc[-11:-1].mean())
+
+        cur_ratio = cur_vol / cur_avg if cur_avg > 0 else 1.0
+        prev_ratio = prev_vol / prev_avg if prev_avg > 0 else 1.0
+
+        if prev_ratio > 0:
+            val = (cur_ratio - prev_ratio) / prev_ratio * 100
+        else:
+            val = 0.0
         self._factors["turnover_change"] = val
         return val
 
@@ -225,24 +239,59 @@ class AlphaFactors:
         return state
 
     def factor_kdj_state(self) -> float:
-        """KDJ 状态: 超卖金叉=3, 金叉=2, 超买死叉=-2"""
+        """KDJ 状态: 超卖金叉=3, 金叉=2, 超买死叉=-2。
+
+        使用标准 EMA 平滑公式:
+          K_t = 2/3 * K_{t-1} + 1/3 * RSV_t
+          D_t = 2/3 * D_{t-1} + 1/3 * K_t
+          J_t = 3*K_t - 2*D_t
+        初始值 K_0 = D_0 = 50。
+        """
         if len(self.df) < 10:
             return 0
-        low_n = self.df["low"].tail(9).min()
-        high_n = self.df["high"].tail(9).max()
-        rsv = (self.df["close"].iloc[-1] - low_n) / (high_n - low_n + 1e-9) * 100
-        k = rsv
-        d = k  # 简化计算
-        k_prev = (self.df["close"].iloc[-2] - self.df["low"].tail(10).iloc[:-1].min()) / \
-                 (self.df["high"].tail(10).iloc[:-1].max() - self.df["low"].tail(10).iloc[:-1].min() + 1e-9) * 100
+
+        close = self.df["close"].values
+        high = self.df["high"].values
+        low = self.df["low"].values
+        n = 9  # KDJ 标准参数
+
+        k_vals = []
+        d_vals = []
+        k_prev = 50.0
+        d_prev = 50.0
+
+        for i in range(len(self.df)):
+            if i < n - 1:
+                k_vals.append(50.0)
+                d_vals.append(50.0)
+                continue
+            low_n = low[i - n + 1:i + 1].min()
+            high_n = high[i - n + 1:i + 1].max()
+            rsv = (close[i] - low_n) / (high_n - low_n + 1e-9) * 100
+            k = 2.0 / 3.0 * k_prev + 1.0 / 3.0 * rsv
+            d = 2.0 / 3.0 * d_prev + 1.0 / 3.0 * k
+            k_vals.append(k)
+            d_vals.append(d)
+            k_prev, d_prev = k, d
+
+        if len(k_vals) < 2:
+            return 0
+
+        k_curr, d_curr = k_vals[-1], d_vals[-1]
+        k_prev2, d_prev2 = k_vals[-2], d_vals[-2]
 
         state = 0
-        if k_prev <= d and k > d and k < 30:
+        if k_prev2 <= d_prev2 and k_curr > d_curr and k_curr < 30:
             state = 3  # 超卖金叉
-        elif k_prev <= d and k > d:
+        elif k_prev2 <= d_prev2 and k_curr > d_curr:
             state = 2  # 金叉
-        elif k_prev >= d and k < d and k > 80:
+        elif k_prev2 >= d_prev2 and k_curr < d_curr and k_curr > 80:
             state = -2  # 超买死叉
+        elif k_curr > d_curr:
+            state = 1  # 多头
+        elif k_curr < d_curr:
+            state = -1  # 空头
+
         self._factors["kdj_state"] = state
         return state
 
@@ -371,11 +420,11 @@ class AlphaFactors:
         """将因子原始值映射到 [-1, 1] 范围"""
         ranges = {
             "mom_1d": (-10, 10),
-            "mom_5d": (-20, 20),
-            "mom_10d": (-30, 30),
-            "mom_20d": (-40, 40),
-            "reversal_3d": (-15, 15),
-            "mom_ratio": (-20, 20),
+            "mom_5d": (-40, 40),
+            "mom_10d": (-60, 60),
+            "mom_20d": (-80, 80),
+            "reversal_3d": (-30, 30),
+            "mom_ratio": (-40, 40),
             "volatility_5d": (0, 8),
             "volatility_20d": (0, 10),
             "atr": (0, 8),
@@ -383,7 +432,7 @@ class AlphaFactors:
             "volume_ratio": (0, 5),
             "volume_trend": (-10, 10),
             "price_volume_corr": (-1, 1),
-            "turnover_change": (0, 5),
+            "turnover_change": (-50, 50),
             "ma_slope_5": (-5, 5),
             "ma_slope_10": (-5, 5),
             "macd_state": (-2.5, 2.5),
@@ -415,7 +464,7 @@ class AlphaFactors:
             "volume_ratio": "量比（当日/5日均量）",
             "volume_trend": "量能趋势（5日斜率）",
             "price_volume_corr": "量价相关系数",
-            "turnover_change": "换手率变化",
+            "turnover_change": "量比加速度（5日变化率）",
             "ma_slope_5": "MA5斜率",
             "ma_slope_10": "MA10斜率",
             "macd_state": "MACD状态",

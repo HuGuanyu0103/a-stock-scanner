@@ -84,7 +84,7 @@ def run_scan(top_n: int = 300) -> dict:
 
     result = screener.screen(
         min_price=3.0, max_price=100.0,
-        exclude_st=True, exclude_chinext=True,
+        exclude_st=True, exclude_chinext=False,
         top_n=top_n, batch_size=50,
     )
 

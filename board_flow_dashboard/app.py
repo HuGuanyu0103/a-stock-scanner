@@ -61,34 +61,60 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# Gzip 压缩（含静态文件），减少 Cloudflare Tunnel 带宽
+try:
+    from flask_compress import Compress
+    Compress(app)
+except ImportError:
+    @app.after_request
+    def _gzip_response(response):
+        accept = request.headers.get('Accept-Encoding', '')
+        if 'gzip' in accept and response.content_length and response.content_length > 1024:
+            import gzip, io
+            response.direct_passthrough = False
+            gzip_buffer = io.BytesIO()
+            gzip_file = gzip.GzipFile(mode='wb', fileobj=gzip_buffer, compresslevel=4)
+            gzip_file.write(response.get_data())
+            gzip_file.close()
+            response.set_data(gzip_buffer.getvalue())
+            response.headers['Content-Encoding'] = 'gzip'
+            response.headers['Content-Length'] = str(len(response.get_data()))
+        return response
+
+# 静态文件缓存头（echarts.min.js 1MB 缓存 7 天）
+@app.after_request
+def _cache_static(response):
+    if request.path.startswith('/static/'):
+        ext = request.path.rsplit('.', 1)[-1] if '.' in request.path else ''
+        if ext in ('js', 'woff2', 'woff'):
+            response.headers['Cache-Control'] = 'public, max-age=604800'
+        elif ext in ('css', 'png', 'svg'):
+            response.headers['Cache-Control'] = 'public, max-age=86400'
+    return response
+
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
 
-_use_mock = "--mock" in sys.argv
-if _use_mock:
-    logger.info("模拟数据模式 — 不启动采集器")
-    collector = None
-else:
-    collector = SectorFlowCollector(poll_interval=3.0)
-    collector.start()
-    logger.info("实时采集模式 — 采集器 v2 已启动")
+# 始终启动实时采集器，永不使用模拟数据
+collector = SectorFlowCollector(poll_interval=3.0)
+collector.start()
+logger.info("实时采集模式 — 采集器已启动")
 
 # System B: 情绪面采集器（独立线程）
 sentiment_collector = SentimentCollector()
+sentiment_collector.start()
+logger.info("System B（情绪面）已启动")
+
 # System C: 消息面监控（独立线程）
 news_monitor = NewsMonitor()
+news_monitor.start()
+logger.info("System C（消息面）已启动")
+
 # v4.0: 盘前预扫描
 pre_market_scanner = PreMarketScanner()
 
 # 启动信号定期持久化（每 60s）
 get_signal_store().start_auto_persist(interval=60)
-
-# 非 mock 模式启动 System B/C
-if not _use_mock:
-    sentiment_collector.start()
-    logger.info("System B（情绪面）已启动")
-    news_monitor.start()
-    logger.info("System C（消息面）已启动")
 
 
 def _cleanup():
@@ -122,20 +148,20 @@ def api_data():
     sector_type = request.args.get("type", "watch")
     if sector_type not in ("concept", "industry", "watch"):
         sector_type = "watch"
+    date_param = request.args.get("date", "").strip()
 
-    if collector is not None:
-        data = collector.get_dashboard_data(sector_type=sector_type)
+    if date_param:
+        data = collector.get_dashboard_data_for_date(date_param, sector_type=sector_type)
     else:
-        data = fetch_dashboard_data(use_real=False)
-        data["sector_type"] = sector_type
-        data["data_date"] = data.get("date", "")
-        # mock 模式下 watch 类型需要白名单过滤
-        if sector_type == "watch":
-            data["rank"] = [r for r in data.get("rank", []) if r["name"] in WATCH_SECTORS]
-            data["series"] = {
-                k: v for k, v in data.get("series", {}).items() if k in WATCH_SECTORS
-            }
+        data = collector.get_dashboard_data(sector_type=sector_type)
     return jsonify(data)
+
+
+@app.route("/api/dates")
+def api_dates():
+    """返回 DB 中有数据的交易日期列表，供前端日期选择器。"""
+    dates = collector.get_available_dates() if collector else []
+    return jsonify({"dates": dates})
 
 
 @app.route("/api/data/snapshot")
@@ -212,23 +238,9 @@ def api_stocks_flow():
     sort_by = request.args.get("sort", "net_main")
     count = min(int(request.args.get("count", 50)), 200)
 
-    if _use_mock:
-        import random
-        stocks = []
-        for code, name, price, pct, sector in _MOCK_STOCKS[:count]:
-            stocks.append({
-                "code": code, "name": name,
-                "price": price, "pct_chg": pct,
-                "net_main": round(random.uniform(-5, 15), 2),
-                "net_main_ratio": round(random.uniform(-10, 25), 2),
-                "volume_ratio": round(random.uniform(0.3, 3.0), 2),
-                "turnover_rate": round(random.uniform(0.5, 10), 1),
-            })
-        stocks.sort(key=lambda x: x["net_main"], reverse=True)
-    else:
-        stocks = fetch_stock_fund_flow_rank(sort_by=sort_by, count=count)
-        if stocks is None:
-            return jsonify({"error": "数据获取失败", "time": _now_time(), "stocks": []}), 500
+    stocks = fetch_stock_fund_flow_rank(sort_by=sort_by, count=count)
+    if stocks is None:
+        return jsonify({"error": "数据获取失败", "time": _now_time(), "stocks": []}), 500
 
     return jsonify({
         "time": _now_time(),
@@ -255,28 +267,8 @@ def _is_market_open_now():
 
 @app.route("/api/status")
 def api_status():
-    if collector is not None:
-        status = collector.get_status()
-        status["mode"] = "live"
-    else:
-        try:
-            from data_fetcher import is_trading_day
-            trading_day = is_trading_day()
-        except Exception:
-            trading_day = datetime.now().weekday() < 5
-        status = {
-            "running": False,
-            "snapshots_concept": 0,
-            "snapshots_industry": 0,
-            "snapshots_northbound": 0,
-            "last_poll_iso": None,
-            "consecutive_failures": 0,
-            "poll_interval": 0,
-            "market_open": _is_market_open_now(),
-            "is_trading_day": trading_day,
-            "date": datetime.now().strftime("%Y-%m-%d"),
-            "mode": "mock",
-        }
+    status = collector.get_status()
+    status["mode"] = "live"
     return jsonify(status)
 
 
@@ -289,10 +281,8 @@ def index():
 
 @app.route("/refresh")
 def refresh():
-    if collector is not None:
-        collector.reset()
-        return jsonify({"status": "ok", "message": "采集器已重置"})
-    return jsonify({"status": "ok", "message": "模拟模式无需重置"})
+    collector.reset()
+    return jsonify({"status": "ok", "message": "采集器已重置"})
 
 
 # ── 盘中选股 + 多系统聚合 ──────────────────────────────────
@@ -304,10 +294,7 @@ def api_stocks():
     System A（技术+资金）提供基础分，System B（情绪）调节策略基调，
     System C（消息）提供事件加分。降级：任何系统挂了自动分权。
     """
-    use_mock = _use_mock
-    if request.args.get("mock", "0") == "1":
-        use_mock = True
-    data = select_stocks(use_mock=use_mock, collector=collector)
+    data = select_stocks(collector=collector)
 
     # 多系统聚合
     store = get_signal_store()
@@ -355,7 +342,7 @@ def api_stocks():
         "indices": pre_market.get("overnight", {}).get("indices", {}),
     }
     # 盘前情绪施加到 A 池
-    if pre_market.get("pre_market_open") and not _use_mock:
+    if pre_market.get("pre_market_open"):
         data["pool_a"] = pre_market_scanner.apply_to_candidates(
             data["pool_a"], pool_type="A")
 
@@ -437,10 +424,7 @@ def api_daily_scorer_status():
 @app.route("/api/agent/intraday")
 def api_agent_intraday():
     """生成盘中 AI 决策建议。"""
-    use_mock = _use_mock
-    if request.args.get("mock", "0") == "1":
-        use_mock = True
-    data = select_stocks(use_mock=use_mock, collector=collector)
+    data = select_stocks(collector=collector)
     all_candidates = data.get("pool_a", []) + data.get("pool_b", [])
     if not all_candidates:
         return jsonify({"error": "候选池为空", "mode": "empty"})
@@ -475,8 +459,7 @@ def api_agent_chat():
 
     chat_history = body.get("history", [])
 
-    use_mock = _use_mock
-    data = select_stocks(use_mock=use_mock, collector=collector)
+    data = select_stocks(collector=collector)
     all_candidates = data.get("pool_a", []) + data.get("pool_b", [])
     store = get_signal_store()
     signals = store.get_all()
@@ -488,6 +471,7 @@ def api_agent_chat():
     reply = agent.chat(
         user_message, all_candidates, hot_sectors, signals, chat_history,
         stock_context=stock_data_context,
+        stock_kline=kline_data,
     )
     if reply:
         return jsonify({"reply": reply, "kline": kline_data})
@@ -500,6 +484,66 @@ def _extract_stock_code(text):
     """从文本中提取6位股票代码"""
     m = re.search(r'\b(\d{6})\b', text)
     return m.group(1) if m else None
+
+def _analyze_kline_events(df):
+    """分析K线历史，自动标注关键事件。返回 {行序号: [事件标签]} 和统计摘要。"""
+    if df is None or len(df) < 5:
+        return {}, {}
+    closes = df['close'].values.astype(float)
+    opens  = df['open'].values.astype(float)
+    highs  = df['high'].values.astype(float)
+    lows   = df['low'].values.astype(float)
+    volumes = df['volume'].values.astype(float)
+    n = len(df)
+
+    low_20  = lows[-20:].min()
+    avg_vol_20 = volumes[-20:].mean() if n >= 20 else volumes.mean()
+    max_vol_20 = volumes[-20:].max() if n >= 20 else volumes.max()
+
+    annotations = {}
+    # 计算 20 日平均成交额（亿元）
+    avg_amount = round(float((volumes[-20:] * closes[-20:] / 1e8).mean()), 1) if n >= 20 else 0
+    max_amount = round(float((volumes[-20:] * closes[-20:] / 1e8).max()), 1) if n >= 20 else 0
+
+    stats = {
+        'low_20': round(float(low_20), 2),
+        'high_20': round(float(highs[-20:].max()), 2),
+        'avg_amount': avg_amount,
+        'max_amount': max_amount,
+        'pct_from_low': round(float((closes[-1] - low_20) / low_20 * 100), 1),
+    }
+
+    for i in range(max(5, n - 20), n):
+        o, c, h, l = opens[i], closes[i], highs[i], lows[i]
+        v = volumes[i]
+        vol_r = v / avg_vol_20 if avg_vol_20 > 0 else 1
+        chg = (c - o) / o * 100 if o > 0 else 0
+        tags = []
+
+        if c <= low_20 * 1.05:
+            tags.append('底部区域')
+        if vol_r > 1.8 and chg > 0:
+            tags.append('放量启动')
+        if v >= max_vol_20 * 0.95:
+            tags.append('天量')
+        if i >= 2:
+            c1 = (closes[i-1] - opens[i-1]) / opens[i-1] * 100 if opens[i-1] > 0 else 0
+            c2 = (closes[i-2] - opens[i-2]) / opens[i-2] * 100 if opens[i-2] > 0 else 0
+            if chg > 3 and chg > c1 and c1 > 0:
+                tags.append('加速')
+        if chg < -3 and vol_r < 1.5:
+            tags.append('洗盘')
+        if i >= 1 and chg > 0:
+            po, pc = opens[i-1], closes[i-1]
+            pcg = (pc - po) / po * 100 if po > 0 else 0
+            if pcg < 0 and o <= pc and c >= po:
+                tags.append('反包')
+
+        if tags:
+            annotations[i] = tags
+
+    return annotations, stats
+
 
 def _extract_stock_context(user_message):
     """返回 (LLM上下文, K线表格数据) 的元组"""
@@ -517,33 +561,138 @@ def _extract_stock_context(user_message):
         scan = screener.quick_scan(code)
         deep = analyzer.analyze_stock(code)
 
-        # K线表格（纯文本，前端渲染为HTML表格）
+        # K线表格（带关键事件自动标注）
         kline_csv = ""
         kline = scan.get("kline") if "error" not in scan else None
-        if kline is not None and hasattr(kline, 'tail'):
-            recent = kline.tail(15)
-            kline_csv = "日期 开盘 收盘 涨幅 成交量(亿)\n"
-            for idx, row in recent.iterrows():
-                date_str = str(idx)[:10]
+        annotations = {}
+        kline_stats = {}
+
+        kline_nrows = len(kline) if kline is not None and hasattr(kline, '__len__') else 0
+        if kline is not None and hasattr(kline, 'tail') and kline_nrows >= 5:
+            annotations, kline_stats = _analyze_kline_events(kline)
+            recent = kline.tail(18)
+
+            kline_csv  = "  日期     开盘   收盘    涨幅%     成交额      \n"
+            kline_csv += "──────────────────────────────────────────\n"
+            for row_idx, (_, row) in enumerate(recent.iterrows()):
+                td = row.get('trade_date')
+                if td is None and hasattr(row, 'name'):
+                    td = row.name
+                try:
+                    td_str = str(td)[:10]
+                    if '-' in td_str and len(td_str) >= 10:
+                        parts = td_str.split('-')
+                        date_str = f"{parts[1]}/{parts[2]}"
+                    elif '/' in td_str:
+                        date_str = td_str[-5:] if len(td_str) >= 5 else td_str
+                    else:
+                        date_str = td_str
+                except Exception:
+                    date_str = str(td)[:5]
+
                 o = float(row.get('open', 0))
                 c = float(row.get('close', 0))
                 chg = ((c - o) / o * 100) if o > 0 else 0
-                vol = float(row.get('volume', 0)) / 1e8
-                kline_csv += f"{date_str} {o:.2f} {c:.2f} {chg:+.1f}% {vol:.1f}\n"
+                # 成交额（亿）= 成交量（股）/ 1e8 × 均价近似收盘价，但直接用量价估算会偏大
+                # 用收盘价×成交量/1e8 估算成交额
+                vol_shares = float(row.get('volume', 0))
+                amount = vol_shares * c / 1e8  # 成交额（亿元）
+
+                global_idx = kline_nrows - len(recent) + row_idx
+                tags = annotations.get(global_idx, [])
+                tag_str = ('  ← ' + ' '.join(tags)) if tags else ''
+
+                kline_csv += (
+                    f"  {date_str}  {o:>7.2f} {c:>7.2f}  "
+                    f"{chg:>+6.1f}%  {amount:>5.0f}亿{tag_str}\n"
+                )
+            kline_csv += "──────────────────────────────────────────\n"
+            kline_csv += f"  20日最低 {kline_stats.get('low_20','?')}  "
+            kline_csv += f"20日最高 {kline_stats.get('high_20','?')}  "
+            kline_csv += f"20日均额 {kline_stats.get('avg_amount','?')}亿  "
+            kline_csv += f"距底 {kline_stats.get('pct_from_low','?')}%"
 
         if "error" in scan:
             return f"[用户询问股票 {code}，数据获取失败: {scan['error']}]", ""
 
-        ctx = f"""
-以下为脚本获取的 {code} 实时K线数据，请据此诊断。
+        # 尝试获取实时行情（可能因 API 限流失败，有 K 线兜底）
+        realtime_price = deep.get('price')
+        realtime_pct = deep.get('change_pct')
+        if realtime_pct is None:
+            realtime_pct = 0.0
 
-现价 {deep.get('price', '?')}  涨跌 {deep.get('change_pct', 0):+.1f}%
-MA5 {deep.get('ma5', 0):.2f}  MA10 {deep.get('ma10', 0):.2f}  MA20 {deep.get('ma20', 0):.2f}
-支撑 {deep.get('support', '?')}  阻力 {deep.get('resistance', '?')}
-概念: {', '.join(deep.get('concepts', []))}
-评分 {deep.get('combined_score', 0)}  信号: {', '.join(deep.get('signal_names', []))}
+        # 若无实时行情，用 K 线最后收盘价兜底
+        last_close = None
+        if kline is not None and hasattr(kline, 'iloc') and len(kline) > 0:
+            last_close = float(kline['close'].iloc[-1])
+            if not realtime_price:
+                realtime_price = last_close
+                # 用最后两根 K 线估算涨跌
+                if len(kline) >= 2:
+                    prev_close = float(kline['close'].iloc[-2])
+                    realtime_pct = round((last_close - prev_close) / prev_close * 100, 2)
 
-K线数据已在UI表格中展示，你不需要重复列出。请直接输出: 综合研判→操作建议→对比表格。"""
+        # ── 信号详情（含等级和描述，quick_scan 已算好）──
+        signal_lines = []
+        raw_signals = deep.get('signals', scan.get('all_signals', []))
+        for s in raw_signals[:6]:
+            level = s.get('level', 1)
+            stars = '★' * min(level, 5) + '☆' * max(0, 5 - min(level, 5))
+            desc = s.get('desc', '')
+            signal_lines.append(f"  [{stars}] {s['name']}{' — ' + desc if desc else ''}")
+
+        # ── 量化因子详情（analyzer 已算好19项因子）──
+        factor_lines = []
+        fd = deep.get('factor_details', scan.get('factor_details', {}))
+        if fd:
+            top_factors = sorted(fd.items(), key=lambda x: abs(x[1]), reverse=True)[:8]
+            for k, v in top_factors:
+                bar = '█' * min(10, int(abs(v) / 3)) if abs(v) > 0 else ''
+                direction = '↑' if v > 0 else ('↓' if v < 0 else '→')
+                factor_lines.append(f"  {k}: {v:+.2f} {direction} {bar}")
+
+        # ── 构建结构化上下文 ──
+        kline_n = kline_nrows
+        has_realtime = deep.get('price') is not None
+
+        parts = [
+            f"=== {code} 实时诊断 ===",
+            f"数据源: {'实时行情' if has_realtime else 'K线最后价'} + K线({kline_n}日) + 19项因子 + 技术/情绪信号扫描",
+            "",
+            "▸ 量价数据",
+            f"现价 {realtime_price or '?'}  涨跌 {realtime_pct:+.1f}%  "
+            f"{'(实时行情)' if has_realtime else '(K线最近收盘)'}",
+            "",
+            "▸ 技术研判",
+            f"MA5 {deep.get('ma5', 0):.2f}  MA10 {deep.get('ma10', 0):.2f}  MA20 {deep.get('ma20', 0):.2f}",
+            f"支撑 {deep.get('support', '?')}  阻力 {deep.get('resistance', '?')}",
+            f"趋势定性: {deep.get('summary', '')}",
+            "",
+            "▸ 触发信号",
+        ]
+        parts.extend(signal_lines if signal_lines else ["  (无触发信号)"])
+        parts.extend([
+            "",
+            "▸ 量化因子 (19项中Top8)",
+        ])
+        parts.extend(factor_lines if factor_lines else ["  (因子暂不可用)"])
+        parts.extend([
+            "",
+            "▸ 概念属性",
+            f"{', '.join(deep.get('concepts', [])) or '未识别'}",
+            "",
+            "▸ 综合评分",
+            f"技术{deep.get('tech_score',0)} + 情绪{deep.get('sentiment_score',0)} + 因子{deep.get('factor_score',0)} = 综合{deep.get('combined_score',0)}",
+            f"信号强度 {deep.get('max_signal_level',0)}级 / {deep.get('signal_count',0)}个",
+            "",
+            "上方K线表格是本诊断的核心数据源——近期量价分析必须:",
+            "1. 引用具体日期的量价数据和标注事件",
+            "2. 逐段解释关键转折（底部区域→放量启动→洗盘→反包→加速→天量的演变逻辑）",
+            "3. 从量价历史中提取操作线索",
+            "输出结构: 量价数据→近期量价分析→技术研判→资金面→综合评分→操作建议→一句话。",
+            "每项分析必须有具体数字支撑。禁止说「数据不足」「无法获取」。禁止使用任何emoji。",
+        ])
+        ctx = '\n'.join(parts)
         return ctx, kline_csv
     except Exception as e:
         logger.warning("个股数据获取失败 %s: %s", code, e)
@@ -596,10 +745,7 @@ def api_stock_analyze():
 @app.route("/api/agent/debate")
 def api_agent_debate():
     """Multi-Agent 辩论：三位分析师 + 主席综合判断。"""
-    use_mock = _use_mock
-    if request.args.get("mock", "0") == "1":
-        use_mock = True
-    data = select_stocks(use_mock=use_mock, collector=collector)
+    data = select_stocks(collector=collector)
     all_candidates = data.get("pool_a", []) + data.get("pool_b", [])
     if not all_candidates:
         return jsonify({"error": "候选池为空"})
@@ -677,22 +823,21 @@ def _auto_run_daily_scorer():
     """交易日上午 9:25 后启动时，自动执行日评分扫描。"""
     now = datetime.now()
     # 只在交易日的 9:25-9:35 之间自动触发
-    if not _use_mock:
+    try:
         try:
-            try:
-                from .data_fetcher import is_trading_day
-                from .daily_scorer import cache_path, run_scan
-            except ImportError:
-                from data_fetcher import is_trading_day  # type: ignore[no-redef]
-                from daily_scorer import cache_path, run_scan  # type: ignore[no-redef]
+            from .data_fetcher import is_trading_day
+            from .daily_scorer import cache_path, run_scan
+        except ImportError:
+            from data_fetcher import is_trading_day  # type: ignore[no-redef]
+            from daily_scorer import cache_path, run_scan  # type: ignore[no-redef]
 
-            if is_trading_day(now.date()) and now.hour == 9 and 25 <= now.minute <= 35:
-                if not cache_path().exists():
-                    logger.info("交易日 %s 9:25+，自动执行日评分扫描...", now.strftime("%Y-%m-%d"))
-                    scores = run_scan(top_n=300)
-                    logger.info("自动日评分完成: %d 只股票", len(scores))
-        except Exception as e:
-            logger.warning("自动日评分失败: %s", e)
+        if is_trading_day(now.date()) and now.hour == 9 and 25 <= now.minute <= 35:
+            if not cache_path().exists():
+                logger.info("交易日 %s 9:25+，自动执行日评分扫描...", now.strftime("%Y-%m-%d"))
+                scores = run_scan(top_n=300)
+                logger.info("自动日评分完成: %d 只股票", len(scores))
+    except Exception as e:
+        logger.warning("自动日评分失败: %s", e)
 
 
 _auto_run_daily_scorer()

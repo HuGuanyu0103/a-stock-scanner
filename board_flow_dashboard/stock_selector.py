@@ -575,7 +575,12 @@ def _merge_daily_scores(stocks, scores_map):
 # ── 日评分自动降级 ──────────────────────────────────────────
 
 def _generate_fallback_scores() -> dict:
-    """日评分缓存缺失时，用全市场资金流排名生成简易兜底评分。"""
+    """日评分缓存缺失时，用全市场资金流排名生成简易兜底评分。
+
+    注意：此公式 (rank*0.3 + net*0.4 + ratio*0.3) 为经验值，未经严格回测校准。
+    兜底评分仅用于保障系统在日评分缓存缺失时仍可运行，不应作为主要评分依据。
+    TODO: 累积足够历史数据后，用回归校准权重与映射函数。
+    """
     try:
         from data_fetcher import fetch_stock_fund_flow_rank
     except ImportError:
@@ -898,19 +903,25 @@ def _apply_sector_meltdown_penalty(stocks: list, meltdown_sectors: set) -> None:
 # ── 大盘环境评估 ──────────────────────────────────────────
 
 def _get_market_breadth() -> float:
-    """获取全市场上涨比例（用概念板块涨跌比近似）。
+    """获取全市场上涨比例（概念板块 + 行业板块涨跌比）。
 
     Returns:
         0.0 ~ 1.0, 值越高市场越好
     """
     try:
-        sectors = _fetch_hot_sectors(sector_type="concept", top_n=200)
-        if not sectors or len(sectors) < 50:
+        all_sectors = []
+        for stype in ("concept", "industry"):
+            sectors = _fetch_hot_sectors(sector_type=stype, top_n=200)
+            if sectors:
+                all_sectors.extend(sectors)
+
+        if not all_sectors or len(all_sectors) < 80:
             return 0.5  # 数据不够不判断
-        up = sum(1 for s in sectors if (s.get("pct_chg") or 0) > 0)
-        ratio = up / len(sectors)
+
+        up = sum(1 for s in all_sectors if (s.get("pct_chg") or 0) > 0)
+        ratio = up / len(all_sectors)
         logger.info("大盘广度: %d/%d 板块上涨 (%.0f%%)",
-                     up, len(sectors), ratio * 100)
+                     up, len(all_sectors), ratio * 100)
         return ratio
     except Exception as e:
         logger.warning("大盘广度获取失败: %s", e)
@@ -1489,15 +1500,14 @@ def _load_last_result() -> dict:
     return {}
 
 
-def select_stocks(use_mock: bool = False, collector=None) -> dict:
+def select_stocks(collector=None) -> dict:
     """盘中选股入口。
 
-    - 交易时段：实时选股，失败时用持久化缓存（不用模拟数据）
+    - 交易时段：实时选股，失败时用持久化缓存
     - 非交易时段：返回持久化的最后一份真实结果
-    - use_mock=True：仅用于开发测试
+    - 永不使用模拟数据
 
     Args:
-        use_mock: True 时使用模拟数据（仅测试用）
         collector: SectorFlowCollector 实例（可选，用于数据复用）
     """
     global _CACHE, _CACHE_TTL, _DAILY_SCORES, _LAST_REAL_RESULT
@@ -1518,47 +1528,42 @@ def select_stocks(use_mock: bool = False, collector=None) -> dict:
 
     # 缓存控制（仅交易时段生效）
     now = time.time()
-    if not use_mock and _CACHE and (now - _CACHE_TTL) < _CACHE_LIFETIME:
+    if _CACHE and (now - _CACHE_TTL) < _CACHE_LIFETIME:
         return _CACHE
 
-    if use_mock:
-        result = _select_stocks_mock()
-        result["is_trading"] = True
-    else:
+    try:
+        result = _select_stocks_real(collector=collector)
+        # 成功获取实时数据，持久化
+        _LAST_REAL_RESULT = result
         try:
-            result = _select_stocks_real(collector=collector)
-            # 成功获取实时数据，持久化
-            _LAST_REAL_RESULT = result
-            try:
-                from data_fetcher import _is_trading_time
-                result["is_trading"] = _is_trading_time()
-                result["data_date"] = result.get("date", "")
-            except Exception:
-                result["is_trading"] = True
-            _save_last_result(result)
-        except Exception as e:
-            logger.warning("实时选股失败: %s，使用持久化缓存", e)
-            result = _LAST_REAL_RESULT or _load_last_result()
-            if result:
-                result["mode"] = "cached"
-                result["cached_at"] = _LAST_REAL_RESULT.get(
-                    "cached_at", result.get("time", ""))
-            else:
-                # 完全没有数据时返回空（不降级到模拟）
-                result = {
-                    "time": _now_time(),
-                    "date": datetime.now().strftime("%Y-%m-%d"),
-                    "total": 0, "candidates": [],
-                    "pool_a": [], "pool_b": [],
-                    "hot_sectors": [], "pullback_sectors": [],
-                    "risk_level": "low", "market_breadth": 0.5,
-                    "filter_stats": {}, "mode": "empty",
-                    "is_trading": False,
-                }
+            from data_fetcher import _is_trading_time
+            result["is_trading"] = _is_trading_time()
+            result["data_date"] = result.get("date", "")
+        except Exception:
+            result["is_trading"] = True
+        _save_last_result(result)
+    except Exception as e:
+        logger.warning("实时选股失败: %s，使用持久化缓存", e)
+        result = _LAST_REAL_RESULT or _load_last_result()
+        if result:
+            result["mode"] = "cached"
+            result["cached_at"] = _LAST_REAL_RESULT.get(
+                "cached_at", result.get("time", ""))
+        else:
+            # 完全没有数据时返回空
+            result = {
+                "time": _now_time(),
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "total": 0, "candidates": [],
+                "pool_a": [], "pool_b": [],
+                "hot_sectors": [], "pullback_sectors": [],
+                "risk_level": "low", "market_breadth": 0.5,
+                "filter_stats": {}, "mode": "empty",
+                "is_trading": False,
+            }
 
-    if not use_mock:
-        _CACHE = result
-        _CACHE_TTL = now
+    _CACHE = result
+    _CACHE_TTL = now
     return result
 
 

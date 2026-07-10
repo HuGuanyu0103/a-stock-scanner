@@ -69,20 +69,24 @@ SECTOR_NAME_MAP = {
     "银行":     "参股银行",
 }
 
-# 缺失板块加权合成: 你的板块名 → [(API板块名, 权重), ...]
-# 权重和应为 1.0。空列表表示无可关联板块，不会显示。
+# 缺失板块加权合成: 你的板块名 → [(API实际存在的板块名, 权重), ...]
+# 注意：如果板块名在 API 中精确匹配，不要放在这里！SECTOR_COMPOSITE 仅用于无法精确匹配的板块。
+# 权重和应为 1.0。
 SECTOR_COMPOSITE = {
-    "光通信模块": [("华为昇腾", 1.0)],
-    "通信设备":   [("华为昇腾", 1.0)],
-    "白酒":      [("食品饮料", 1.0)],
-    "军工":      [("民爆制品", 0.4), ("减速器", 0.3), ("工程机械概念", 0.3)],
-    "光伏设备":   [("绿色电力", 0.6), ("电力", 0.4)],
-    "证券":      [("保险Ⅱ", 0.4), ("保险Ⅲ", 0.3), ("银行Ⅱ", 0.3)],
-    "可控核聚变": [("核污染防治", 0.5), ("绿色电力", 0.5)],
-    "低空经济":   [("飞行汽车(eVTOL)", 1.0)],
-    "商业航天":   [("航天装备Ⅱ", 0.5), ("国防军工", 0.5)],
-    "玻璃基板":   [("裸眼3D", 0.35), ("品牌消费电子", 0.30),
-                   ("模拟芯片设计", 0.20), ("华为昇腾", 0.15)],
+    # 通信设备：API 中无精确匹配，用通信技术+5G+6G 加权
+    "通信设备":   [("通信技术", 0.4), ("5G概念", 0.3), ("6G概念", 0.3)],
+    # 人形机器人：API 中无精确匹配，用机器人概念+减速器
+    "人形机器人": [("机器人概念", 0.55), ("减速器", 0.45)],
+    # 商业航天：API 中无精确匹配，用卫星互联网+军工
+    "商业航天":   [("卫星互联网", 0.5), ("军工", 0.5)],
+    # 光伏设备：API 中无精确匹配，用光伏概念+绿色电力
+    "光伏设备":   [("光伏概念", 0.6), ("绿色电力", 0.4)],
+    # 证券：API 中无精确匹配，用参股券商+互联网金融
+    "证券":      [("参股券商", 0.55), ("互联网金融", 0.45)],
+    # 医药商业：API 中无精确匹配，用医药医疗风格+互联医疗
+    "医药商业":   [("医药医疗风格", 0.5), ("互联医疗", 0.5)],
+    # 有色金属：API 中无精确匹配，用小金属概念+稀土永磁
+    "有色金属":   [("小金属概念", 0.5), ("稀土永磁", 0.5)],
 }
 COLOR_PALETTE = [
     "#E6194B", "#3CB44B", "#FFE119", "#4363D8", "#F58231",
@@ -413,11 +417,15 @@ class SectorFlowCollector:
             if nb:
                 self._store_northbound(minute_key, nb)
 
-        # 新一天首次成功：清空昨日快照，切换至今日
+        # 新一天首次成功：先存旧数据到 DB，再切换至今日
         if any_success and not self._new_day_data_arrived:
             today_str = datetime.now().strftime("%Y-%m-%d")
             if self._data_date != today_str:
-                logger.info("新交易日首次 polling 成功，清空 %s 旧数据", self._data_date)
+                logger.info("新交易日首次 polling 成功，保存 %s 旧数据后切换至 %s",
+                           self._data_date, today_str)
+                # 先把旧日期的内存数据写入 DB（防止重启丢失）
+                self._save_all_to_db()
+                # 再清空并切换日期
                 with self._lock:
                     self._concept_snapshots.clear()
                     self._industry_snapshots.clear()
@@ -514,6 +522,11 @@ class SectorFlowCollector:
             self._new_day_data_arrived = False  # 等待首次 polling 成功后清旧数据
             self._consecutive_failures = 0
             self._poll_interval = self._base_poll_interval
+            # 日期切换时自动清理 30 天前的旧数据
+            try:
+                self._storage.cleanup_old_data(keep_days=30)
+            except Exception:
+                pass
             logger.info("日期切换至 %s（保留旧数据至首次 polling 成功）", new_today)
 
     def _maybe_save_daily_summary(self):
@@ -549,12 +562,13 @@ class SectorFlowCollector:
         self._save_all_to_db()
 
     def _save_all_to_db(self):
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        self._save_to_db("concept", today_str, self._storage.get_latest_concept_time,
+        # 使用真正的数据日期而非当前日期，防止将历史数据写入今天
+        save_date = self._data_date
+        self._save_to_db("concept", save_date, self._storage.get_latest_concept_time,
                           self._storage.save_concept_snapshot)
-        self._save_to_db("industry", today_str, self._storage.get_latest_industry_time,
+        self._save_to_db("industry", save_date, self._storage.get_latest_industry_time,
                           self._storage.save_industry_snapshot)
-        self._save_to_db("northbound", today_str, self._storage.get_latest_northbound_time,
+        self._save_to_db("northbound", save_date, self._storage.get_latest_northbound_time,
                           self._save_nb_item)
 
     def _save_to_db(self, snap_type: str, today_str: str,
@@ -596,13 +610,15 @@ class SectorFlowCollector:
                     self._concept_snapshots = concept
                     self._industry_snapshots = industry
                     self._northbound_snapshots = northbound
-                # 恢复北向累计基准
+                # 恢复北向累计基准：DB 存的是增量，从所有增量累加重建累计值
                 if northbound:
-                    last = northbound[-1]
+                    total_net = sum(s.get("net_inflow", 0) for s in northbound)
+                    total_sh = sum(s.get("hk2sh", 0) for s in northbound)
+                    total_sz = sum(s.get("hk2sz", 0) for s in northbound)
                     self._last_nb_cumulative = {
-                        "net_inflow": last.get("net_inflow", 0),
-                        "hk2sh": last.get("hk2sh", 0),
-                        "hk2sz": last.get("hk2sz", 0),
+                        "net_inflow": round(total_net, 2),
+                        "hk2sh": round(total_sh, 2),
+                        "hk2sz": round(total_sz, 2),
                     }
                 self._data_date = ds
                 loaded = True
@@ -699,16 +715,35 @@ class SectorFlowCollector:
         }
 
     def get_dashboard_data(self, sector_type: str = "concept") -> dict:
+        """返回看板数据。watch 模式有缓存，避免每次请求都重建。"""
+        # watch 模式：缓存结果，仅在快照变化时重建
         if sector_type == "watch":
-            return self._build_watch_dashboard()
+            with self._lock:
+                c_len = len(self._concept_snapshots)
+                i_len = len(self._industry_snapshots)
+            cache_key = (c_len, i_len, self._data_date)
+            cached = getattr(self, '_watch_cache', None)
+            if cached and cached[0] == cache_key:
+                return cached[1]
+            result = self._build_watch_dashboard()
+            self._watch_cache = (cache_key, result)
+            return result
 
         with self._lock:
             if sector_type == "industry":
                 snapshots = list(self._industry_snapshots)
             else:
                 snapshots = list(self._concept_snapshots)
-
-        return self._build_dashboard_from_snapshots(snapshots)
+            c_len = len(snapshots)
+        # concept/industry 模式也缓存
+        cache_key = (sector_type, c_len, self._data_date)
+        cached = getattr(self, '_dash_cache', {})
+        if sector_type in cached and cached[sector_type][0] == cache_key:
+            return cached[sector_type][1]
+        result = self._build_dashboard_from_snapshots(snapshots)
+        cached[sector_type] = (cache_key, result)
+        self._dash_cache = cached
+        return result
 
     def _build_watch_dashboard(self) -> dict:
         """合并概念+行业快照，仅展示白名单板块。
@@ -765,7 +800,12 @@ class SectorFlowCollector:
                 api_to_user[matched] = watch_name
                 allowed_api_names.add(matched)
 
-        minutes = sorted(merged_by_time.keys())
+        # 每 N 个时间点取一个，减少前端渲染压力（分钟级数据对图表显示冗余）
+        all_minutes = sorted(merged_by_time.keys())
+        sample_step = max(1, len(all_minutes) // 120)  # 最多保留 120 个时间点
+        minutes = all_minutes[::sample_step]
+        if all_minutes and all_minutes[-1] not in minutes:
+            minutes.append(all_minutes[-1])  # 确保最新时间点在内
 
         # 无数据时返回空
         if not minutes:
@@ -1075,6 +1115,61 @@ class SectorFlowCollector:
             "date": datetime.now().strftime("%Y-%m-%d"),
             "data_date": self._data_date,
         }
+
+    def get_available_dates(self) -> list[str]:
+        """返回 DB 中所有有数据的交易日期，供前端日期选择器使用。"""
+        try:
+            conn = self._storage._get_conn()
+            dates = set()
+            for table in ("concept_snapshots", "industry_snapshots"):
+                rows = conn.execute(
+                    f"SELECT DISTINCT date FROM {table} ORDER BY date DESC LIMIT 30"
+                ).fetchall()
+                dates.update(r[0] for r in rows)
+            conn.close()
+            return sorted(dates, reverse=True)
+        except Exception:
+            return [datetime.now().strftime("%Y-%m-%d")]
+
+    def get_dashboard_data_for_date(self, date_str: str, sector_type: str = "concept") -> dict:
+        """加载指定日期的板块数据并构建看板数据。直接从 DB 读取。"""
+        if sector_type not in ("concept", "industry", "watch"):
+            sector_type = "watch"
+
+        if sector_type == "watch":
+            concept = self._storage.load_concept_snapshots(date_str)
+            industry = self._storage.load_industry_snapshots(date_str)
+            if not concept and not industry:
+                return {"date": date_str, "rank": [], "series": [],
+                        "minutes": [], "total_times": 0, "data_date": date_str}
+            with self._lock:
+                saved_c, saved_i = self._concept_snapshots, self._industry_snapshots
+                saved_dd = self._data_date
+                self._concept_snapshots = concept
+                self._industry_snapshots = industry
+                self._data_date = date_str
+            try:
+                result = self._build_watch_dashboard()
+                result["date"] = date_str
+                result["data_date"] = date_str
+                result["is_trading"] = False
+                return result
+            finally:
+                with self._lock:
+                    self._concept_snapshots = saved_c
+                    self._industry_snapshots = saved_i
+                    self._data_date = saved_dd
+
+        if sector_type == "industry":
+            snaps = self._storage.load_industry_snapshots(date_str)
+        else:
+            snaps = self._storage.load_concept_snapshots(date_str)
+
+        result = self._build_dashboard_from_snapshots(snaps)
+        result["date"] = date_str
+        result["data_date"] = date_str
+        result["is_trading"] = False
+        return result
 
     def cleanup_history(self, keep_days: int = 30):
         self._storage.cleanup_old_data(keep_days)

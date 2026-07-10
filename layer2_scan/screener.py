@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_KLINE_DAYS = 120
 
 # list_market_current() 实际返回的列名
+# 注意：volume 字段实际是成交额（金额，单位万元），amount 也是成交额
 _MARKET_COLS = ("stock_code", "short_name", "price", "change", "change_pct",
                 "volume", "amount")
 
@@ -169,7 +170,10 @@ class StockScreener:
                 "sentiment_score": round(sent_score, 1),
                 "factor_score": round(factor_score, 1),
                 "combined_score": round(combined, 1),
-                "max_signal_level": TechnicalPatterns.max_signal_level(tech_signals),
+                "max_signal_level": max(
+                    TechnicalPatterns.max_signal_level(tech_signals),
+                    max((s["level"] for s in sent_signals), default=0),
+                ),
                 "signal_count": len(all_signals),
                 "signal_names": " | ".join(all_names),
                 "signals": all_signals,
@@ -249,7 +253,10 @@ class StockScreener:
 
         if exclude_chinext and "stock_code" in df.columns:
             df = df[~df["stock_code"].str.startswith("3")]
+        # 始终排除科创板(688)、北交所(8)、B股(9)，与实时管道保持一致
+        if "stock_code" in df.columns:
             df = df[~df["stock_code"].str.startswith("688")]
+            df = df[~df["stock_code"].str.startswith("9")]  # B股
         return df
 
     def quick_scan(self, stock_code: str) -> dict:

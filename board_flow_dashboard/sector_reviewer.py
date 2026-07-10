@@ -133,12 +133,27 @@ def _load_from_sqlite(db_path: Path, date_str: str) -> dict[str, dict]:
 
 
 def _get_trading_dates(n: int = 3) -> list[str]:
-    """回溯最近 n 个交易日（跳过周末）。"""
+    """回溯最近 n 个交易日（跳过周末和节假日）。"""
+    try:
+        from data_fetcher import is_trading_day as _is_td
+    except ImportError:
+        try:
+            from .data_fetcher import is_trading_day as _is_td
+        except ImportError:
+            # 降级：只跳过周末
+            _is_td = None
+
     dates = []
     d = date.today()
-    while len(dates) < n:
+    # 最多回溯 30 天，防止无限循环
+    for _ in range(30):
+        if len(dates) >= n:
+            break
         d_str = d.isoformat()
-        if d.weekday() < 5:
+        if _is_td is not None:
+            if _is_td(d):
+                dates.append(d_str)
+        elif d.weekday() < 5:
             dates.append(d_str)
         d -= timedelta(days=1)
     return dates

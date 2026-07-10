@@ -14,6 +14,8 @@ import pandas as pd
 
 from layer1_data import DataFetcher
 from layer2_scan.patterns import TechnicalPatterns
+from layer2_scan.sentiment_signals import SentimentSignals
+from layer2_scan.alpha_factors import AlphaFactors
 
 logger = logging.getLogger(__name__)
 
@@ -81,13 +83,33 @@ class BacktestEngine:
                 hist = kl[kl["trade_date"] <= date_str]
                 if len(hist) < 30:
                     continue
-                signals = TechnicalPatterns.scan(hist)
-                score = TechnicalPatterns.total_score(signals)
-                if score >= config.min_score:
+
+                # 三层评分：技术形态(50%) + 情绪信号(20%) + 因子评分(30%)
+                tech_signals = TechnicalPatterns.scan(hist)
+                tech_score = TechnicalPatterns.total_score(tech_signals)
+
+                sent_signals = SentimentSignals.scan(hist)
+                sent_score = SentimentSignals.total_score(sent_signals)
+
+                factor_score = 0.0
+                try:
+                    af = AlphaFactors(hist)
+                    af.compute_all()
+                    factor_score = af.composite_score()
+                except Exception:
+                    pass
+
+                combined = tech_score * 0.5 + sent_score * 0.2 + factor_score * 0.3
+
+                if combined >= config.min_score:
+                    all_names = (
+                        TechnicalPatterns.signal_names(tech_signals) +
+                        SentimentSignals.signal_names(sent_signals)
+                    )
                     candidates.append({
                         "code": code, "price": hist["close"].iloc[-1],
-                        "score": score,
-                        "signal_names": " | ".join(TechnicalPatterns.signal_names(signals)),
+                        "score": round(combined, 1),
+                        "signal_names": " | ".join(all_names),
                     })
 
             candidates.sort(key=lambda x: x["score"], reverse=True)
