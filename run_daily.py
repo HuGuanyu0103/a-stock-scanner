@@ -121,6 +121,8 @@ def cmd_quick(args, config: dict):
         print(f"  ❌ {result['error']}")
         return
 
+    shared_kline = result.get("kline")
+
     sigs = result.get("all_signals", result.get("signals", []))
     names = result.get("signal_names", [])
     ts = result.get("tech_score", 0)
@@ -135,7 +137,7 @@ def cmd_quick(args, config: dict):
             stars = "★" * min(level, 5)
             print(f"    - [{stars}] {s['name']}: {s['desc']}")
 
-    deep = analyzer.analyze_stock(code)
+    deep = analyzer.analyze_stock(code, kline=shared_kline)
     if "summary" in deep:
         print(f"\n  综合: {deep['summary']}")
 

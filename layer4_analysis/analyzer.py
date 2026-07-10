@@ -27,18 +27,27 @@ class StockAnalyzer:
     def __init__(self, fetcher: Optional[DataFetcher] = None):
         self.fetcher = fetcher or DataFetcher()
 
-    def analyze_stock(self, stock_code: str, lookback_days: int = 120) -> dict:
+    def analyze_stock(self, stock_code: str, lookback_days: int = 120,
+                      kline: Optional[pd.DataFrame] = None) -> dict:
         """
         深度分析单只股票
+
+        Parameters
+        ----------
+        stock_code : 股票代码
+        lookback_days : K线回溯天数（仅在未传入 kline 时生效）
+        kline : 预获取的 K 线 DataFrame，避免重复 API 请求
 
         Returns
         -------
         dict with keys: code, price, signals, concepts, support, resistance, summary
         """
-        end = datetime.now().strftime("%Y-%m-%d")
-        start = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-
-        kline = self.fetcher.kline(stock_code, start_date=start, end_date=end)
+        if kline is not None:
+            pass  # 使用传入的预获取 K 线
+        else:
+            end = datetime.now().strftime("%Y-%m-%d")
+            start = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+            kline = self.fetcher.kline(stock_code, start_date=start, end_date=end)
         if kline is None or kline.empty:
             return {"code": stock_code, "error": "无法获取 K 线数据"}
 

@@ -3,10 +3,17 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<meta name="app-version" content="20260710-v3">
 <title>观澜 · A 股智能看板</title>
 <script src="/static/echarts.min.js"></script>
+<link rel="preconnect" href="https://fonts.loli.net" crossorigin>
+<link rel="preconnect" href="https://gstatic.loli.net" crossorigin>
+<link rel="dns-prefetch" href="https://fonts.loli.net">
+<link rel="dns-prefetch" href="https://gstatic.loli.net">
 <link href="https://fonts.loli.net/css2?family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
-<link href="https://fonts.loli.net/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -329,6 +336,81 @@ body {
   font-size: 12px; color: var(--text-secondary);
 }
 
+/* ── Diagnosis Card ─────────────────────── */
+.diag-card {
+  background: var(--card); border-radius: 16px;
+  border: 1px solid var(--border-light); box-shadow: var(--shadow);
+  overflow: hidden; margin: 4px 0;
+}
+.diag-header {
+  padding: 16px 20px; background: linear-gradient(135deg, rgba(0,113,227,0.06), rgba(103,80,164,0.04));
+  display: flex; align-items: baseline; gap: 12px; border-bottom: 1px solid var(--border-light);
+}
+.diag-header .diag-name { font-size: 16px; font-weight: 700; color: var(--text); }
+.diag-header .diag-code { font-size: 12px; color: var(--text-tertiary); font-family: var(--font-mono); }
+.diag-header .diag-price { font-size: 22px; font-weight: 700; color: var(--text); margin-left: auto; font-family: var(--font-mono); }
+.diag-header .diag-pct { font-size: 14px; font-weight: 600; padding: 2px 8px; border-radius: 6px; }
+.diag-pct.up { background: var(--red-light); color: var(--red); }
+.diag-pct.down { background: var(--green-light); color: var(--green); }
+
+.diag-kline { padding: 0; border-bottom: 1px solid var(--border-light); }
+.diag-kline summary {
+  padding: 10px 20px; font-size: 12px; font-weight: 600; color: var(--text-secondary);
+  cursor: pointer; user-select: none; background: var(--surface);
+}
+.diag-kline summary:hover { color: var(--accent); }
+.diag-kline pre {
+  margin: 0; padding: 12px 20px; font-size: 10px; font-family: var(--font-mono);
+  line-height: 1.6; color: var(--text-secondary); background: #faf9fd;
+  overflow-x: auto; white-space: pre;
+}
+
+.diag-metrics {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+  background: var(--border-light); border-bottom: 1px solid var(--border-light);
+}
+.diag-metric {
+  background: var(--card); padding: 12px 10px; text-align: center;
+}
+.diag-metric .metric-val { font-size: 16px; font-weight: 700; font-family: var(--font-mono); color: var(--text); }
+.diag-metric .metric-label { font-size: 10px; color: var(--text-tertiary); margin-top: 2px; }
+
+.diag-section { padding: 14px 20px; border-bottom: 1px solid var(--border-light); }
+.diag-section:last-child { border-bottom: none; }
+.diag-section h4 { font-size: 12px; font-weight: 600; color: var(--accent); margin-bottom: 8px; letter-spacing: 0.3px; }
+.diag-section p, .diag-section li { font-size: 12.5px; line-height: 1.7; color: var(--text-secondary); margin: 0; }
+.diag-section ul { padding-left: 16px; margin: 4px 0; }
+.diag-section li { margin-bottom: 2px; }
+
+.diag-signals { display: flex; flex-wrap: wrap; gap: 6px; }
+.diag-signal {
+  font-size: 11px; padding: 4px 10px; border-radius: 99px;
+  background: var(--accent-light); color: var(--accent); font-weight: 500;
+}
+
+.diag-advice {
+  margin: 0 20px 20px 20px; padding: 16px; border-radius: 12px;
+  background: linear-gradient(135deg, rgba(245,158,11,0.08), rgba(0,113,227,0.04));
+  border: 1px solid rgba(245,158,11,0.2);
+}
+.diag-advice h4 { font-size: 13px; font-weight: 700; color: var(--orange); margin-bottom: 8px; }
+.diag-advice-row { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; }
+.diag-advice-row span { font-family: var(--font-mono); font-weight: 600; }
+.diag-advice-row .entry { color: var(--accent); }
+.diag-advice-row .target { color: var(--red); }
+.diag-advice-row .stop { color: var(--green); }
+
+.diag-footer {
+  padding: 12px 20px; background: var(--surface); font-size: 12px;
+  color: var(--text-secondary); font-style: italic; border-top: 1px solid var(--border-light);
+}
+
+@media (max-width: 768px) {
+  .diag-metrics { grid-template-columns: repeat(2, 1fr); }
+  .diag-header { flex-wrap: wrap; }
+  .diag-header .diag-price { margin-left: 0; }
+}
+
 /* Suggestion Chips */
 .chip-group { display: flex; flex-direction: column; gap: 6px; }
 .chip-label { font-size: 10px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.8px; font-weight: 600; padding: 0 4px; }
@@ -465,6 +547,57 @@ body {
   .chat-input-tools { display: none; }
 }
 </style>
+<script>
+// ═══ SVG Icon System — 替代 Material Symbols 字体，零外部依赖 ═══
+const ICONS = {
+  finance_chip:'<rect x="3" y="10" width="4" height="11" rx="1"/><rect x="10" y="4" width="4" height="17" rx="1"/><rect x="17" y="7" width="4" height="14" rx="1"/>',
+  payments:'<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15v-1H9v-2h4v-2H9V8h2V7h2v1h2v2h-4v2h4v4h-2v1h-2z"/>',
+  query_stats:'<path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/>',
+  description:'<path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zM6 20V4h7v5h5v11H6z"/>',
+  star:'<path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>',
+  schedule:'<path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/>',
+  info:'<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>',
+  notifications:'<path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/>',
+  trending_up:'<path d="M16 6l2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6-6 4 4 6.3-6.29L22 12V6z"/>',
+  delete_sweep:'<path d="M15 16h4v2h-4v-2zm0-8h7v2h-7V8zm0 4h6v2h-6v-2zM3 18c0 1.1.9 2 2 2h6c1.1 0 2-.9 2-2V8H3v10zM14 5h-3l-1-1H6L5 5H2v2h12V5z"/>',
+  send:'<path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>',
+  mic:'<path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>',
+  image:'<path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/>',
+  attach_file:'<path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/>',
+  smart_toy:'<path d="M20 9V7c0-1.1-.9-2-2-2h-3c0-1.66-1.34-3-3-3S9 3.34 9 5H6c-1.1 0-2 .9-2 2v2c-1.66 0-3 1.34-3 3s1.34 3 3 3v4c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-4c1.66 0 3-1.34 3-3s-1.34-3-3-3zM7.5 11.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5S9 9.17 9 10s-.67 1.5-1.5 1.5zM16 17H8v-2h8v2zm-1-4c-.83 0-1.5-.67-1.5-1.5S14.17 10 15 10s1.5.67 1.5 1.5S15.83 13 15 13z"/>',
+  local_fire_department:'<path d="M12 22c4.97 0 9-4.03 9-9-4.97 0-9 4.03-9 9zm0 0c-4.97 0-9-4.03-9-9 0-4.97 4.03-9 9-9 0 4.97 4.03 9 9 9 0 4.97-4.03 9-9 9z"/><path d="M12 10c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z" fill="currentColor"/>',
+  water_drop:'<path d="M12 2c-5.33 4.55-8 8.48-8 11.8 0 4.98 3.8 8.2 8 8.2s8-3.22 8-8.2c0-3.32-2.67-7.25-8-11.8z"/>',
+  landscape:'<path d="M14 6l-3.75 5 2.85 3.8-1.6 1.2C9.81 13.75 7 10 7 10l-6 8h22L14 6z"/>',
+  psychology:'<path d="M13 8.57c-.79 0-1.43.64-1.43 1.43s.64 1.43 1.43 1.43 1.43-.64 1.43-1.43-.64-1.43-1.43-1.43z"/><path d="M13 3C9.25 3 6.19 5.94 6.02 9.64L4.1 12.2a.5.5 0 0 0 .4.8H6v3c0 1.1.9 2 2 2h1v3h7v-4.68c2.37-1.12 4-3.51 4-6.32 0-3.86-3.12-7-7-7zm1 14h-2v-2h2v2zm0-4h-2V7h2v6z"/>',
+  search:'<path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>',
+  language:'<path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zm6.93 6h-2.95c-.32-1.25-.78-2.45-1.38-3.56 1.84.63 3.37 1.91 4.33 3.56zM12 4.04c.83 1.2 1.48 2.53 1.91 3.96h-3.82c.43-1.43 1.08-2.76 1.91-3.96zM4.26 14C4.1 13.36 4 12.69 4 12s.1-1.36.26-2h3.38c-.08.66-.14 1.32-.14 2 0 .68.06 1.34.14 2H4.26zm.82 2h2.95c.32 1.25.78 2.45 1.38 3.56-1.84-.63-3.37-1.9-4.33-3.56zm2.95-8H5.08c.96-1.66 2.49-2.93 4.33-3.56C8.81 5.55 8.35 6.75 8.03 8zM12 19.96c-.83-1.2-1.48-2.53-1.91-3.96h3.82c-.43 1.43-1.08 2.76-1.91 3.96zM14.34 14H9.66c-.09-.66-.16-1.32-.16-2 0-.68.07-1.35.16-2h4.68c.09.65.16 1.32.16 2 0 .68-.07 1.34-.16 2zm.25 5.56c.6-1.11 1.06-2.31 1.38-3.56h2.95c-.96 1.65-2.49 2.93-4.33 3.56zM16.36 14c.08-.66.14-1.32.14-2 0-.68-.06-1.34-.14-2h3.38c.16.64.26 1.31.26 2s-.1 1.36-.26 2h-3.38z"/>',
+  light_mode:'<path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2v-2H2v2zm18 0h2v-2h-2v2zm-5-9.99L15 5c0 .55.45 1 1 1l.01-.01L16 4c0-.55-.45-1-1-1zM8 19l.01.01L8 21c0 .55.45 1 1 1l.01-.01L9 20c0-.55-.45-1-1-1zm8 2.01L16 19c-.55 0-1 .45-1 1l.01.01L15 22c.55 0 1-.45 1-1v-.01zM8 5.01L8 4c-.55 0-1 .45-1 1l.01.01L7 7c.55 0 1-.45 1-1V5.01zM12 5c-.55 0-1 .45-1 1v1h2V6c0-.55-.45-1-1-1zm0 14c.55 0 1-.45 1-1v-1h-2v1c0 .55.45 1 1 1zM4.22 5.64l1.42 1.42 1.41-1.41-1.42-1.42-1.41 1.41zm12.73 12.73l1.42 1.42 1.41-1.41-1.42-1.42-1.41 1.41zM4.22 18.36l1.41-1.41-1.42-1.42-1.41 1.41 1.42 1.42zm12.73-12.73l1.41-1.41-1.42-1.42-1.41 1.41 1.42 1.42z"/>',
+  nights_stay:'<path d="M14 2c-1.82 0-3.53.5-5 1.35 2.99 1.73 5 4.95 5 8.65s-2.01 6.92-5 8.65c1.47.85 3.18 1.35 5 1.35 5.52 0 10-4.48 10-10S19.52 2 14 2z"/>',
+  wb_sunny:'<path d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.79 1.42-1.41zM4 10.5H1v2h3v-2zm9-9.95h-2V3.5h2V.55zm7.45 3.91l-1.41-1.41-1.79 1.79 1.41 1.41 1.79-1.79zm-3.21 13.7l1.79 1.8 1.41-1.41-1.8-1.79-1.4 1.4zM20 10.5v2h3v-2h-3zm-8-5c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6zm-1 16.95h2V19.5h-2v2.95zm-7.45-3.91l1.41 1.41 1.79-1.8-1.41-1.41-1.79 1.8z"/>',
+  wb_twilight:'<path d="M19.07 17.93L17.66 16.5 12 22.16 6.34 16.5l-1.41 1.43L12 25l7.07-7.07zM12 16c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm8-8h-3V6h-2v2H8V6H6v2H3v2h17V8zm-8-8v5h2V0h-2z"/>',
+  finance:'<path d="M6 16.5l-3-2.94V19h18v-5.44l-3 2.94-4-4-4 4-4-4zM21 5H3c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 12H3V9.14l3 2.94 4-4 4 4 4-4 3 2.94V17z"/>',
+};
+function iconSVG(name, size) {
+  const paths = ICONS[name];
+  if (!paths) return '<span style="display:inline-block;width:'+(size||20)+'px;height:'+(size||20)+'px;background:var(--text-tertiary);border-radius:4px"></span>';
+  return '<svg width="'+(size||20)+'" height="'+(size||20)+'" viewBox="0 0 24 24" fill="currentColor">'+paths+'</svg>';
+}
+// Replace all .material-symbols-outlined elements on page load
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('.material-symbols-outlined').forEach(function(el) {
+    var name = el.textContent.trim();
+    var size = window.getComputedStyle(el).fontSize || '20px';
+    size = parseInt(size) || 20;
+    var svg = iconSVG(name, size);
+    if (svg.indexOf('<svg') === 0) {
+      el.innerHTML = svg;
+      el.style.display = 'inline-flex';
+      el.style.alignItems = 'center';
+      el.style.justifyContent = 'center';
+    }
+  });
+});
+</script>
 </head>
 <body>
 
@@ -537,7 +670,7 @@ body {
           <div class="chart-header">
             <div>
               <h3>热门板块资金流向 <span class="material-symbols-outlined">info</span></h3>
-              <div class="chart-sub" id="chartSubTitle">Hot Sector Fund Flow · Real-time</div>
+              <div class="chart-sub" id="chartSubTitle">热门板块资金流向 · 实时监控</div>
             </div>
             <div style="display:flex;align-items:center;gap:8px">
               <select id="historyDateSelect" onchange="loadHistoryDate(this.value)" style="padding:4px 8px;border-radius:8px;border:1px solid var(--border);font-size:12px;font-family:var(--font-mono);background:var(--card);color:var(--text);cursor:pointer;display:none">
@@ -637,13 +770,13 @@ body {
       <div class="ai-header">
         <div class="ai-header-left">
           <div class="ai-avatar">
-            <span class="material-symbols-outlined" style="font-variation-settings:'FILL'1">finance_chip</span>
+            <svg width="22" height="22" viewBox="0 0 24 24"><rect x="3" y="10" width="4" height="11" rx="1" fill="white"/><rect x="10" y="4" width="4" height="17" rx="1" fill="white"/><rect x="17" y="7" width="4" height="14" rx="1" fill="white"/></svg>
           </div>
           <div>
             <h2>观澜·股票助理</h2>
             <div class="ai-status">
               <span class="ai-status-dot"></span>
-              <span class="ai-status-text">AI Analyst Online</span>
+              <span class="ai-status-text">AI 在线</span>
             </div>
           </div>
           <span class="material-symbols-outlined" onclick="clearChat()" title="清空对话" style="cursor:pointer;font-size:20px;color:var(--text-tertiary)">delete_sweep</span>
@@ -778,7 +911,7 @@ function renderResearchCards() {
         <div class="soft-card" style="padding:16px 18px;border-left:3px solid var(--border);flex:1">
           <div style="display:flex;align-items:center;gap:10px;justify-content:space-between;margin-bottom:6px">
             <div style="display:flex;align-items:center;gap:8px">
-              <span class="material-symbols-outlined" style="font-size:20px;color:var(--text-tertiary)">${b.icon}</span>
+              ${iconSVG(b.icon, 20)}
               <span style="font-size:15px;font-weight:700;color:var(--text-tertiary)">${b.title}</span>
             </div>
             <span style="font-size:11px;color:var(--text-tertiary);font-family:var(--font-mono);background:var(--surface-container);padding:2px 10px;border-radius:10px">${timeLabel} 待生成</span>
@@ -792,7 +925,7 @@ function renderResearchCards() {
       <div class="soft-card" style="padding:16px 18px;border-left:3px solid var(--accent);flex:1">
         <div style="display:flex;align-items:center;gap:10px;justify-content:space-between;margin-bottom:10px">
           <div style="display:flex;align-items:center;gap:8px">
-            <span class="material-symbols-outlined" style="font-size:20px;color:var(--accent)">${b.icon}</span>
+            ${iconSVG(b.icon, 20)}
             <span style="font-size:15px;font-weight:700;color:var(--text)">${b.title}</span>
           </div>
           <span style="font-size:11px;color:var(--text-tertiary);font-family:var(--font-mono);background:var(--accent-light);padding:2px 10px;border-radius:10px">${timeLabel} 已生成</span>
@@ -973,7 +1106,7 @@ function updateSuggestions() {
   suggestions.forEach(s => {
     const btn = document.createElement('button');
     btn.className = 'chip-btn';
-    btn.innerHTML = `<span class="chip-icon"><span class="material-symbols-outlined">${s.icon}</span></span>
+    btn.innerHTML = `<span class="chip-icon">${iconSVG(s.icon, 18)}</span>
       <span class="chip-text">${s.text}</span>`;
     btn.onclick = s.action;
     group.appendChild(btn);
@@ -1013,8 +1146,8 @@ async function loadHistoryDate(dateStr) {
   currentHistoryDate = dateStr;
   const isLive = !dateStr;
   document.getElementById('chartSubTitle').textContent = isLive
-    ? 'Hot Sector Fund Flow · Real-time'
-    : 'Historical · ' + dateStr;
+    ? '热门板块资金流向 · 实时监控'
+    : '历史回放 · ' + dateStr;
   try {
     const url = '/api/data?type=' + sectorType + (dateStr ? '&date=' + dateStr : '');
     const res = await fetch(url);
@@ -1350,8 +1483,17 @@ function switchPool(pool) {
 }
 
 // ── AI Chat ───────────────────────────────────────────
+const APP_VERSION = '20260710-v2';
 const CHAT_STORAGE_KEY = 'guanlan_chat_history';
 const MAX_CHAT_MSGS = 30;
+// 版本升级自动清旧缓存
+(function(){
+  const ver = localStorage.getItem('guanlan_app_version');
+  if (ver !== APP_VERSION) {
+    localStorage.removeItem(CHAT_STORAGE_KEY);
+    localStorage.setItem('guanlan_app_version', APP_VERSION);
+  }
+})();
 
 function saveChatHistory() {
   try {
@@ -1516,7 +1658,7 @@ function appendChat(role, text, kline) {
         }
       }
     }
-    div.innerHTML = `<div class="msg-avatar"><span class="material-symbols-outlined">smart_toy</span></div>
+    div.innerHTML = `<div class="msg-avatar">${iconSVG('smart_toy', 20)}</div>
       <div class="msg-bubble" data-raw="${text.replace(/"/g,'&quot;')}"><div class="msg-label">观澜</div>${klineHtml}${bodyHtml}</div>`;
   } else {
     div.textContent = text;
@@ -1532,6 +1674,136 @@ function quickAsk(q) {
   sendChat();
 }
 
+function appendDiagCard(data, aiReply) {
+  const msgs = document.getElementById('chatMessages');
+  const wc = msgs.querySelector('.welcome-card');
+  const chips = msgs.querySelector('.chip-group');
+  if (wc) wc.remove();
+  if (chips) chips.style.display = 'none';
+
+  const div = document.createElement('div');
+  div.className = 'chat-msg assistant';
+
+  const pct = data.change_pct || 0;
+  const pctClass = pct >= 0 ? 'up' : 'down';
+  const pctSign = pct >= 0 ? '+' : '';
+  const intraLabel = data.intraday > 0.7 ? '高位' : (data.intraday > 0.3 ? '中位' : '低位');
+
+  // 提取 LLM 回复中各段文本
+  const sections = parseDiagSections(aiReply);
+
+  let html = `<div class="diag-card">`;
+
+  // ── Header ──
+  html += `<div class="diag-header">
+    <span class="diag-name">${data.name||''}</span>
+    <span class="diag-code">${data.code}</span>
+    <span class="diag-price">${data.price||'?'}</span>
+    <span class="diag-pct ${pctClass}">${pctSign}${pct.toFixed(1)}%</span>
+  </div>`;
+
+  // ── K线（折叠） ──
+  if (data.kline_table) {
+    html += `<details class="diag-kline" open>
+      <summary>📈 K线历史（近18日）</summary>
+      <pre>${data.kline_table}</pre>
+    </details>`;
+  }
+
+  // ── 量价指标四宫格 ──
+  html += `<div class="diag-metrics">
+    <div class="diag-metric"><div class="metric-val">${data.volume_ratio||'?'}</div><div class="metric-label">量比</div></div>
+    <div class="diag-metric"><div class="metric-val">${data.turnover_rate!=null?data.turnover_rate+'%':'?'}</div><div class="metric-label">换手率</div></div>
+    <div class="diag-metric"><div class="metric-val">${data.amp!=null?data.amp+'%':'?'}</div><div class="metric-label">振幅</div></div>
+    <div class="diag-metric"><div class="metric-val">${data.intraday!=null?data.intraday:''} ${intraLabel}</div><div class="metric-label">日内位置</div></div>
+  </div>`;
+
+  // ── 信号标签 ──
+  if (data.signals && data.signals.length > 0) {
+    html += `<div class="diag-section"><h4>▸ 触发信号</h4><div class="diag-signals">`;
+    data.signals.forEach(s => {
+      const stars = '★'.repeat(s.level||1) + '☆'.repeat(Math.max(0,5-(s.level||1)));
+      html += `<span class="diag-signal" title="${s.desc||''}">${stars} ${s.name}</span>`;
+    });
+    html += `</div></div>`;
+  }
+
+  // ── LLM 分析段 ──
+  const sectionOrder = ['近期量价分析','技术研判','资金面','综合评分'];
+  sectionOrder.forEach(key => {
+    if (sections[key]) {
+      html += `<div class="diag-section"><h4>▸ ${key}</h4>${sections[key]}</div>`;
+    }
+  });
+
+  // ── 操作建议高亮条 ──
+  if (sections['操作建议']) {
+    html += `<div class="diag-advice"><h4>📋 操作建议</h4><div class="diag-advice-row">${sections['操作建议']}</div></div>`;
+  }
+
+  // ── 一句话 ──
+  if (sections['一句话']) {
+    html += `<div class="diag-footer">💡 ${sections['一句话']}</div>`;
+  }
+
+  html += `</div>`;
+
+  div.innerHTML = `<div class="msg-avatar">${iconSVG('smart_toy',20)}</div>${html}`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  saveChatHistory();
+}
+
+function parseDiagSections(text) {
+  // 解析 LLM 回复的 ▸ 分段结构
+  const result = {};
+  const lines = text.split('\n');
+  let currentKey = null;
+  let currentLines = [];
+  const knownSections = ['量价数据','近期量价分析','技术研判','资金面','综合评分','操作建议','一句话'];
+
+  for (const line of lines) {
+    let matched = false;
+    for (const sec of knownSections) {
+      if (line.includes('▸ ' + sec) || line.includes('▸' + sec)) {
+        if (currentKey) result[currentKey] = currentLines.join('\n').trim();
+        currentKey = sec;
+        currentLines = [];
+        matched = true;
+        break;
+      }
+    }
+    if (!matched && currentKey) {
+      // 跳过 K 线表格行和空标题行
+      if (line.includes('───') || line.includes('日期') || line.includes('距底') ||
+          line.startsWith('**') && line.endsWith('**')) continue;
+      currentLines.push(line);
+    }
+  }
+  if (currentKey && currentLines.length > 0) {
+    result[currentKey] = currentLines.join('\n').trim();
+  }
+
+  // 如果没解析到 ▸ 分段，尝试用 ** 标题分段
+  if (Object.keys(result).length === 0) {
+    let key = null;
+    let buf = [];
+    for (const line of lines) {
+      const m = line.match(/^\*\*(.+?)\*\*/);
+      if (m) {
+        if (key) result[key] = buf.join('\n').trim();
+        key = m[1].trim();
+        buf = [];
+      } else if (key) {
+        buf.push(line);
+      }
+    }
+    if (key && buf.length > 0) result[key] = buf.join('\n').trim();
+  }
+
+  return result;
+}
+
 async function sendChat() {
   const input = document.getElementById('chatInput');
   const msg = input.value.trim();
@@ -1542,6 +1814,16 @@ async function sendChat() {
   const sendBtn = document.getElementById('chatSendBtn');
   sendBtn.disabled = true;
 
+  // 检测股票代码，预加载诊断数据
+  const stockMatch = msg.match(/\b(\d{6})\b/);
+  let diagData = null;
+  if (stockMatch) {
+    try {
+      const dr = await fetch('/api/stock/diagnose?code=' + stockMatch[1]);
+      diagData = await dr.json();
+    } catch(e) { /* 诊断接口失败不影响主流程 */ }
+  }
+
   try {
     const r = await fetch('/api/agent/chat', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1549,16 +1831,25 @@ async function sendChat() {
     });
     const d = await r.json();
     let reply = d.reply || '抱歉，AI 助手暂时不可用，请稍后重试。';
-    // K 线历史表嵌入回复开头（标题之后、量价数据之前）
-    if (d.kline && reply) {
-      const idx = reply.indexOf('\n');
-      if (idx > 0) {
-        reply = reply.slice(0, idx + 1) + '\n' + d.kline + '\n' + reply.slice(idx + 1);
-      } else {
-        reply = d.kline + '\n\n' + reply;
+
+    if (diagData && !diagData.error) {
+      // 渲染诊断卡片
+      appendDiagCard(diagData, reply);
+    } else {
+      // 普通文本渲染
+      if (d.kline && reply) {
+        const idx = reply.indexOf('\n');
+        if (idx > 0) {
+          reply = reply.slice(0, idx + 1) + '\n' + d.kline + '\n' + reply.slice(idx + 1);
+        } else {
+          reply = d.kline + '\n\n' + reply;
+        }
       }
+      if (d._ts) {
+        reply += `\n\n---\n🕐 ${d._ts} | code=${d._code||'-'} | ctx=${d._ctx||0}`;
+      }
+      appendChat('assistant', reply, '');
     }
-    appendChat('assistant', reply, '');
     agentChatHistory.push({role:'user',content:msg});
     agentChatHistory.push({role:'assistant',content:reply});
     if (agentChatHistory.length > 20) agentChatHistory = agentChatHistory.slice(-20);
@@ -1589,85 +1880,104 @@ function clearChat() {
   updateSuggestions();
 }
 
-// ── 猜你想问（优化版：带上下文的具体问题）────────────────
 function updateSuggestions() {
   const group = document.getElementById('chipGroup');
   if (!group) return;
   group.querySelectorAll('.chip-btn').forEach(b => b.remove());
 
   const suggestions = [];
+  const picks = window._lastPicksData;
 
-  // 从排行榜数据生成具体问题
-  if (sectorData && sectorData.rank && sectorData.rank.length > 0) {
-    const top = sectorData.rank[0];
-    const second = sectorData.rank[1];
-    if (top) {
-      suggestions.push({
-        icon: 'local_fire_department',
-        text: `${top.name}资金${top.value>=0?'流入':'流出'}${Math.abs(top.value||0).toFixed(0)}亿，该板块能不能追？`,
-        action: () => quickAsk(`${top.name}板块今天资金${top.value>=0?'流入':'流出'}${Math.abs(top.value||0).toFixed(0)}亿，帮我分析一下这个板块的持续性，能不能追？`),
-      });
-    }
-    if (second) {
-      suggestions.push({
-        icon: 'trending_up',
-        text: `${second.name}板块排第2，有什么好标的？`,
-        action: () => quickAsk(`${second.name}板块有什么值得关注的个股？帮我筛一下`),
-      });
-    }
-  }
-
-  // 从选股数据生成具体问题
-  if (window._lastPicksData) {
-    const aStocks = window._lastPicksData.pool_a || [];
-    const bStocks = window._lastPicksData.pool_b || [];
+  // ── 1. 个股诊断 ──
+  if (picks) {
+    const aStocks = picks.pool_a || [];
+    const bStocks = picks.pool_b || [];
     const topA = aStocks[0];
     if (topA) {
       suggestions.push({
         icon: 'query_stats',
-        text: `分析 ${topA.name}(${topA.code}) 走势与操作策略`,
-        action: () => quickAsk(`帮我全面分析 ${topA.name} ${topA.code}，包括技术面、资金面、操作建议`),
+        text: `个股诊断：${topA.name}(${topA.code}) 技术面与操作策略`,
+        action: () => quickAsk(`帮我全面分析 ${topA.name} ${topA.code}，包括技术面、资金面、情绪面，给出具体操作建议`),
       });
     }
-    if (bStocks.length > 0 && bStocks[0]) {
-      const topB = bStocks[0];
+    const topB = bStocks[0];
+    if (topB) {
       suggestions.push({
         icon: 'water_drop',
-        text: `${topB.name}(${topB.code}) 回调到位了吗？`,
-        action: () => quickAsk(`${topB.name} ${topB.code} 在低吸池里，帮我分析回调是否到位，现在能不能低吸？`),
+        text: `个股诊断：${topB.name}(${topB.code}) 回调是否到位？`,
+        action: () => quickAsk(`${topB.name} ${topB.code} 在低吸池里，帮我分析回调是否到位，现在能不能低吸？给出止损止盈位`),
       });
     }
-    // 大盘研判
-    const breadth = window._lastPicksData.market_breadth || 0.5;
-    const risk = window._lastPicksData.risk_level || 'low';
+  }
+
+  // ── 2. 大盘信息 ──
+  if (picks) {
+    const breadth = picks.market_breadth || 0.5;
+    const risk = picks.risk_level || 'low';
+    const riskLabel = risk === 'extreme' ? '极高' : (risk === 'high' ? '高' : (risk === 'mid' ? '中' : '低'));
+    const posture = breadth > 0.6 ? '进攻' : (breadth > 0.3 ? '均衡' : '防守');
     suggestions.push({
       icon: 'landscape',
-      text: `今日市场研判与操作策略`,
-      action: () => quickAsk(`今天市场广度${(breadth*100).toFixed(0)}%，风险等级${risk}，帮我做个大盘研判，今天该进攻还是防守？`),
+      text: `大盘研判：广度${(breadth*100).toFixed(0)}% 风险${riskLabel}，建议${posture}`,
+      action: () => quickAsk(`今天市场广度${(breadth*100).toFixed(0)}%，风险等级${risk}，帮我做大盘研判：主线在哪？仓位如何配？该进攻还是防守？`),
     });
   }
 
-  // 辩论
-  suggestions.push({
-    icon: 'psychology',
-    text: '启动 Multi-Agent 市场辩论',
-    action: () => loadDebate(),
-  });
+  // ── 3. 板块信息 ──
+  if (sectorData && sectorData.rank && sectorData.rank.length > 0) {
+    const top = sectorData.rank[0];
+    if (top) {
+      const flowDir = top.value >= 0 ? '流入' : '流出';
+      suggestions.push({
+        icon: 'local_fire_department',
+        text: `板块分析：${top.name}资金${flowDir}${Math.abs(top.value||0).toFixed(0)}亿，持续性如何？`,
+        action: () => quickAsk(`${top.name}板块今天资金${flowDir}${Math.abs(top.value||0).toFixed(0)}亿，帮我分析：是主线还是轮动？持续性如何？有什么龙头标的？`),
+      });
+    }
+    if (sectorData.rank[1]) {
+      const s2 = sectorData.rank[1];
+      suggestions.push({
+        icon: 'trending_up',
+        text: `板块选股：${s2.name}板块里有什么好标的？`,
+        action: () => quickAsk(`${s2.name}板块排资金第2，帮我从候选池里筛一下这个板块的好标的`),
+      });
+    }
+  }
 
-  // 自选股分析（如果有选中则追加）
+  // ── 4. 外围信息 ──
+  if (picks && picks.pre_market && picks.pre_market.overnight) {
+    const ov = picks.pre_market.overnight;
+    const sentLabel = ov.overall_sentiment > 0 ? '偏暖' : (ov.overall_sentiment < 0 ? '偏冷' : '中性');
+    suggestions.push({
+      icon: 'language',
+      text: `外围信息：隔夜外盘情绪${sentLabel}，对今天A股有何影响？`,
+      action: () => quickAsk(`隔夜外盘情绪${sentLabel}，${ov.summary||''}，帮我分析对今天A股的影响，哪些板块会受益或承压？`),
+    });
+  }
+
+  // ── 5. 持股决策 ──
   const customCode = document.getElementById('watchlistCodeInput');
   if (customCode && customCode.value && customCode.value.match(/^\d{6}$/)) {
     suggestions.unshift({
       icon: 'search',
-      text: `分析自选股 ${customCode.value}`,
-      action: () => quickAsk(`帮我全面分析 ${customCode.value}，包括技术面、资金面和操作建议`),
+      text: `持股决策：${customCode.value} 现在该持有、加仓还是卖出？`,
+      action: () => quickAsk(`我持有 ${customCode.value}，帮我做交易决策：现在该继续持有、加仓还是卖出？给出具体操作建议和仓位调整方案`),
+    });
+  }
+
+  // ── 6. Multi-Agent 辩论（仅 live 模式）──
+  if (picks && picks.mode === 'live') {
+    suggestions.push({
+      icon: 'psychology',
+      text: 'Multi-Agent 市场辩论',
+      action: () => loadDebate(),
     });
   }
 
   suggestions.forEach(s => {
     const btn = document.createElement('button');
     btn.className = 'chip-btn';
-    btn.innerHTML = `<span class="chip-icon"><span class="material-symbols-outlined">${s.icon}</span></span>
+    btn.innerHTML = `<span class="chip-icon">${iconSVG(s.icon, 18)}</span>
       <span class="chip-text">${s.text}</span>`;
     btn.onclick = s.action;
     group.appendChild(btn);

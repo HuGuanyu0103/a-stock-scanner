@@ -1063,6 +1063,83 @@ class SectorFlowCollector:
                 })
         return result
 
+    def get_sector_timeseries(self, sector_name: str, recent_minutes: int = 30) -> dict:
+        """获取指定板块最近 N 分钟的资金流向时间序列。
+
+        从内存快照中提取该板块在每个时间点的主力净流入额和净占比。
+
+        Returns:
+            {"name": str, "times": [str], "values": [float|None], "ratios": [float|None],
+             "latest_value": float, "latest_ratio": float, "trend": str}
+        """
+        with self._lock:
+            concept_snaps = list(self._concept_snapshots)
+            industry_snaps = list(self._industry_snapshots)
+
+        if not concept_snaps and not industry_snaps:
+            return {"name": sector_name, "error": "无今日快照数据"}
+
+        # 从概念和行业快照中分别提取该板块的时间序列
+        # 注意：不能简单合并再按时间去重，因为同时间的概念和行业快照含不同板块
+        time_data = {}
+        for snap_list in (concept_snaps, industry_snaps):
+            for snap in snap_list:
+                t = snap.get("time", "")
+                if t in time_data:
+                    continue  # 已从另一个类型获取
+                rank = snap.get("rank", [])
+                for item in rank:
+                    if item.get("name") == sector_name:
+                        time_data[t] = (item.get("net_main", 0),
+                                        item.get("net_main_ratio", 0),
+                                        item.get("pct_chg", 0))
+                        break
+
+        sorted_times = sorted(time_data.keys())
+        if recent_minutes > 0 and len(sorted_times) > recent_minutes:
+            sorted_times = sorted_times[-recent_minutes:]
+
+        values = []
+        ratios = []
+        for t in sorted_times:
+            if t in time_data:
+                values.append(time_data[t][0])
+                ratios.append(time_data[t][1])
+            else:
+                values.append(None)
+                ratios.append(None)
+
+        # 判断趋势
+        valid_vals = [v for v in values if v is not None]
+        if len(valid_vals) >= 2:
+            delta = valid_vals[-1] - valid_vals[0]
+            if delta > 5:
+                trend = "持续加速流入"
+            elif delta > 1:
+                trend = "温和流入"
+            elif delta < -5:
+                trend = "加速流出"
+            elif delta < -1:
+                trend = "温和流出"
+            else:
+                trend = "资金平稳"
+        else:
+            trend = "数据不足"
+
+        latest_val = valid_vals[-1] if valid_vals else 0
+        latest_ratio = ratios[-1] if ratios else 0
+
+        return {
+            "name": sector_name,
+            "times": sorted_times,
+            "values": values,
+            "ratios": ratios,
+            "latest_value": round(latest_val, 2),
+            "latest_ratio": round(latest_ratio, 2) if latest_ratio else 0,
+            "trend": trend,
+            "data_points": len(sorted_times),
+        }
+
     def get_northbound_data(self) -> dict:
         with self._lock:
             snapshots = list(self._northbound_snapshots)

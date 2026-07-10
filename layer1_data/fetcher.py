@@ -58,6 +58,41 @@ class DataFetcher:
             logger.warning("获取股票列表失败: %s", e)
             return pd.DataFrame()
 
+    def stock_shares(self, stock_code: str) -> Optional[dict]:
+        """获取总股本/流通A股（用于计算换手率）。缓存结果。"""
+        cache_key = f"_shares_{stock_code}"
+        if hasattr(self, cache_key):
+            return getattr(self, cache_key)
+        import adata
+        try:
+            df = adata.stock.info.get_stock_shares(stock_code=stock_code)
+            if df is not None and not df.empty:
+                latest = df.iloc[0]  # 第一行是最新数据
+                result = {
+                    "total_shares": int(latest.get("total_shares", 0)),
+                    "list_a_shares": int(latest.get("list_a_shares", 0)),
+                }
+                setattr(self, cache_key, result)
+                return result
+        except Exception as e:
+            logger.debug("获取股本失败 %s: %s", stock_code, e)
+        return None
+
+    def turnover_rate(self, stock_code: str) -> Optional[float]:
+        """计算实时换手率 = 当日成交量 / 流通A股 * 100"""
+        shares = self.stock_shares(stock_code)
+        if not shares or shares["list_a_shares"] <= 0:
+            return None
+        try:
+            mk = self.current_market([stock_code])
+            if mk is not None and not mk.empty:
+                vol = int(mk.iloc[0].get("volume", 0))
+                if vol > 0:
+                    return round(vol / shares["list_a_shares"] * 100, 2)
+        except Exception as e:
+            logger.debug("计算换手率失败 %s: %s", stock_code, e)
+        return None
+
     def stock_concepts(self, stock_code: str) -> list:
         import adata
         try:
