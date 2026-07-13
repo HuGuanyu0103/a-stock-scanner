@@ -24,6 +24,121 @@ _http.trust_env = False
 
 logger = logging.getLogger(__name__)
 
+# ── 退避重试 + 熔断器 ──────────────────────────────────────────
+
+_CIRCUIT_BREAKER: dict[str, list[float]] = {}  # source_name -> [fail_timestamps]
+_CIRCUIT_COOLDOWN = 60  # 连续失败后冷却 60 秒
+_CIRCUIT_THRESHOLD = 3   # 连续失败 3 次触发熔断
+
+
+def _retry_with_backoff(fn, name: str = "api", max_retries: int = 3, base_delay: float = 1.0):
+    """带指数退避的重试 + 熔断器。
+
+    如果同一 name 连续失败 CIRCUIT_THRESHOLD 次，触发熔断，
+    在 CIRCUIT_COOLDOWN 秒内直接跳过，不再尝试。
+    """
+    # 熔断检查
+    failures = _CIRCUIT_BREAKER.get(name, [])
+    now = time.time()
+    recent_fails = [t for t in failures if now - t < _CIRCUIT_COOLDOWN]
+    if len(recent_fails) >= _CIRCUIT_THRESHOLD:
+        logger.warning("熔断器触发 [%s]: %d次失败/%d秒内，跳过重试", name, len(recent_fails), _CIRCUIT_COOLDOWN)
+        raise ConnectionError(f"Circuit breaker open for {name}")
+
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            result = fn()
+            # 成功 → 清除该源的失败记录
+            _CIRCUIT_BREAKER.pop(name, None)
+            if attempt > 0:
+                logger.info("重试成功 [%s] 第%d次", name, attempt + 1)
+            return result
+        except Exception as e:
+            last_exc = e
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+                logger.debug("重试 [%s] 第%d/%d次失败，%.1fs后重试: %s", name, attempt + 1, max_retries, delay, e)
+                time.sleep(delay)
+
+    # 全部失败 → 记录失败时间戳
+    _CIRCUIT_BREAKER.setdefault(name, []).append(now)
+    logger.warning("重试耗尽 [%s]: %d次全部失败", name, max_retries)
+    raise last_exc
+
+
+def reset_circuit_breakers(name: str = None):
+    """重置熔断器（新交易日开始时调用）"""
+    if name:
+        _CIRCUIT_BREAKER.pop(name, None)
+    else:
+        _CIRCUIT_BREAKER.clear()
+        logger.info("所有熔断器已重置")
+
+
+def get_circuit_status() -> dict:
+    """查询各数据源熔断状态"""
+    now = time.time()
+    status = {}
+    for src, timestamps in _CIRCUIT_BREAKER.items():
+        recent = [t for t in timestamps if now - t < _CIRCUIT_COOLDOWN]
+        status[src] = {"failures": len(recent), "circuit_open": len(recent) >= _CIRCUIT_THRESHOLD}
+    return status
+
+
+# ── 腾讯行情 API fallback ─────────────────────────────────────
+
+def _fetch_tencent_market(codes: list[str]) -> pd.DataFrame:
+    """通过腾讯 qt.gtimg.cn API 获取实时行情（push2 的可靠降级）。
+
+    腾讯 API 格式: http://qt.gtimg.cn/q=sh600519,sz000001
+    返回字段(~分隔): 0=未知, 1=名称, 2=代码, 3=现价, 4=昨收, 5=今开,
+                    6=成交量(手), 7=外盘, 8=内盘, 9=买一, 31=涨跌, 32=涨跌幅,
+                    37=换手率, 45=市盈率, ...
+    """
+    if not codes:
+        return pd.DataFrame()
+    # 构建腾讯格式的股票代码
+    tencent_codes = []
+    for c in codes:
+        c = str(c).zfill(6)
+        prefix = "sh" if c.startswith("6") else "sz"
+        tencent_codes.append(f"{prefix}{c}")
+    url = f"http://qt.gtimg.cn/q={','.join(tencent_codes)}"
+    try:
+        resp = req.get(url, timeout=5)
+        resp.encoding = 'gbk'
+        rows = []
+        for line in resp.text.strip().split(';\n'):
+            if not line.strip() or '=' not in line:
+                continue
+            # 解析 var hq_str_xxx="..." 格式
+            _, value = line.split('=', 1)
+            value = value.strip().strip('"').strip("'")
+            fields = value.split('~')
+            if len(fields) < 33:
+                continue
+            raw_code = fields[2]
+            rows.append({
+                "stock_code": raw_code,
+                "short_name": fields[1],
+                "price": float(fields[3]) if fields[3] else 0,
+                "change_pct": float(fields[32]) if fields[32] else 0,
+                "change": float(fields[31]) if fields[31] else 0,
+                "volume": int(fields[6]) if fields[6] else 0,  # 手
+                "amount": int(fields[6]) * float(fields[3]) if fields[6] and fields[3] else 0,
+                "turnover_rate": float(fields[38]) if len(fields) > 38 and fields[38] else 0,
+            })
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
+    except Exception as e:
+        logger.debug("腾讯行情 API 失败: %s", e)
+        return pd.DataFrame()
+
+
+def _fetch_tencent_kline(code: str, days: int = 120) -> pd.DataFrame:
+    """通过腾讯 API 获取日K线（已有 _qq_kline，这里是统一接口）"""
+    return pd.DataFrame()
+
 TRADE_DATE = datetime.now().strftime("%Y-%m-%d")
 
 
@@ -312,18 +427,24 @@ def _fetch_sectors_full(fs: str, timeout: float = 10.0) -> Optional[dict]:
 
 
 def fetch_all_sectors_snapshot(timeout: float = 10.0) -> Optional[dict]:
-    """获取概念板块全量快照（降序拉取 + 升序兜底，确保覆盖净流出板块）。"""
+    """获取概念板块全量快照（降序拉取 + 升序兜底 + 退避重试 + 熔断）。"""
     try:
-        return _fetch_sectors_full(fs="m:90+t:3", timeout=timeout)
+        return _retry_with_backoff(
+            lambda: _fetch_sectors_full(fs="m:90+t:3", timeout=timeout),
+            name="push2_concept", max_retries=4, base_delay=1.5,
+        )
     except Exception as e:
         logger.warning("fetch_all_sectors_snapshot failed: %s", e)
         return None
 
 
 def fetch_industry_sectors_snapshot(timeout: float = 10.0) -> Optional[dict]:
-    """获取行业板块资金流向快照（降序拉取 + 升序兜底，确保覆盖净流出板块）。"""
+    """获取行业板块资金流向快照（降序拉取 + 升序兜底 + 退避重试 + 熔断）。"""
     try:
-        return _fetch_sectors_full(fs="m:90+t:2", timeout=timeout)
+        return _retry_with_backoff(
+            lambda: _fetch_sectors_full(fs="m:90+t:2", timeout=timeout),
+            name="push2_industry", max_retries=4, base_delay=1.5,
+        )
     except Exception as e:
         logger.warning("fetch_industry_sectors_snapshot failed: %s", e)
         return None
@@ -339,35 +460,34 @@ def fetch_northbound_flow(timeout: float = 8.0) -> Optional[dict]:
       - time:        更新时间
     """
     try:
-        url = "https://push2.eastmoney.com/api/qt/kamt/get"
-        params = {
-            "_": str(int(time.time() * 1000)),
-        }
-        resp = _http.get(url, params=params, timeout=timeout,
-                       verify=False, headers=EASTMONEY_HEADERS)
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("rc") != 0:
-            return None
-
-        d = data.get("data", {})
-        hk2sh = d.get("hk2sh", {})
-        hk2sz = d.get("hk2sz", {})
-
-        # dayNetAmtIn 单位是元，转为亿元
-        net_sh = float(hk2sh.get("dayNetAmtIn", 0)) / 1e8
-        net_sz = float(hk2sz.get("dayNetAmtIn", 0)) / 1e8
-        total_net = net_sh + net_sz
-
-        return {
-            "time": _now_time(),
-            "net_inflow": round(total_net, 2),
-            "hk2sh": round(net_sh, 2),
-            "hk2sz": round(net_sz, 2),
-        }
+        return _retry_with_backoff(lambda: _fetch_northbound_raw(timeout),
+                                   name="push2_northbound", max_retries=3, base_delay=1.0)
     except Exception as e:
         logger.warning("fetch_northbound_flow failed: %s", e)
         return None
+
+
+def _fetch_northbound_raw(timeout: float = 8.0) -> Optional[dict]:
+    url = "https://push2.eastmoney.com/api/qt/kamt/get"
+    params = {"_": str(int(time.time() * 1000))}
+    resp = _http.get(url, params=params, timeout=timeout,
+                   verify=False, headers=EASTMONEY_HEADERS)
+    resp.raise_for_status()
+    data = resp.json()
+    if data.get("rc") != 0:
+        return None
+    d = data.get("data", {})
+    hk2sh = d.get("hk2sh", {})
+    hk2sz = d.get("hk2sz", {})
+    net_sh = float(hk2sh.get("dayNetAmtIn", 0)) / 1e8
+    net_sz = float(hk2sz.get("dayNetAmtIn", 0)) / 1e8
+    total_net = net_sh + net_sz
+    return {
+        "time": _now_time(),
+        "net_inflow": round(total_net, 2),
+        "hk2sh": round(net_sh, 2),
+        "hk2sz": round(net_sz, 2),
+    }
 
 
 def fetch_stock_fund_flow_rank(sort_by: str = "net_main",
@@ -380,44 +500,47 @@ def fetch_stock_fund_flow_rank(sort_by: str = "net_main",
         count: 返回数量
     """
     try:
-        fid_map = {"net_main": "f62", "net_ratio": "f184"}
-        fid = fid_map.get(sort_by, "f62")
-
-        url = "https://push2.eastmoney.com/api/qt/clist/get"
-        params = {
-            "pn": "1", "pz": str(count), "po": "1" if fid == "f62" else "0",
-            "np": "1", "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-            "fltt": "2", "invt": "2", "fid": fid,
-            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",  # 沪深 A 股
-            "fields": "f12,f14,f2,f3,f8,f37,f62,f66,f184,f21",
-            "_": str(int(time.time() * 1000)),
-        }
-        resp = _http.get(url, params=params, timeout=timeout,
-                       verify=False, headers=EASTMONEY_HEADERS)
-        resp.raise_for_status()
-        items = resp.json().get("data", {}).get("diff", [])
-        stocks = []
-        for item in items:
-            code = item.get("f12", "")
-            name = item.get("f14", "")
-            if not code or not name:
-                continue
-            stocks.append({
-                "code": code,
-                "name": name,
-                "price": item.get("f2"),
-                "pct_chg": item.get("f3"),
-                "turnover_rate": item.get("f8"),
-                "volume_ratio": item.get("f37"),
-                "net_main": round(float(item.get("f62", 0)) / 1e8, 2),
-                "amp_ratio": item.get("f66"),
-                "net_main_ratio": item.get("f184"),
-                "market_cap": item.get("f21"),
-            })
-        return stocks
+        return _retry_with_backoff(
+            lambda: _fetch_stock_flow_raw(sort_by, count, timeout),
+            name="push2_stock_flow", max_retries=3, base_delay=1.0,
+        )
     except Exception as e:
         logger.warning("fetch_stock_fund_flow_rank failed: %s", e)
         return None
+
+
+def _fetch_stock_flow_raw(sort_by: str = "net_main", count: int = 50,
+                           timeout: float = 10.0) -> list:
+    fid_map = {"net_main": "f62", "net_ratio": "f184"}
+    fid = fid_map.get(sort_by, "f62")
+    url = "https://push2.eastmoney.com/api/qt/clist/get"
+    params = {
+        "pn": "1", "pz": str(count), "po": "1" if fid == "f62" else "0",
+        "np": "1", "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+        "fltt": "2", "invt": "2", "fid": fid,
+        "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",
+        "fields": "f12,f14,f2,f3,f8,f37,f62,f66,f184,f21",
+        "_": str(int(time.time() * 1000)),
+    }
+    resp = _http.get(url, params=params, timeout=timeout,
+                   verify=False, headers=EASTMONEY_HEADERS)
+    resp.raise_for_status()
+    items = resp.json().get("data", {}).get("diff", [])
+    stocks = []
+    for item in items:
+        code = item.get("f12", "")
+        name = item.get("f14", "")
+        if not code or not name:
+            continue
+        stocks.append({
+            "code": code, "name": name,
+            "price": item.get("f2"), "pct_chg": item.get("f3"),
+            "turnover_rate": item.get("f8"), "volume_ratio": item.get("f37"),
+            "net_main": round(float(item.get("f62", 0)) / 1e8, 2),
+            "amp_ratio": item.get("f66"), "net_main_ratio": item.get("f184"),
+            "market_cap": item.get("f21"),
+        })
+    return stocks
 
 
 def fetch_dashboard_data(use_real: bool = True) -> dict:

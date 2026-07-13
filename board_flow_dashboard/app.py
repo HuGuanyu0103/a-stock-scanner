@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+from typing import Optional
 import signal
 import sys
 from datetime import datetime
@@ -26,7 +27,7 @@ from pathlib import Path
 # 确保项目根目录在 sys.path 中（用于导入 layer1_data 等模块）
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from flask import Flask, jsonify, redirect, request, send_from_directory
+from flask import Flask, Response, jsonify, redirect, request, send_from_directory, stream_with_context
 
 try:
     from .collector import SectorFlowCollector, WATCH_SECTORS
@@ -38,6 +39,7 @@ try:
     from .loop_analyzer import get_loop_analyzer
     from .stock_selector import select_stocks
     from .signals import get_signal_store, compute_final_score, get_pool_allocation
+    from .daily_scorer import load_daily_scores
     from .sentiment_collector import SentimentCollector
     from .news_monitor import NewsMonitor
     from .pre_market import PreMarketScanner
@@ -284,6 +286,12 @@ def _is_market_open_now():
 def api_status():
     status = collector.get_status()
     status["mode"] = "live"
+    # 暴露熔断器状态
+    try:
+        from .data_fetcher import get_circuit_status
+    except ImportError:
+        from data_fetcher import get_circuit_status  # type: ignore[no-redef]
+    status["circuit_breakers"] = get_circuit_status()
     return jsonify(status)
 
 
@@ -301,6 +309,10 @@ def index():
     response.headers['Expires'] = '0'
     return response
 
+
+@app.route("/test")
+def test_page():
+    return send_from_directory(STATIC_DIR, "test.html")
 
 @app.route("/refresh")
 def refresh():
@@ -482,6 +494,9 @@ def api_agent_chat():
 
     chat_history = body.get("history", [])
 
+    # 前端预加载的诊断数据（如果用户消息含股票代码且前端已调 /api/stock/diagnose）
+    diagnose_data = body.get("diagnose_data")
+
     data = select_stocks(collector=collector)
     all_candidates = data.get("pool_a", []) + data.get("pool_b", [])
     store = get_signal_store()
@@ -490,7 +505,7 @@ def api_agent_chat():
 
     agent = get_agent()
     # 检测用户消息中的股票代码并获取实时数据
-    stock_data_context, kline_data = _extract_stock_context(user_message)
+    stock_data_context, kline_data = _extract_stock_context(user_message, diagnose_data=diagnose_data)
 
     # 安全网：如果消息含股票代码但数据获取失败，直接返回错误，防止 LLM 编造数据
     stock_code_in_msg = _extract_stock_code(user_message)
@@ -518,7 +533,6 @@ def api_agent_chat():
     reply = agent.chat(
         user_message, all_candidates, hot_sectors, signals, chat_history,
         stock_context=stock_data_context,
-        stock_kline=kline_data,
         sector_timeseries=sector_ts_context,
     )
     if reply:
@@ -533,11 +547,107 @@ def api_agent_chat():
                     "_ts": datetime.now().strftime("%H:%M:%S")})
 
 
+@app.route("/api/agent/chat/stream", methods=["POST"])
+def api_agent_chat_stream():
+    """SSE 流式对话端点 — 逐 token 推送，消除 8-10 秒等待。
+
+    前端通过 EventSource/fetch+ReadableStream 接收，首字延迟 < 2 秒。
+    同时推送 kline_table 和诊断卡片数据，支持渐进式 UI 渲染。
+    """
+    body = request.get_json(silent=True) or {}
+    user_message = body.get("message", "").strip()
+    if not user_message:
+        return jsonify({"error": "消息不能为空"}), 400
+
+    chat_history = body.get("history", [])
+    diagnose_data = body.get("diagnose_data")
+
+    data = select_stocks(collector=collector)
+    all_candidates = data.get("pool_a", []) + data.get("pool_b", [])
+    store = get_signal_store()
+    signals = store.get_all()
+    hot_sectors = data.get("hot_sectors", [])
+
+    agent = get_agent()
+    stock_data_context, kline_data = _extract_stock_context(user_message, diagnose_data=diagnose_data)
+
+    stock_code_in_msg = _extract_stock_code(user_message)
+    if stock_code_in_msg and not stock_data_context:
+        return jsonify({
+            "reply": f"⚠️ 无法获取 {stock_code_in_msg} 的实时数据。请稍后重试。",
+            "kline": "",
+        })
+
+    # 板块时序上下文
+    sector_ts_context = ""
+    for sector in WATCH_SECTORS:
+        if sector in user_message:
+            ts = collector.get_sector_timeseries(sector, minutes=30)
+            if "error" not in ts:
+                sector_ts_context = json.dumps(ts, ensure_ascii=False)
+            break
+
+    def generate():
+        ts = datetime.now().strftime("%H:%M:%S")
+        ctx_len = len(stock_data_context)
+
+        # Phase 1: 推送元数据（K线表格 + 基本信息，前端立即渲染卡片壳）
+        yield f"data: {json.dumps({'type': 'meta', 'kline': kline_data, '_ts': ts, '_code': stock_code_in_msg or '', '_ctx': ctx_len}, ensure_ascii=False)}\n\n"
+
+        # Phase 2: 流式推送 LLM 输出
+        full_reply = ""
+        try:
+            for chunk in agent.chat_stream(
+                user_message, all_candidates, hot_sectors, signals,
+                chat_history, stock_data_context, sector_ts_context,
+            ):
+                if chunk is None:
+                    break
+                full_reply += chunk
+                yield f"data: {json.dumps({'type': 'chunk', 'data': chunk}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            logger.error("SSE stream error: %s", e)
+
+        # Phase 3: 完成信号
+        yield f"data: {json.dumps({'type': 'done', '_ts': ts, '_code': stock_code_in_msg or '', '_ctx': ctx_len}, ensure_ascii=False)}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        }
+    )
+
+
 # ── 个股分析端点 ──────────────────────────────────────────────
+
+def _get_daily_score_info(code: str) -> Optional[dict]:
+    """获取日级别评分 + 全市场排名信息。"""
+    try:
+        scores = load_daily_scores()
+        if not scores or code not in scores:
+            return None
+        entry = scores[code]
+        # 计算排名
+        sorted_scores = sorted(scores.values(), key=lambda x: x["combined_score"], reverse=True)
+        rank = next(i + 1 for i, s in enumerate(sorted_scores) if s.get("combined_score") == entry["combined_score"])
+        total = len(sorted_scores)
+        return {
+            **entry,
+            "rank": rank,
+            "rank_pct": round(rank / total * 100, 1),
+            "total": total,
+        }
+    except Exception:
+        return None
+
 
 def _extract_stock_code(text):
     """从文本中提取6位股票代码"""
-    m = re.search(r'\b(\d{6})\b', text)
+    m = re.search(r'(?<!\d)(\d{6})(?!\d)', text)
     return m.group(1) if m else None
 
 def _analyze_kline_events(df):
@@ -600,12 +710,160 @@ def _analyze_kline_events(df):
     return annotations, stats
 
 
-def _extract_stock_context(user_message):
-    """返回 (LLM上下文, K线表格数据) 的元组"""
+def _build_daily_fallback_context(code: str) -> str:
+    """当日K线/实时数据获取失败时，用日评分数据兜底。"""
+    ds = _get_daily_score_info(code)
+    if not ds:
+        return ""
+    return (
+        f"=== {code} 日级别评分（盘后全市场扫描，实时K线暂不可用）===\n"
+        f"日综合评分: {ds['combined_score']}\n"
+        f"全市场排名: #{ds['rank']}/{ds['total']} (前{ds['rank_pct']}%)\n"
+        f"技术信号: {ds['signal_score']}分 | 情绪: {ds['sentiment_score']}分 | 因子: {ds['factor_score']}分\n"
+        f"触发信号: {ds['signal_names']}\n"
+        f"\n[以上为盘后静态评分，实时行情暂不可用。请基于此数据和你的交易经验给出分析，"
+        f"标注数据来源。禁止编造价格、涨跌幅等实时数据。]"
+    )
+
+
+def _build_context_from_diagnose(data: dict) -> str:
+    """从诊断 JSON 构建 LLM 上下文（精简版，避免重复 API 调用）。
+
+    与 _extract_stock_context 不同：该函数直接使用已计算好的诊断数据，
+    省去 quick_scan + analyze_stock + turnover_rate 三次 API 调用。
+    上下文长度从 ~80 行压缩到 ~40 行，去除与 SYSTEM_PROMPT 重复的指令。
+    """
+    code = data.get("code", "")
+    name = data.get("name", "")
+    price = data.get("price")
+    pct = data.get("change_pct") or 0
+    vol_ratio = data.get("volume_ratio")
+    turnover = data.get("turnover_rate")
+    amp = data.get("amp")
+    intraday = data.get("intraday")
+    intra_label = "高位" if (intraday or 0) > 0.7 else ("中位" if (intraday or 0) > 0.3 else "低位")
+    mas = data.get("mas", {})
+    concepts = data.get("concepts", [])
+    signals = data.get("signals", [])
+    factors = data.get("factors", {})
+    sentiment = data.get("sentiment", {})
+    news = data.get("news", [])
+    ds = data.get("daily_score")
+    kline_stats = data.get("kline_stats", {})
+
+    parts = [
+        f"=== {code} {name} 实时诊断 ===",
+        "",
+        "▸ 量价数据",
+        f"现价 {price or '?'}  涨跌 {pct:+.1f}%  量比 {vol_ratio or '?'}  "
+        f"换手率 {f'{turnover}%' if turnover is not None else '?'}  "
+        f"振幅 {f'{amp}%' if amp is not None else '?'}  "
+        f"日内位置 {intraday or '?'}({intra_label})",
+        "",
+        "▸ 技术研判",
+        f"MA5 {mas.get('ma5', 0):.2f}  MA10 {mas.get('ma10', 0):.2f}  MA20 {mas.get('ma20', 0):.2f}",
+        f"支撑 {data.get('support', '?')}  阻力 {data.get('resistance', '?')}",
+    ]
+    if kline_stats:
+        parts.append(
+            f"20日最低 {kline_stats.get('low_20','?')}  20日最高 {kline_stats.get('high_20','?')}  "
+            f"20日均额 {kline_stats.get('avg_amount','?')}亿  距底 {kline_stats.get('pct_from_low','?')}%"
+        )
+    parts.append(f"趋势: {data.get('summary', '')}")
+
+    parts.extend(["", "▸ 触发信号"])
+    if signals:
+        for s in signals[:6]:
+            lv = s.get('level', 1)
+            stars = '★' * min(lv, 5) + '☆' * max(0, 5 - min(lv, 5))
+            desc = s.get('desc', '')
+            parts.append(f"  [{stars}] {s['name']}{' — ' + desc if desc else ''}")
+    else:
+        parts.append("  (无)")
+
+    if factors:
+        parts.append("")
+        parts.append("▸ 量化因子(Top8)")
+        sorted_f = sorted(factors.items(), key=lambda x: abs(x[1]), reverse=True)[:8]
+        for k, v in sorted_f:
+            bar = '█' * min(10, int(abs(v) / 3)) if abs(v) > 0 else ''
+            arrow = '↑' if v > 0 else ('↓' if v < 0 else '→')
+            parts.append(f"  {k}: {v:+.1f} {arrow} {bar}")
+
+    if concepts:
+        parts.extend(["", "▸ 概念属性", ', '.join(concepts)])
+
+    if sentiment and sentiment.get('index') is not None:
+        parts.extend([
+            "", "▸ 市场情绪",
+            f"情绪指数: {sentiment.get('index','?')}  "
+            f"炸板率: {round((sentiment.get('po_ban_rate') or 0) * 100)}%  "
+            f"轮动速度: {sentiment.get('rotation','?')}",
+        ])
+
+    if news:
+        parts.extend(["", "▸ 相关消息"])
+        for ev in news[:3]:
+            parts.append(f"  [{ev.get('sentiment', 'neutral')}] {ev.get('title', '')}")
+
+    if ds:
+        parts.extend([
+            "", "▸ 日级别评分(盘后全市场扫描)",
+            f"日综合{ds['combined_score']} | 技术{ds['signal_score']}+情绪{ds['sentiment_score']}+因子{ds['factor_score']}",
+            f"全市场排名 #{ds['rank']}/{ds['total']}(前{ds['rank_pct']}%) | 信号: {ds['signal_names']}",
+        ])
+
+    parts.extend([
+        "", "▸ 综合评分",
+        f"综合{data.get('combined_score', '?')} | 池{data.get('pool', '未入池')}",
+    ])
+
+    # K线关键事件摘要（完整标注已在UI的K线表格中展示）
+    kline_events = data.get("kline_events", [])
+    if kline_events:
+        parts.extend(["", "▸ K线关键事件（已标注在UI表格中）"])
+        for ev in kline_events[:8]:
+            parts.append(f"  {ev['date']}: {' '.join(ev['tags'])}")
+
+    parts.extend([
+        "",
+        "K线表格已在UI中展示，分析时引用具体日期和标注事件。",
+        "输出结构: K线量价分析→量价数据→技术研判→资金面→综合评分→操作建议→一句话。",
+        "每项分析要有具体数字。操作建议用严格格式:",
+        "入场区间: X.XX-X.XX",
+        "目标: X.XX",
+        "止损: X.XX",
+        "仓位: 轻仓(1-2成)/中仓(3-4成)/重仓(5成+)",
+        "持有周期: X天",
+        "风险等级: 低/中/高",
+        "禁止说「数据不足」「无法获取」。禁止使用emoji。",
+    ])
+
+    return '\n'.join(parts)
+
+
+def _extract_stock_context(user_message, diagnose_data: Optional[dict] = None):
+    """返回 (LLM上下文, K线表格数据) 的元组。
+
+    当 diagnose_data 可用时（前端已调用 /api/stock/diagnose 预加载），
+    直接从诊断数据构建上下文，避免重复调用 quick_scan + analyze_stock。
+    """
     code = _extract_stock_code(user_message)
     if not code:
         logger.info("StockContext: 未提取到股票代码, msg=%.60s", user_message)
         return "", ""
+
+    # 捷径：使用前端预加载的诊断数据，跳过 API 调用
+    if diagnose_data and not diagnose_data.get("error") and diagnose_data.get("code") == code:
+        kline_table = diagnose_data.get("kline_table", "")
+        if kline_table:
+            logger.info("StockContext: 使用预加载诊断数据 %s, kline_table=%d chars",
+                        code, len(kline_table))
+            ctx = _build_context_from_diagnose(diagnose_data)
+            return ctx, kline_table
+        # 数据不完整，回退到 API 路径
+        logger.info("StockContext: 诊断数据无 kline_table，回退 API %s", code)
+
     try:
         from layer1_data.fetcher import DataFetcher
         from layer2_scan.screener import StockScreener
@@ -674,6 +932,10 @@ def _extract_stock_context(user_message):
             kline_csv += f"距底 {kline_stats.get('pct_from_low','?')}%"
 
         if "error" in scan:
+            fallback = _build_daily_fallback_context(code)
+            if fallback:
+                logger.info("StockContext: 实时数据不可用，日评分兜底 %s", code)
+                return fallback, ""
             return (
                 f"[用户询问股票 {code}，实时数据接口暂时不可用: {scan['error']}]\\n"
                 f"[请如实告知用户数据获取失败，建议：1. 检查股票代码是否正确 2. 稍后重试 "
@@ -806,10 +1068,20 @@ def _extract_stock_context(user_message):
             for ev in news_events[:5]:
                 parts.append(f"  [{ev.get('sentiment','neutral')}] {ev.get('title','')}")
 
+        # ── 日级别评分 ──
+        ds = _get_daily_score_info(code)
+        if ds:
+            parts.extend([
+                "",
+                "▸ 日级别评分（盘后全市场扫描）",
+                f"日综合{ds['combined_score']} | 技术{ds['signal_score']} + 情绪{ds['sentiment_score']} + 因子{ds['factor_score']}",
+                f"全市场排名: #{ds['rank']}/{ds['total']} (前{ds['rank_pct']}%) | 信号: {ds['signal_names']}",
+            ])
+
         parts.extend([
             "",
             "▸ 综合评分",
-            f"技术{deep.get('tech_score',0)} + 情绪{deep.get('sentiment_score',0)} + 因子{deep.get('factor_score',0)} = 综合{deep.get('combined_score',0)}",
+            f"盘中技术{deep.get('tech_score',0)} + 情绪{deep.get('sentiment_score',0)} + 因子{deep.get('factor_score',0)} = 综合{deep.get('combined_score',0)}",
             f"信号强度 {deep.get('max_signal_level',0)}级 / {deep.get('signal_count',0)}个",
             "",
             "上方K线表格是本诊断的核心数据源——近期量价分析必须:",
@@ -822,6 +1094,10 @@ def _extract_stock_context(user_message):
         ctx = '\n'.join(parts)
         return ctx, kline_csv
     except Exception as e:
+        fallback = _build_daily_fallback_context(code)
+        if fallback:
+            logger.info("StockContext: 数据异常，日评分兜底 %s", code)
+            return fallback, ""
         logger.warning("个股数据获取失败 %s: %s", code, e)
         return (
             f"[个股数据获取异常: {e}]\\n"
@@ -907,19 +1183,25 @@ def api_stock_diagnose():
         kline = shared_kline
         kline_stats = {}
         kline_table = ""
+        kline_events_list = []  # 供前端高亮的事件列表
         if kline is not None and len(kline) >= 5:
-            low_20 = round(float(kline['low'].tail(20).min()), 2)
-            high_20 = round(float(kline['high'].tail(20).max()), 2)
-            avg_amount = round(float((kline['volume'].tail(20) * kline['close'].tail(20) / 1e8).mean()), 1)
-            pct_from_low = round(float((kline['close'].iloc[-1] - low_20) / low_20 * 100), 1)
+            # 事件标注（与 _extract_stock_context 同源）
+            annotations, evt_stats = _analyze_kline_events(kline)
+            low_20 = evt_stats.get('low_20', round(float(kline['low'].tail(20).min()), 2))
+            high_20 = evt_stats.get('high_20', round(float(kline['high'].tail(20).max()), 2))
+            avg_amount = evt_stats.get('avg_amount',
+                round(float((kline['volume'].tail(20) * kline['close'].tail(20) / 1e8).mean()), 1))
+            pct_from_low = evt_stats.get('pct_from_low',
+                round(float((kline['close'].iloc[-1] - low_20) / low_20 * 100), 1))
             kline_stats = {"low_20": low_20, "high_20": high_20,
                            "avg_amount": avg_amount, "pct_from_low": pct_from_low}
 
-            # 生成 K 线文本表格
+            # 生成 K 线文本表格（含事件标注）
             recent = kline.tail(18)
+            kline_n = len(kline)
             lines = ["  日期     开盘   收盘    涨幅%     成交额"]
             lines.append("─" * 55)
-            for _, row in recent.iterrows():
+            for row_idx, (_, row) in enumerate(recent.iterrows()):
                 td = str(row.get('trade_date', ''))[:10]
                 if '-' in td:
                     parts = td.split('-')
@@ -930,7 +1212,18 @@ def api_stock_diagnose():
                 c = float(row.get('close', 0))
                 chg = ((c - o) / o * 100) if o > 0 else 0
                 amount = float(row.get('volume', 0)) * c / 1e8
-                lines.append(f"  {date_str}  {o:>7.2f} {c:>7.2f}  {chg:>+6.1f}%  {amount:>5.0f}亿")
+
+                # 事件标注
+                global_idx = kline_n - len(recent) + row_idx
+                tags = annotations.get(global_idx, [])
+                tag_str = ('  ← ' + ' '.join(tags)) if tags else ''
+                if tags:
+                    kline_events_list.append({"date": date_str, "tags": tags})
+
+                lines.append(
+                    f"  {date_str}  {o:>7.2f} {c:>7.2f}  "
+                    f"{chg:>+6.1f}%  {amount:>5.0f}亿{tag_str}"
+                )
             lines.append("─" * 55)
             lines.append(f"  20日最低 {low_20}  20日最高 {high_20}  "
                          f"20日均额 {avg_amount}亿  距底 {pct_from_low}%")
@@ -990,6 +1283,7 @@ def api_stock_diagnose():
             "net_main": None,
             "kline_table": kline_table,
             "kline_stats": kline_stats,
+            "kline_events": kline_events_list,
             "signals": [{"level": s.get("level", 1), "name": s.get("name", ""),
                          "desc": s.get("desc", "")}
                         for s in deep.get("signals", scan.get("all_signals", []))],
@@ -1010,10 +1304,146 @@ def api_stock_diagnose():
             "signal_names": deep.get("signal_names", []),
             "summary": deep.get("summary", ""),
             "pool": pool,
+            "daily_score": _get_daily_score_info(code),
         })
     except Exception as e:
         logger.error("个股诊断失败: %s", e)
         return jsonify({"error": str(e)}), 500
+
+
+# ── 板块诊断端点 ──────────────────────────────────────────────
+
+@app.route("/api/sector/diagnose")
+def api_sector_diagnose():
+    """板块诊断 - 返回板块资金流时序 + 排名数据供卡片渲染。"""
+    name = request.args.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "请指定板块名称"}), 400
+
+    # 查找板块时序数据
+    ts_data = collector.get_sector_timeseries(name, recent_minutes=60) if collector else {}
+
+    # 当前排名
+    rank = None
+    total = 0
+    dash = collector.get_dashboard_data(sector_type="watch") if collector else {}
+    rank_list = dash.get("rank", [])
+    total = len(rank_list)
+    for i, r in enumerate(rank_list):
+        if r.get("name") == name:
+            rank = i + 1
+            break
+
+    # 从 collector 获取板块成分股 top 资金流入
+    constituents = []
+    try:
+        const = collector.get_sector_constituents(name) if hasattr(collector, 'get_sector_constituents') else []
+        constituents = [{"code": c.get("code",""), "name": c.get("name",""),
+                        "pct": c.get("pct_chg",0), "net_main": c.get("net_main",0)}
+                       for c in const[:8]]
+    except Exception:
+        pass
+
+    return jsonify({
+        "name": name,
+        "timeseries": ts_data,
+        "rank": rank,
+        "total": total,
+        "constituents": constituents,
+    })
+
+
+# ── 持仓陪跑端点 ──────────────────────────────────────────────
+
+@app.route("/api/holdings/analyze", methods=["POST"])
+def api_holdings_analyze():
+    """持仓陪跑分析 — 用户输入持仓信息，Agent 分析操作策略。"""
+    body = request.get_json(silent=True) or {}
+    positions = body.get("positions", [])
+    if not positions:
+        return jsonify({"error": "请提供持仓信息"}), 400
+
+    # 为每只持仓获取实时数据
+    enriched = []
+    try:
+        from layer1_data.fetcher import DataFetcher
+        from layer2_scan.screener import StockScreener
+        from layer4_analysis.analyzer import StockAnalyzer
+        fetcher = DataFetcher()
+        screener = StockScreener(fetcher=fetcher)
+        analyzer = StockAnalyzer(fetcher=fetcher)
+
+        for pos in positions:
+            code = pos.get("code", "").strip()
+            if not code or not re.match(r'^\d{6}$', code):
+                continue
+            entry = {
+                "code": code,
+                "cost": float(pos.get("cost", 0)),
+                "shares": int(pos.get("shares", 0)),
+                "weight": float(pos.get("weight", 0)),
+            }
+            # 获取实时数据
+            try:
+                scan = screener.quick_scan(code)
+                if "error" not in scan:
+                    shared_kline = scan.get("kline")
+                    deep = analyzer.analyze_stock(code, kline=shared_kline)
+                    mk = fetcher.current_market([code])
+                    name = str(mk.iloc[0].get("short_name", "")) if mk is not None and not mk.empty else ""
+                    entry["name"] = name
+                    entry["price"] = deep.get("price")
+                    entry["change_pct"] = deep.get("change_pct")
+                    entry["signals"] = [s.get("name") for s in deep.get("signals", [])[:3]]
+                    entry["combined_score"] = deep.get("combined_score")
+                    entry["support"] = deep.get("support")
+                    entry["resistance"] = deep.get("resistance")
+                    entry["summary"] = deep.get("summary", "")
+                    # 盈亏计算
+                    if entry["price"] and entry["cost"]:
+                        entry["pnl_pct"] = round((entry["price"] - entry["cost"]) / entry["cost"] * 100, 1)
+                        entry["pnl_amount"] = round((entry["price"] - entry["cost"]) * entry["shares"], 0)
+            except Exception as e:
+                entry["error"] = str(e)
+            enriched.append(entry)
+    except Exception as e:
+        logger.error("持仓分析数据获取失败: %s", e)
+
+    # Agent 分析
+    store = get_signal_store()
+    signals = store.get_all()
+    data = select_stocks(collector=collector)
+    hot_sectors = data.get("hot_sectors", [])
+
+    agent = get_agent()
+    context = json.dumps({
+        "positions": enriched,
+        "market_breadth": data.get("market_breadth", 0.5),
+        "risk_level": data.get("risk_level", "low"),
+        "hot_sectors": hot_sectors[:5],
+        "sentiment": signals.get("sentiment", {}).get("data", {}).get("market", {}),
+    }, ensure_ascii=False, indent=2)
+
+    user_msg = (
+        f"我有以下持仓，请逐一分析操作策略：\n\n{context}\n\n"
+        "对每只持仓输出：持仓诊断→操作建议（持有/加仓/减仓/清仓）→目标价→止损价→仓位调整建议。"
+        "操作建议必须使用严格格式：操作: 持有/加仓/减仓/清仓  目标: X.XX  止损: X.XX  仓位调整: 文字说明"
+    )
+
+    reply = agent.chat(
+        user_msg, [], hot_sectors, signals, [],
+        stock_context="",
+    )
+
+    return jsonify({
+        "positions": enriched,
+        "analysis": reply or "Agent 暂时不可用",
+        "market_context": {
+            "breadth": data.get("market_breadth", 0.5),
+            "risk_level": data.get("risk_level", "low"),
+            "hot_sectors": hot_sectors[:5],
+        },
+    })
 
 
 # ── Multi-Agent 辩论端点 ───────────────────────────────

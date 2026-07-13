@@ -22,6 +22,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
+from collections import Counter
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -46,15 +47,15 @@ SYSTEM_PROMPT = """你是 A 股超短线交易决策顾问「观澜」，专精 
 ```
 **{股票名}({代码}) 实时诊断**
 
-▸ 量价数据
-现价/涨跌/量比/换手/振幅  主力净流入/净占比  日内位置(高位/中位/低位)
-
-▸ 近期量价分析（结合上方K线历史表格）
+▸ K线量价分析（结合上方K线历史表格）
 逐段分析近18日量价演变，必须引用具体日期和标注事件：
 - 最近5日: 描述量价趋势（放量上攻/缩量回调/横盘整理）
 - 关键转折: 逐一解释标注事件（底部区域→开始筑底 / 放量启动→资金进场 / 洗盘→震仓吸筹 / 反包→多头反击 / 加速→主升段 / 天量→分歧加大）
 - 量价配合演变: 从早期到现在的量价关系变化
 - 操作线索: 从历史量价中总结2-3条交易信号
+
+▸ 量价数据
+现价/涨跌/量比/换手/振幅  主力净流入/净占比  日内位置(高位/中位/低位)
 
 ▸ 技术研判
 走势结构: 【放量突破/回踩企稳/横盘震荡/下跌趋势】+ 理由
@@ -71,9 +72,13 @@ SYSTEM_PROMPT = """你是 A 股超短线交易决策顾问「观澜」，专精 
 盘中/日评/聚合  池排名  情绪面/消息面加减分
 
 ▸ 操作建议
-入场区间: X.XX-X.XX  目标: X.XX  止损: X.XX
-仓位: 轻(1-2成)/中(3-4成)/重(5成+) + 理由
-持有周期: X天  风险等级: 低/中/高
+必须严格使用以下格式，每行一个字段，不可省略任何字段：
+入场区间: X.XX-X.XX
+目标: X.XX
+止损: X.XX
+仓位: 轻仓(1-2成)/中仓(3-4成)/重仓(5成+)
+持有周期: X天
+风险等级: 低/中/高
 
 ▸ 一句话
 一句话操作建议
@@ -112,6 +117,16 @@ SYSTEM_PROMPT = """你是 A 股超短线交易决策顾问「观澜」，专精 
 - 有 K 线就必须分析均线排列、量价关系、支撑阻力——这些不依赖实时行情
 - 无实时行情时用最近 K 线收盘价，标注「基于最近收盘价 X.XX」
 - 即使只有 1 根 K 线也要给出判断，不要放弃
+- 操作建议必须严格按6行格式输出（入场区间/目标/止损/仓位/持有周期/风险等级），每行一个字段
+
+## 输出质量自检（输出前逐条过，不通过则重写）
+1. 每句结论是否有上下文数据支撑？无数据支撑的句子→删除
+2. 是否用了「可能」「或许」「大概」等模糊词？→改为基于数据的明确判断
+3. 关键价格/点位/百分比是否都给了具体数字？缺→补上
+4. 操作建议6行格式是否完整（入场区间/目标/止损/仓位/持有周期/风险等级）？缺→补全
+5. 是否有超过2句泛泛而谈的废话？有→删掉改为具体分析
+6. 是否有emoji？有→删除
+以上6条全部通过才能输出。不通过则重新组织输出。
 """
 
 # 盘前简报专用 prompt（结构不同，保持独立）
@@ -189,6 +204,24 @@ INTRA_PICKS_PROMPT = """你是 A 股超短线交易顾问「观澜」，正在�
 class ContextBuilder:
     """将原始数据构建为 Agent 可理解的结构化上下文。"""
 
+
+    @staticmethod
+    def _stock_card(s: dict, pool: str) -> dict:
+        """单只股票的结构化卡片。"""
+        return {
+            "代码": s.get("code", ""),
+            "名称": s.get("name", ""),
+            "池": f"{pool}池",
+            "板块": s.get("sector", ""),
+            "涨跌": f"{s.get('pct_chg', 0):+.1f}%",
+            "盘中评分": s.get("score", 0),
+            "日评分": s.get("daily_combined_score"),
+            "信号": s.get("signal", "?"),
+            "量比": s.get("volume_ratio", 0),
+            "主力净占比": f"{s.get('net_main_ratio', 0):+.1f}%",
+            "日内位置": f"{s.get('intraday_position', 0):.2f}",
+        }
+
     @staticmethod
     def build_intraday_context(
         candidates: list[dict],
@@ -206,8 +239,8 @@ class ContextBuilder:
                 "上涨板块占比": f"{int(breadth * 100)}%",
                 "热板块": hot_sectors[:8] if hot_sectors else [],
             },
-            "pool_a_top5": [_stock_card(s, "A") for s in top_a],
-            "pool_b_top5": [_stock_card(s, "B") for s in top_b],
+            "pool_a_top5": [ContextBuilder._stock_card(s, "A") for s in top_a],
+            "pool_b_top5": [ContextBuilder._stock_card(s, "B") for s in top_b],
         }
 
         sent_data = signals.get("sentiment", {}).get("data", {})
@@ -230,47 +263,61 @@ class ContextBuilder:
 
         return json.dumps(ctx, ensure_ascii=False, indent=2)
 
+
+
     @staticmethod
-    def build_stock_analysis_context(scan: dict) -> str:
-        """构建个股深度分析上下文（来自 screener.quick_scan）。"""
-        if not scan or "error" in scan:
-            return json.dumps({"error": scan.get("error", "数据不可用")})
+    def build_pre_market_context(indices, breadth, anomalies, hot_sectors):
+        """构建盘前上下文。"""
+        env = {"overnight_indices": {}, "auction_breadth": {}}
+        for idx in indices:
+            pct = idx.get("pct_chg")
+            if pct is None:
+                env["overnight_indices"][idx["name"]] = "数据不可用"
+                continue
+            if pct > 2: label = "大涨"
+            elif pct > 0.5: label = "上涨"
+            elif pct > 0.1: label = "微涨"
+            elif pct > -0.1: label = "持平"
+            elif pct > -0.5: label = "微跌"
+            elif pct > -2: label = "下跌"
+            else: label = "大跌"
+            env["overnight_indices"][idx["name"]] = f"{label} ({pct:+.1f}%)"
+
+        if breadth.get("status") != "no_data":
+            env["auction_breadth"] = {
+                "上涨占比": f"{int(breadth.get('up_ratio', 0) * 100)}%",
+                "中位数涨跌": f"{breadth.get('median_pct', 0):+.1f}%",
+            }
+
+        anomaly_list = []
+        for a in anomalies[:5]:
+            entry = {"code": a.get("code",""), "name": a.get("name",""),
+                     "pct": f"{a.get('pct_chg',0):+.1f}%",
+                     "vol_ratio": f"{a.get('volume_ratio',0):.1f}x"}
+            tags = []
+            if a.get("gap", 0) > 5: tags.append("跳空高开")
+            elif a.get("gap", 0) > 2: tags.append("显著高开")
+            if a.get("volume_ratio", 0) > 5: tags.append("极度放量")
+            if tags: entry["tags"] = "|".join(tags)
+            anomaly_list.append(entry)
+
+        sector_list = []
+        for s in hot_sectors[:6]:
+            net = s.get("net_main", 0)
+            flow = "大幅流入" if net > 5 else ("流入" if net > 1 else ("持平" if net > -1 else "流出"))
+            sector_list.append({
+                "name": s.get("name",""),
+                "pct": f"{s.get('pct_chg',0):+.1f}%",
+                "fund_flow": f"{flow} {net:+.1f}亿",
+            })
 
         ctx = {
-            "stock_code": scan.get("stock_code", ""),
-            "price": scan.get("price"),
-            "change_pct": scan.get("change_pct"),
-            "ma5": round(scan.get("ma5", 0), 2),
-            "ma10": round(scan.get("ma10", 0), 2),
-            "ma20": round(scan.get("ma20", 0), 2),
-            "support": scan.get("support"),
-            "resistance": scan.get("resistance"),
-            "combined_score": scan.get("combined_score"),
-            "tech_score": scan.get("tech_score"),
-            "sentiment_score": scan.get("sentiment_score"),
-            "factor_score": scan.get("factor_score"),
-            "signal_names": scan.get("signal_names", []),
-            "concepts": scan.get("concepts", []),
-            "summary": scan.get("summary", ""),
+            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "market_env": env,
+            "anomalies": anomaly_list,
+            "hot_sectors": sector_list,
         }
         return json.dumps(ctx, ensure_ascii=False, indent=2)
-
-
-def _stock_card(s: dict, pool: str) -> dict:
-    """单只股票的结构化卡片。"""
-    return {
-        "代码": s.get("code", ""),
-        "名称": s.get("name", ""),
-        "池": f"{pool}池",
-        "板块": s.get("sector", ""),
-        "涨跌": f"{s.get('pct_chg', 0):+.1f}%",
-        "盘中评分": s.get("score", 0),
-        "日评分": s.get("daily_combined_score"),
-        "信号": s.get("signal", "?"),
-        "量比": s.get("volume_ratio", 0),
-        "主力净占比": f"{s.get('net_main_ratio', 0):+.1f}%",
-        "日内位置": f"{s.get('intraday_position', 0):.2f}",
-    }
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -323,7 +370,6 @@ class DecisionAgent:
         signals: dict,
         chat_history: list[dict] = None,
         stock_context: str = "",
-        stock_kline: str = "",
         sector_timeseries: str = "",
     ) -> Optional[str]:
         """多轮对话——智能体核心入口。
@@ -346,14 +392,8 @@ class DecisionAgent:
         type_hints = {
             "stock_analysis": (
                 "\n\n## 当前任务：个股诊断\n"
-                "用户正在询问一只具体股票。优先使用提供的实时数据做完整诊断。\n"
-                "严格按照个股诊断结构输出：量价数据→近期量价分析→技术研判→资金面→综合评分→操作建议→一句话。\n"
-                "量价数据必须包含：现价、涨跌幅、量比、换手率、振幅、主力净流入/净占比、日内位置。\n"
-                "近期量价分析必须引用K线历史表中的具体日期和价格数据，逐段分析关键转折。\n"
-                "技术研判包含：走势结构（震荡/趋势/突破）、关键支撑阻力位、均线状态、触发信号。\n"
-                "资金面包含：主力态度、量价配合判断、板块资金环境。\n"
-                "综合评分包含：盘中评分、日评分、池排名、情绪面/消息面影响。\n"
-                "操作建议必须有具体的入场区间、目标价、止损价、仓位建议、持有周期、风险等级。\n"
+                "用户正在询问一只具体股票。严格按照 SYSTEM_PROMPT 中定义的个股诊断结构输出。\n"
+                "特别提醒：K线历史表格已在前端展示，分析时引用其中的具体日期和标注事件。\n"
                 "如果没有实时数据，用K线最后收盘价兜底，并在数据源中标注。\n"
                 "风险提示要具体（如 '日内位置0.85偏高，追高需等回调3%以上再入场'）。\n"
                 "禁止使用任何emoji。禁止说「数据不足」「无法获取」「无法判断」。"
@@ -425,14 +465,110 @@ class DecisionAgent:
             logger.warning("Chat 调用失败: %s", e)
             return None
 
+    def chat_stream(
+        self,
+        user_message: str,
+        candidates: list[dict],
+        hot_sectors: list[str],
+        signals: dict,
+        chat_history: list[dict] = None,
+        stock_context: str = "",
+        sector_timeseries: str = "",
+    ):
+        """流式多轮对话——逐 chunk 返回，消除首字等待时间。
+
+        与 chat() 使用相同的 prompt 构建逻辑，但通过 stream=True
+        逐个 yield content delta。前端通过 SSE 接收，实现渐进式渲染。
+        """
+        if not self._init_client():
+            yield None
+            return
+
+        question_type = self._classify_question(user_message)
+        intra_ctx = ContextBuilder.build_intraday_context(
+            candidates, hot_sectors, signals, 0.5
+        )
+        type_hints = {
+            "stock_analysis": (
+                "\n\n## 当前任务：个股诊断\n"
+                "用户正在询问一只具体股票。严格按照 SYSTEM_PROMPT 中定义的个股诊断结构输出。\n"
+                "特别提醒：K线历史表格已在前端展示，分析时引用其中的具体日期和标注事件。\n"
+                "如果没有实时数据，用K线最后收盘价兜底，并在数据源中标注。\n"
+                "风险提示要具体。禁止使用任何emoji。禁止说「数据不足」「无法获取」「无法判断」。"
+            ),
+            "sector_analysis": (
+                "\n\n## 当前任务：板块分析\n"
+                "用户正在询问板块情况。如有板块资金流时序数据，分析趋势演变。\n"
+                "分析结构：板块资金流向→强度排名→资金流时序趋势→龙头个股→持续性判断→操作策略。\n"
+                "必须引用具体的资金流入/流出数字、排名变化、时间节点。输出内容紧凑有力，控制在500字以内。"
+            ),
+            "market_analysis": (
+                "\n\n## 当前任务：大盘研判\n"
+                "用户正在询问市场整体情况。\n"
+                "分析结构：市场广度→情绪指标→资金主线→风险等级→仓位建议→关键点位。\n"
+                "根据广度给出明确的进攻/防守/均衡建议和具体仓位比例。控制在400字以内。"
+            ),
+            "external_info": (
+                "\n\n## 当前任务：外围信息分析\n"
+                "分析隔夜外盘对A股影响。结构：隔夜美股→港股→A50→受益/承压板块→今日策略预判。"
+            ),
+            "holding_decision": (
+                "\n\n## 当前任务：持股交易决策\n"
+                "用户持有某只股票，需要交易决策辅助。\n"
+                "分析结构：持仓诊断（成本/盈亏/趋势）→当前信号评估→止盈止损位→仓位调整建议→操作方案。\n"
+                "必须给出明确的操作建议，不能模棱两可。考虑用户可能已在亏损状态，给出心理层面的交易纪律提醒。"
+            ),
+            "stock_pick": (
+                "\n\n## 当前任务：选股推荐\n"
+                "从候选池筛选Top 3，每只给入场/止损/目标/仓位/理由。说明选股逻辑。"
+            ),
+            "general": (
+                "\n\n## 当前任务：通用咨询\n"
+                "回答用户的交易相关问题。有数据时引用具体数据，无数据时给出通用原则和操作框架。\n"
+                "重要：如果用户消息中包含6位数字（股票代码），但你收到的上下文中没有该股票的实时数据，"
+                "说明数据获取暂时失败。此时必须回复「数据获取失败，请稍后重试或检查股票代码」，"
+                "绝对禁止输出SYSTEM_PROMPT中的模板格式、占位符(X.XX)或未填充的字段名。"
+            ),
+        }
+        hint = type_hints.get(question_type, type_hints["general"])
+        system_msg = SYSTEM_PROMPT + hint + "\n\n=== 当前盘中数据 ===\n" + intra_ctx
+
+        if stock_context:
+            system_msg += "\n\n=== 用户询问的股票实时数据 ===\n" + stock_context
+            system_msg += "\n请基于以上实时数据进行完整诊断分析。"
+
+        if sector_timeseries:
+            system_msg += "\n\n=== 板块资金流时序数据 ===\n" + sector_timeseries
+            system_msg += "\n请结合以上资金流时序数据分析板块趋势。"
+
+        messages = [{"role": "system", "content": system_msg}]
+        if chat_history:
+            messages.extend(chat_history[-20:])
+        messages.append({"role": "user", "content": user_message})
+
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                temperature=0.5,
+                max_tokens=2000,
+                stream=True,
+            )
+            for chunk in resp:
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    yield delta.content
+        except Exception as e:
+            logger.warning("Chat Stream 调用失败: %s", e)
+            yield None
+
     @staticmethod
     def _classify_question(msg: str) -> str:
         """根据用户消息判断问题类型。"""
-        msg_lower = msg.lower()
-        # 个股诊断：包含6位数字代码
-        if re.search(r'\b\d{6}\b', msg):
-            return "stock_analysis"
+        has_stock_code = bool(re.search(r'(?<!\d)\d{6}(?!\d)', msg))
+
         # 持股决策：持有/持仓/买入/卖出/止损/止盈/加仓/减仓/清仓
+        # 必须排在个股诊断之前，以防"加仓 600519"被误判为 stock_analysis
         if any(kw in msg for kw in ["持有", "持仓", "买入", "卖出", "止损", "止盈",
                                       "加仓", "减仓", "清仓", "割肉", "解套", "补仓",
                                       "该不该卖", "该不该买", "还能拿", "要不要走"]):
@@ -442,6 +578,9 @@ class DecisionAgent:
                                       "汇率", "海外", "外围", "纳斯达克", "标普", "道指",
                                       "恒生", "富时", "夜盘"]):
             return "external_info"
+        # 个股诊断：包含6位数字代码（排在 holding_decision/external_info 之后）
+        if has_stock_code:
+            return "stock_analysis"
         # 板块分析
         if any(kw in msg for kw in ["板块", "行业", "概念", "赛道", "热点"]):
             return "sector_analysis"
@@ -460,7 +599,7 @@ class DecisionAgent:
     # ── 盘前简报 ──────────────────────────────────────────────
 
     def generate_pre_market_brief(
-        self, indices, breadth, anomalies, hot_sectors, key_stocks_context=""
+        self, indices, breadth, anomalies, hot_sectors
     ) -> Optional[dict]:
         if not self._init_client():
             return None
@@ -514,7 +653,7 @@ class DecisionAgent:
 
         messages = [{"role": "system", "content": INTRA_PICKS_PROMPT}]
         if chat_history:
-            messages = messages + list(chat_history[-10:])
+            messages.extend(chat_history[-10:])
         messages.append({"role": "user", "content": user_msg})
 
         try:
@@ -568,6 +707,7 @@ class DecisionAgent:
         valid_codes = {c.get("code", "") for c in candidates}
         valid_signals = {c.get("code", ""): c.get("signal", "") for c in candidates}
         valid_pct = {c.get("code", ""): c.get("pct_chg", 0) for c in candidates}
+        cand_by_code = {c.get("code", ""): c for c in candidates}
 
         result = []
         for p in picks:
@@ -587,15 +727,14 @@ class DecisionAgent:
             if signal in ("弱势回避", "高位风险"):
                 p["confidence"] = max(1, (p.get("confidence") or 3) - 2)
                 p["risk_note"] = (p.get("risk_note") or "") + " | 信号偏弱"
-            # 主力流出降权
-            for c in candidates:
-                if c.get("code") == code and (c.get("net_main_ratio") or 0) < 0:
-                    p["confidence"] = max(1, (p.get("confidence") or 3) - 1)
-                    p["risk_note"] = (p.get("risk_note") or "") + " | 主力流出"
+            # 主力流出降权（O(1) 查找）
+            cand = cand_by_code.get(code)
+            if cand and (cand.get("net_main_ratio") or 0) < 0:
+                p["confidence"] = max(1, (p.get("confidence") or 3) - 1)
+                p["risk_note"] = (p.get("risk_note") or "") + " | 主力流出"
             result.append(p)
 
         # 板块集中度控制
-        from collections import Counter
         sector_count = Counter()
         validated = []
         for p in result:
@@ -669,67 +808,6 @@ def agent_brief_to_markdown(brief: dict) -> str:
     return "\n".join(lines)
 
 
-# ═══════════════════════════════════════════════════════════════
-# ContextBuilder 静态方法（盘前）
-# ═══════════════════════════════════════════════════════════════
-
-@staticmethod
-def _build_pre_market_context(indices, breadth, anomalies, hot_sectors):
-    """构建盘前上下文。"""
-    env = {"overnight_indices": {}, "auction_breadth": {}}
-    for idx in indices:
-        pct = idx.get("pct_chg")
-        if pct is None:
-            env["overnight_indices"][idx["name"]] = "数据不可用"
-            continue
-        if pct > 2: label = "大涨"
-        elif pct > 0.5: label = "上涨"
-        elif pct > 0.1: label = "微涨"
-        elif pct > -0.1: label = "持平"
-        elif pct > -0.5: label = "微跌"
-        elif pct > -2: label = "下跌"
-        else: label = "大跌"
-        env["overnight_indices"][idx["name"]] = f"{label} ({pct:+.1f}%)"
-
-    if breadth.get("status") != "no_data":
-        env["auction_breadth"] = {
-            "上涨占比": f"{int(breadth.get('up_ratio', 0) * 100)}%",
-            "中位数涨跌": f"{breadth.get('median_pct', 0):+.1f}%",
-        }
-
-    anomaly_list = []
-    for a in anomalies[:5]:
-        entry = {"code": a.get("code",""), "name": a.get("name",""),
-                 "pct": f"{a.get('pct_chg',0):+.1f}%",
-                 "vol_ratio": f"{a.get('volume_ratio',0):.1f}x"}
-        tags = []
-        if a.get("gap", 0) > 5: tags.append("跳空高开")
-        elif a.get("gap", 0) > 2: tags.append("显著高开")
-        if a.get("volume_ratio", 0) > 5: tags.append("极度放量")
-        if tags: entry["tags"] = "|".join(tags)
-        anomaly_list.append(entry)
-
-    sector_list = []
-    for s in hot_sectors[:6]:
-        net = s.get("net_main", 0)
-        flow = "大幅流入" if net > 5 else ("流入" if net > 1 else ("持平" if net > -1 else "流出"))
-        sector_list.append({
-            "name": s.get("name",""),
-            "pct": f"{s.get('pct_chg',0):+.1f}%",
-            "fund_flow": f"{flow} {net:+.1f}亿",
-        })
-
-    ctx = {
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "market_env": env,
-        "anomalies": anomaly_list,
-        "hot_sectors": sector_list,
-    }
-    return json.dumps(ctx, ensure_ascii=False, indent=2)
-
-
-# 挂到 ContextBuilder 上
-ContextBuilder.build_pre_market_context = staticmethod(_build_pre_market_context)
 
 
 # ═══════════════════════════════════════════════════════════════

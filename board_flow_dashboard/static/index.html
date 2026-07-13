@@ -343,15 +343,19 @@ body {
   overflow: hidden; margin: 4px 0;
 }
 .diag-header {
-  padding: 16px 20px; background: linear-gradient(135deg, rgba(0,113,227,0.06), rgba(103,80,164,0.04));
+  padding: 18px 20px; background: linear-gradient(135deg, rgba(0,113,227,0.08), rgba(103,80,164,0.05));
   display: flex; align-items: baseline; gap: 12px; border-bottom: 1px solid var(--border-light);
 }
 .diag-header .diag-name { font-size: 16px; font-weight: 700; color: var(--text); }
 .diag-header .diag-code { font-size: 12px; color: var(--text-tertiary); font-family: var(--font-mono); }
 .diag-header .diag-price { font-size: 22px; font-weight: 700; color: var(--text); margin-left: auto; font-family: var(--font-mono); }
-.diag-header .diag-pct { font-size: 14px; font-weight: 600; padding: 2px 8px; border-radius: 6px; }
+.diag-header .diag-pct { font-size: 14px; font-weight: 600; padding: 3px 10px; border-radius: 6px; }
 .diag-pct.up { background: var(--red-light); color: var(--red); }
 .diag-pct.down { background: var(--green-light); color: var(--green); }
+.diag-header .diag-notice {
+  font-size: 10px; padding: 2px 8px; border-radius: 99px;
+  background: rgba(245,158,11,0.12); color: var(--orange); font-weight: 600;
+}
 
 .diag-kline { padding: 0; border-bottom: 1px solid var(--border-light); }
 .diag-kline summary {
@@ -364,51 +368,182 @@ body {
   line-height: 1.6; color: var(--text-secondary); background: #faf9fd;
   overflow-x: auto; white-space: pre;
 }
+.diag-kline-events {
+  display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 20px 12px;
+  background: var(--surface); border-top: 1px solid var(--border-light);
+}
+.diag-kline-event {
+  display: flex; align-items: center; gap: 4px; font-size: 10px;
+}
+.diag-kline-event .event-date {
+  font-family: var(--font-mono); color: var(--text-tertiary);
+  background: var(--surface-container); padding: 2px 6px; border-radius: 4px;
+}
+.diag-kline-event .event-tag {
+  padding: 2px 7px; border-radius: 99px; font-weight: 600; font-size: 9px;
+  background: rgba(0,113,227,0.08); color: var(--accent);
+}
 
 .diag-metrics {
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
   background: var(--border-light); border-bottom: 1px solid var(--border-light);
 }
 .diag-metric {
-  background: var(--card); padding: 12px 10px; text-align: center;
+  background: var(--card); padding: 16px 10px; text-align: center; transition: background 0.15s;
 }
-.diag-metric .metric-val { font-size: 16px; font-weight: 700; font-family: var(--font-mono); color: var(--text); }
-.diag-metric .metric-label { font-size: 10px; color: var(--text-tertiary); margin-top: 2px; }
+.diag-metric:hover { background: rgba(0,113,227,0.02); }
+.diag-metric .metric-val { font-size: 18px; font-weight: 700; font-family: var(--font-mono); color: var(--text); letter-spacing: -0.3px; }
+.diag-metric .metric-label { font-size: 10px; color: var(--text-tertiary); margin-top: 5px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
 
-.diag-section { padding: 14px 20px; border-bottom: 1px solid var(--border-light); }
+/* Section headers with SVG icons */
+.diag-section { padding: 18px 20px; border-bottom: 1px solid var(--border-light); }
 .diag-section:last-child { border-bottom: none; }
-.diag-section h4 { font-size: 12px; font-weight: 600; color: var(--accent); margin-bottom: 8px; letter-spacing: 0.3px; }
-.diag-section p, .diag-section li { font-size: 12.5px; line-height: 1.7; color: var(--text-secondary); margin: 0; }
-.diag-section ul { padding-left: 16px; margin: 4px 0; }
-.diag-section li { margin-bottom: 2px; }
+.diag-section h4 {
+  font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 10px;
+  letter-spacing: 0.2px; display: flex; align-items: center; gap: 7px;
+}
+.diag-section h4 .diag-section-icon { width: 16px; height: 16px; flex-shrink: 0; }
+.diag-section h4 .diag-section-icon svg { width: 16px; height: 16px; }
+.diag-section p { font-size: 13px; line-height: 1.8; color: var(--text-secondary); margin: 0 0 6px; }
+.diag-section p:last-child { margin-bottom: 0; }
+.diag-section li { font-size: 13px; line-height: 1.8; color: var(--text-secondary); margin-bottom: 4px; }
+.diag-section ul { padding-left: 18px; margin: 6px 0; list-style: none; }
+.diag-section li { margin-bottom: 5px; position: relative; padding-left: 10px; }
+.diag-section li::before { content: ''; position: absolute; left: -14px; top: 10px; width: 5px; height: 5px; background: var(--accent); border-radius: 50%; opacity: 0.5; }
 
-.diag-signals { display: flex; flex-wrap: wrap; gap: 6px; }
+/* K-line analysis section — primary highlight */
+.diag-section.kline-analysis {
+  background: linear-gradient(135deg, rgba(0,113,227,0.03), transparent);
+  border-left: 3px solid var(--accent); padding-left: 17px;
+}
+.diag-section.kline-analysis h4 { color: var(--accent); font-size: 13px; }
+
+/* Signal tags with level colors */
+.diag-signals { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 20px 14px 20px; }
 .diag-signal {
-  font-size: 11px; padding: 4px 10px; border-radius: 99px;
-  background: var(--accent-light); color: var(--accent); font-weight: 500;
+  font-size: 11px; padding: 5px 11px; border-radius: 99px; font-weight: 600; letter-spacing: 0.2px;
 }
+.diag-signal.lv5 { background: rgba(186,26,26,0.12); color: var(--red); font-weight: 700; }
+.diag-signal.lv4 { background: rgba(245,158,11,0.12); color: #b45309; font-weight: 700; }
+.diag-signal.lv3 { background: var(--accent-light); color: var(--accent); font-weight: 600; }
+.diag-signal.lv2, .diag-signal.lv1 { background: var(--surface-container); color: var(--text-secondary); }
 
+/* Score bar */
+.diag-score { padding: 14px 20px; border-bottom: 1px solid var(--border-light); }
+.diag-score-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.diag-score-label { font-size: 11px; color: var(--text-tertiary); min-width: 40px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.diag-score-track { flex: 1; height: 8px; background: var(--surface-container); border-radius: 99px; overflow: hidden; }
+.diag-score-fill { height: 100%; border-radius: 99px; transition: width 0.6s ease; }
+.diag-score-fill.high { background: linear-gradient(90deg, var(--red), #e05a2c); box-shadow: 0 1px 3px rgba(186,26,26,0.2); }
+.diag-score-fill.mid { background: linear-gradient(90deg, var(--orange), #e0a800); }
+.diag-score-fill.low { background: linear-gradient(90deg, var(--text-tertiary), #9ca3af); }
+.diag-score-val { font-size: 15px; font-weight: 700; font-family: var(--font-mono); min-width: 32px; text-align: right; color: var(--text); }
+.diag-score-sub { display: flex; flex-wrap: wrap; gap: 14px; font-size: 10px; color: var(--text-tertiary); margin-top: 2px; }
+.diag-score-sub span { font-family: var(--font-mono); display: flex; align-items: center; gap: 3px; }
+
+/* Advice section — actionable chips */
 .diag-advice {
-  margin: 0 20px 20px 20px; padding: 16px; border-radius: 12px;
+  margin: 0 20px 20px 20px; padding: 20px; border-radius: 14px;
   background: linear-gradient(135deg, rgba(245,158,11,0.08), rgba(0,113,227,0.04));
-  border: 1px solid rgba(245,158,11,0.2);
+  border: 1px solid rgba(245,158,11,0.3); box-shadow: 0 2px 8px rgba(245,158,11,0.06);
 }
-.diag-advice h4 { font-size: 13px; font-weight: 700; color: var(--orange); margin-bottom: 8px; }
-.diag-advice-row { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; }
-.diag-advice-row span { font-family: var(--font-mono); font-weight: 600; }
-.diag-advice-row .entry { color: var(--accent); }
-.diag-advice-row .target { color: var(--red); }
-.diag-advice-row .stop { color: var(--green); }
+.diag-advice h4 { font-size: 15px; font-weight: 700; color: var(--orange); margin-bottom: 14px; display: flex; align-items: center; gap: 7px; }
+.diag-advice-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.diag-advice-chip {
+  padding: 7px 14px; border-radius: 10px; font-size: 13px; font-weight: 700;
+  font-family: var(--font-mono); display: flex; align-items: center; gap: 4px;
+}
+.diag-advice-chip.entry { background: var(--accent-light); color: var(--accent); }
+.diag-advice-chip.target { background: var(--red-light); color: var(--red); }
+.diag-advice-chip.stop { background: var(--green-light); color: var(--green); }
+.diag-advice-chip.position { background: rgba(103,80,164,0.08); color: var(--purple); }
+.diag-advice-chip.cycle { background: var(--surface-container); color: var(--text-secondary); }
+.diag-advice-chip.risk { background: rgba(245,158,11,0.1); color: #b45309; }
+.diag-advice-summary { margin-top: 10px; font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
 
+/* Footer one-liner */
 .diag-footer {
   padding: 12px 20px; background: var(--surface); font-size: 12px;
   color: var(--text-secondary); font-style: italic; border-top: 1px solid var(--border-light);
 }
 
+/* ── 流式加载动画 ── */
+.stream-loading { display: flex; align-items: center; gap: 6px; padding: 20px; color: var(--text-tertiary); font-size: 12px; }
+.stream-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: streamPulse 1.2s infinite; }
+.stream-dot:nth-child(2) { animation-delay: 0.2s; }
+.stream-dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes streamPulse { 0%,100%{opacity:0.2;transform:scale(0.8)} 50%{opacity:1;transform:scale(1.2)} }
+
+.diag-stream-content { min-height: 60px; }
+.diag-stream-content .diag-section { animation: fadeSlideIn 0.3s ease; }
+@keyframes fadeSlideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+.stream-bubble { max-width: 100%; }
+.stream-text { font-size: 13px; line-height: 1.7; color: var(--text); }
+.stream-text b { color: var(--text); font-weight: 700; }
+
+/* ── 板块分析卡片 ── */
+.sector-card {
+  background: var(--card); border-radius: 16px; border: 1px solid var(--border-light);
+  box-shadow: var(--shadow); overflow: hidden; margin: 4px 0;
+}
+.sector-card-header {
+  padding: 16px 20px; background: linear-gradient(135deg, rgba(245,158,11,0.08), rgba(255,138,0,0.03));
+  font-size: 15px; font-weight: 700; color: var(--orange);
+  display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border-light);
+}
+.sector-card .diag-section { padding: 14px 20px; border-bottom: 1px solid var(--border-light); }
+.sector-card .diag-section h4 { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.sector-card .diag-section p, .sector-card .diag-section li { font-size: 13px; line-height: 1.75; color: var(--text-secondary); margin: 0; }
+.sector-card-footer {
+  padding: 8px 20px; font-size: 10px; color: var(--text-tertiary);
+  background: var(--surface); display: flex; align-items: center; gap: 4px;
+}
+
+/* ── 持仓陪跑面板 ── */
+.holdings-panel {
+  background: var(--card); border-radius: 16px; border: 1px solid var(--border-light);
+  box-shadow: var(--shadow); overflow: hidden; margin: 4px 0;
+}
+.holdings-panel-header {
+  padding: 16px 20px; font-size: 15px; font-weight: 700; color: var(--accent);
+  display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border-light);
+  background: linear-gradient(135deg, rgba(0,113,227,0.06), rgba(103,80,164,0.03));
+}
+.holdings-form {
+  padding: 16px 20px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+}
+.holdings-form label { font-size: 10px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 4px; }
+.holdings-form input {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--border-light); border-radius: 8px;
+  font-size: 13px; font-family: var(--font-mono); background: var(--surface);
+  color: var(--text); box-sizing: border-box;
+}
+.holdings-form input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(0,113,227,0.1); }
+.holdings-form .full-width { grid-column: 1 / -1; }
+.holdings-analysis {
+  padding: 0 20px 16px; font-size: 13px; line-height: 1.75; color: var(--text-secondary);
+}
+.holdings-analysis h4 { font-size: 12px; font-weight: 600; color: var(--text); margin: 12px 0 6px; display: flex; align-items: center; gap: 6px; }
+.holdings-position-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+  border-radius: 99px; font-size: 11px; font-weight: 600;
+  font-family: var(--font-mono); margin: 2px 4px 2px 0;
+}
+.holdings-position-chip.profit { background: var(--red-light); color: var(--red); }
+.holdings-position-chip.loss { background: var(--green-light); color: var(--green); }
+.holdings-refresh-btn {
+  padding: 8px 16px; border: 1px solid var(--accent); border-radius: 8px;
+  background: transparent; color: var(--accent); font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.holdings-refresh-btn:hover { background: var(--accent); color: #fff; }
+
 @media (max-width: 768px) {
   .diag-metrics { grid-template-columns: repeat(2, 1fr); }
   .diag-header { flex-wrap: wrap; }
   .diag-header .diag-price { margin-left: 0; }
+  .holdings-form { grid-template-columns: repeat(2, 1fr); }
 }
 
 /* Suggestion Chips */
@@ -1338,11 +1473,15 @@ function updateRank(timeIdx) {
   if (!sectorData) return;
   const { series, rank } = sectorData;
   const ranked = Object.entries(series).map(([name, sdata]) => {
-    const v = timeIdx < sdata.values.length ? sdata.values[timeIdx] : (sdata.values.slice(-1)[0] || 0);
+    // 前向填充：从当前时间点往回找最近的非 null 值
+    const vals = sdata.values || [];
+    let v = timeIdx < vals.length ? vals[timeIdx] : (vals.length ? vals[vals.length-1] : 0);
+    if (v == null) { for (let i = Math.min(timeIdx, vals.length-1); i >= 0; i--) { if (vals[i] != null) { v = vals[i]; break; } } }
     const rv = sdata.ratio_values || [];
-    const ratio = timeIdx < rv.length ? rv[timeIdx] : (rv.slice(-1)[0] || 0);
+    let ratio = timeIdx < rv.length ? rv[timeIdx] : (rv.length ? rv[rv.length-1] : 0);
+    if (ratio == null) { for (let i = Math.min(timeIdx, rv.length-1); i >= 0; i--) { if (rv[i] != null) { ratio = rv[i]; break; } } }
     const re = (rank || []).find(r => r.name === name);
-    return { name, value: v || 0, ratio: ratio || 0, pct: re ? re.pct_chg || 0 : 0, color: sdata.color };
+    return { name, value: v || 0, ratio: ratio != null ? ratio : 0, pct: re ? re.pct_chg || 0 : 0, color: sdata.color };
   });
 
   if (sectorSortBy === 'net_ratio') ranked.sort((a, b) => b.ratio - a.ratio);
@@ -1688,6 +1827,7 @@ function appendDiagCard(data, aiReply) {
   const pctClass = pct >= 0 ? 'up' : 'down';
   const pctSign = pct >= 0 ? '+' : '';
   const intraLabel = data.intraday > 0.7 ? '高位' : (data.intraday > 0.3 ? '中位' : '低位');
+  const notInPool = !data.pool;
 
   // 提取 LLM 回复中各段文本
   const sections = parseDiagSections(aiReply);
@@ -1696,54 +1836,109 @@ function appendDiagCard(data, aiReply) {
 
   // ── Header ──
   html += `<div class="diag-header">
-    <span class="diag-name">${data.name||''}</span>
-    <span class="diag-code">${data.code}</span>
-    <span class="diag-price">${data.price||'?'}</span>
+    <span class="diag-name">${data.name||data.code}</span>
+    <span class="diag-code">${data.code}</span>`;
+  if (notInPool) html += `<span class="diag-notice">非候选池</span>`;
+  html += `<span class="diag-price">${data.price||'?'}</span>
     <span class="diag-pct ${pctClass}">${pctSign}${pct.toFixed(1)}%</span>
   </div>`;
 
   // ── K线（折叠） ──
   if (data.kline_table) {
     html += `<details class="diag-kline" open>
-      <summary>📈 K线历史（近18日）</summary>
+      <summary>${iconSVG('candlestick_chart',14)} K线历史（近18日）</summary>
       <pre>${data.kline_table}</pre>
     </details>`;
+    // K线关键事件标签条
+    if (data.kline_events && data.kline_events.length > 0) {
+      html += `<div class="diag-kline-events">`;
+      data.kline_events.forEach(ev => {
+        html += `<span class="diag-kline-event"><span class="event-date">${ev.date}</span>`;
+        ev.tags.forEach(t => html += `<span class="event-tag">${t}</span>`);
+        html += `</span>`;
+      });
+      html += `</div>`;
+    }
   }
 
   // ── 量价指标四宫格 ──
+  const volRatio = data.volume_ratio;
+  const tr = data.turnover_rate;
+  const amp = data.amp;
   html += `<div class="diag-metrics">
-    <div class="diag-metric"><div class="metric-val">${data.volume_ratio||'?'}</div><div class="metric-label">量比</div></div>
-    <div class="diag-metric"><div class="metric-val">${data.turnover_rate!=null?data.turnover_rate+'%':'?'}</div><div class="metric-label">换手率</div></div>
-    <div class="diag-metric"><div class="metric-val">${data.amp!=null?data.amp+'%':'?'}</div><div class="metric-label">振幅</div></div>
+    <div class="diag-metric"><div class="metric-val">${volRatio||'?'}</div><div class="metric-label">量比</div></div>
+    <div class="diag-metric"><div class="metric-val">${tr!=null?tr+'%':'?'}</div><div class="metric-label">换手率</div></div>
+    <div class="diag-metric"><div class="metric-val">${amp!=null?amp+'%':'?'}</div><div class="metric-label">振幅</div></div>
     <div class="diag-metric"><div class="metric-val">${data.intraday!=null?data.intraday:''} ${intraLabel}</div><div class="metric-label">日内位置</div></div>
   </div>`;
 
   // ── 信号标签 ──
   if (data.signals && data.signals.length > 0) {
-    html += `<div class="diag-section"><h4>▸ 触发信号</h4><div class="diag-signals">`;
+    html += `<div class="diag-signals">`;
     data.signals.forEach(s => {
-      const stars = '★'.repeat(s.level||1) + '☆'.repeat(Math.max(0,5-(s.level||1)));
-      html += `<span class="diag-signal" title="${s.desc||''}">${stars} ${s.name}</span>`;
+      const lv = s.level||1;
+      html += `<span class="diag-signal lv${lv}" title="${s.desc||''}">${'★'.repeat(lv)} ${s.name}</span>`;
     });
+    html += `</div>`;
+  }
+
+  // ── 评分条 ──
+  const cs = data.combined_score;
+  if (cs != null || data.daily_score) {
+    html += `<div class="diag-score">`;
+    if (cs != null) {
+      const pctScore = Math.min(100, Math.max(0, cs * 10));
+      const barClass = cs >= 7 ? 'high' : (cs >= 4 ? 'mid' : 'low');
+      html += `<div class="diag-score-row">
+        <span class="diag-score-label">综合评分</span>
+        <div class="diag-score-track"><div class="diag-score-fill ${barClass}" style="width:${pctScore}%"></div></div>
+        <span class="diag-score-val">${cs}</span>
+      </div>`;
+    }
+    // 日级别评分（全市场排名）
+    if (data.daily_score) {
+      const ds = data.daily_score;
+      const dpct = Math.min(100, Math.max(0, ds.combined_score * 10));
+      const dbarClass = ds.combined_score >= 7 ? 'high' : (ds.combined_score >= 4 ? 'mid' : 'low');
+      html += `<div class="diag-score-row" style="margin-top:2px">
+        <span class="diag-score-label" style="font-size:10px">日评 #${ds.rank}</span>
+        <div class="diag-score-track" style="height:4px"><div class="diag-score-fill ${dbarClass}" style="width:${dpct}%"></div></div>
+        <span class="diag-score-val" style="font-size:11px">${ds.combined_score}</span>
+      </div>`;
+    }
+    html += `<div class="diag-score-sub">`;
+    if (data.signal_names && data.signal_names.length)
+      html += `<span>${iconSVG('bolt',11)} ${data.signal_names.join(' / ')}</span>`;
+    if (data.pool)
+      html += `<span>${iconSVG('group',11)} ${data.pool}</span>`;
+    if (data.daily_score)
+      html += `<span title="日评信号: ${data.daily_score.signal_names}">${iconSVG('calendar_today',11)} #${data.daily_score.rank}/${data.daily_score.total}</span>`;
     html += `</div></div>`;
   }
 
   // ── LLM 分析段 ──
-  const sectionOrder = ['近期量价分析','技术研判','资金面','综合评分'];
+  const sectionOrder = ['K线量价分析','量价数据','技术研判','资金面','综合评分'];
+  const sectionIcons = {
+    'K线量价分析':'show_chart','量价数据':'finance','技术研判':'insights',
+    '资金面':'water_drop','综合评分':'trending_up'
+  };
   sectionOrder.forEach(key => {
     if (sections[key]) {
-      html += `<div class="diag-section"><h4>▸ ${key}</h4>${sections[key]}</div>`;
+      const icon = sectionIcons[key] || 'chevron_right';
+      const cls = key === 'K线量价分析' ? 'diag-section kline-analysis' : 'diag-section';
+      html += `<div class="${cls}"><h4><span class="diag-section-icon">${iconSVG(icon,16)}</span>${key}</h4>${sections[key]}</div>`;
     }
   });
 
-  // ── 操作建议高亮条 ──
+  // ── 操作建议 ──
   if (sections['操作建议']) {
-    html += `<div class="diag-advice"><h4>📋 操作建议</h4><div class="diag-advice-row">${sections['操作建议']}</div></div>`;
+    const adviceHtml = parseAdviceChips(sections['操作建议']);
+    html += `<div class="diag-advice"><h4>${iconSVG('lightbulb',16)} 操作建议</h4>${adviceHtml}</div>`;
   }
 
   // ── 一句话 ──
   if (sections['一句话']) {
-    html += `<div class="diag-footer">💡 ${sections['一句话']}</div>`;
+    html += `<div class="diag-footer">${iconSVG('format_quote',14)} ${sections['一句话']}</div>`;
   }
 
   html += `</div>`;
@@ -1754,13 +1949,50 @@ function appendDiagCard(data, aiReply) {
   saveChatHistory();
 }
 
+function parseAdviceChips(text) {
+  // Parse advice text into visual chips: 入场/目标/止损/仓位/周期/风险
+  let html = '<div class="diag-advice-chips">';
+  const patterns = [
+    { re: /入场[区间]?[：:]\s*(\d+\.?\d*)\s*[-~]\s*(\d+\.?\d*)/, cls: 'entry', label: '入场', fmt: (m) => m[1] + '-' + m[2] },
+    { re: /目标[价]?[：:]\s*(\d+\.?\d*)/, cls: 'target', label: '目标', fmt: (m) => m[1] },
+    { re: /止损[价]?[：:]\s*(\d+\.?\d*)/, cls: 'stop', label: '止损', fmt: (m) => m[1] },
+    { re: /仓位[：:]\s*(.+?)(?:[\s;； ]|$)/, cls: 'position', label: '仓位', fmt: (m) => m[1] },
+    { re: /(?:持有)?周期[：:]\s*(.+?)(?:[\s;； ]|$)/, cls: 'cycle', label: '周期', fmt: (m) => m[1] },
+    { re: /风险[等级]?[：:]\s*(.+?)(?:[\s;； ]|$)/, cls: 'risk', label: '风险', fmt: (m) => m[1] },
+  ];
+  let foundAny = false;
+  for (const p of patterns) {
+    const m = text.match(p.re);
+    if (m) {
+      html += '<span class="diag-advice-chip ' + p.cls + '">' + p.label + ': ' + p.fmt(m) + '</span>';
+      foundAny = true;
+    }
+  }
+  if (!foundAny) {
+    // 没有匹配到结构化的建议，原样展示
+    html += '<span style="font-size:12px;color:var(--text-secondary)">' + text + '</span>';
+  }
+  html += '</div>';
+
+  // 附加的说明文字（去除已解析的部分）
+  let remaining = text;
+  for (const p of patterns) {
+    remaining = remaining.replace(p.re, '');
+  }
+  remaining = remaining.replace(/[；; ]+/g, ' ').trim();
+  if (remaining && foundAny) {
+    html += '<div class="diag-advice-summary">' + remaining + '</div>';
+  }
+  return html;
+}
+
 function parseDiagSections(text) {
   // 解析 LLM 回复的 ▸ 分段结构
   const result = {};
   const lines = text.split('\n');
   let currentKey = null;
   let currentLines = [];
-  const knownSections = ['量价数据','近期量价分析','技术研判','资金面','综合评分','操作建议','一句话'];
+  const knownSections = ['K线量价分析','量价数据','技术研判','资金面','综合评分','操作建议','一句话'];
 
   for (const line of lines) {
     let matched = false;
@@ -1824,40 +2056,315 @@ async function sendChat() {
     } catch(e) { /* 诊断接口失败不影响主流程 */ }
   }
 
-  try {
-    const r = await fetch('/api/agent/chat', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({message: msg, history: agentChatHistory})
-    });
-    const d = await r.json();
-    let reply = d.reply || '抱歉，AI 助手暂时不可用，请稍后重试。';
+  // 板块消息检测
+  const isSectorMsg = /板块|行业|概念|赛道|热点/.test(msg) && !stockMatch;
 
+  try {
+    // 使用 SSE 流式端点，渐进渲染
+    const r = await fetch('/api/agent/chat/stream', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: msg, history: agentChatHistory,
+        diagnose_data: (diagData && !diagData.error) ? diagData : undefined})
+    });
+
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let fullReply = '';
+    let meta = null;
+    let cardEl = null;
+    let streamTarget = null;
+    let buffer = '';
+
+    // 如果有诊断数据，先渲染卡片壳子
     if (diagData && !diagData.error) {
-      // 渲染诊断卡片
-      appendDiagCard(diagData, reply);
-    } else {
-      // 普通文本渲染
-      if (d.kline && reply) {
-        const idx = reply.indexOf('\n');
-        if (idx > 0) {
-          reply = reply.slice(0, idx + 1) + '\n' + d.kline + '\n' + reply.slice(idx + 1);
-        } else {
-          reply = d.kline + '\n\n' + reply;
-        }
+      cardEl = appendDiagCardStream(diagData);
+      streamTarget = cardEl.querySelector('.diag-stream-content');
+    } else if (isSectorMsg) {
+      // 板块消息：创建板块卡片壳子
+      cardEl = appendSectorCardShell();
+      streamTarget = cardEl.querySelector('.sector-stream-content');
+    }
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // 解析 SSE 事件
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // 保留不完整的行
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const evt = JSON.parse(line.slice(6));
+          if (evt.type === 'meta') {
+            meta = evt;
+          } else if (evt.type === 'chunk') {
+            fullReply += evt.data;
+            // 渐进更新：将当前回复写入卡片或聊天区
+            if (streamTarget) {
+              updateStreamContent(streamTarget, fullReply, diagData);
+            } else {
+              updateStreamChat(fullReply, meta);
+            }
+          } else if (evt.type === 'done') {
+            meta = { ...meta, _ts: evt._ts, _code: evt._code, _ctx: evt._ctx };
+          }
+        } catch(e) { /* 跳过解析失败的行 */ }
       }
-      if (d._ts) {
-        reply += `\n\n---\n🕐 ${d._ts} | code=${d._code||'-'} | ctx=${d._ctx||0}`;
+    }
+
+    // 流结束，最终渲染
+    let reply = fullReply || '抱歉，AI 助手暂时不可用，请稍后重试。';
+
+    if (cardEl && diagData && !diagData.error) {
+      // 用完整回复替换流式预览
+      cardEl.remove();
+      appendDiagCard(diagData, reply);
+    } else if (cardEl && isSectorMsg) {
+      // 板块卡片最终渲染
+      cardEl.remove();
+      appendSectorCard(reply, msg);
+    } else {
+      // 普通文本：移除流式占位，渲染最终内容
+      const placeholder = document.querySelector('.streaming-msg');
+      if (placeholder) placeholder.remove();
+      if (meta && meta.kline) {
+        const idx = reply.indexOf('\n');
+        reply = idx > 0
+          ? reply.slice(0, idx + 1) + '\n' + meta.kline + '\n' + reply.slice(idx + 1)
+          : meta.kline + '\n\n' + reply;
+      }
+      if (meta) {
+        reply += `\n\n---\n🕐 ${meta._ts} | code=${meta._code||'-'} | ctx=${meta._ctx||0}`;
       }
       appendChat('assistant', reply, '');
     }
+
     agentChatHistory.push({role:'user',content:msg});
     agentChatHistory.push({role:'assistant',content:reply});
     if (agentChatHistory.length > 20) agentChatHistory = agentChatHistory.slice(-20);
   } catch(e) {
-    appendChat('assistant', '连接失败，请检查服务状态。');
+    console.error('Stream error:', e);
+    // Fallback: 尝试非流式端点
+    try {
+      const r2 = await fetch('/api/agent/chat', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({message: msg, history: agentChatHistory,
+          diagnose_data: (diagData && !diagData.error) ? diagData : undefined})
+      });
+      const d = await r2.json();
+      let reply = d.reply || '抱歉，AI 助手暂时不可用。';
+      if (diagData && !diagData.error) {
+        appendDiagCard(diagData, reply);
+      } else {
+        if (d.kline && reply) {
+          const idx = reply.indexOf('\n');
+          reply = idx > 0 ? reply.slice(0,idx+1)+'\n'+d.kline+'\n'+reply.slice(idx+1) : d.kline+'\n\n'+reply;
+        }
+        if (d._ts) reply += `\n\n---\n🕐 ${d._ts} | code=${d._code||'-'} | ctx=${d._ctx||0}`;
+        appendChat('assistant', reply, '');
+      }
+      agentChatHistory.push({role:'user',content:msg});
+      agentChatHistory.push({role:'assistant',content:reply});
+      if (agentChatHistory.length > 20) agentChatHistory = agentChatHistory.slice(-20);
+    } catch(e2) {
+      appendChat('assistant', '连接失败，请检查服务状态。');
+    }
   } finally {
     sendBtn.disabled = false;
   }
+}
+
+// 流式诊断卡片壳子——立即显示结构，内容渐进填充
+function appendDiagCardStream(data) {
+  const msgs = document.getElementById('chatMessages');
+  const wc = msgs.querySelector('.welcome-card');
+  const chips = msgs.querySelector('.chip-group');
+  if (wc) wc.remove();
+  if (chips) chips.style.display = 'none';
+
+  const div = document.createElement('div');
+  div.className = 'chat-msg assistant';
+
+  const pct = data.change_pct || 0;
+  const pctClass = pct >= 0 ? 'up' : 'down';
+  const pctSign = pct >= 0 ? '+' : '';
+  const intraLabel = data.intraday > 0.7 ? '高位' : (data.intraday > 0.3 ? '中位' : '低位');
+  const notInPool = !data.pool;
+
+  let html = `<div class="diag-card">`;
+  // Header
+  html += `<div class="diag-header">
+    <span class="diag-name">${data.name||data.code}</span>
+    <span class="diag-code">${data.code}</span>`;
+  if (notInPool) html += `<span class="diag-notice">非候选池</span>`;
+  html += `<span class="diag-price">${data.price||'?'}</span>
+    <span class="diag-pct ${pctClass}">${pctSign}${pct.toFixed(1)}%</span>
+  </div>`;
+
+  // 四宫格
+  html += `<div class="diag-metrics">
+    <div class="diag-metric"><div class="metric-val">${data.volume_ratio||'?'}</div><div class="metric-label">量比</div></div>
+    <div class="diag-metric"><div class="metric-val">${data.turnover_rate!=null?data.turnover_rate+'%':'?'}</div><div class="metric-label">换手率</div></div>
+    <div class="diag-metric"><div class="metric-val">${data.amp!=null?data.amp+'%':'?'}</div><div class="metric-label">振幅</div></div>
+    <div class="diag-metric"><div class="metric-val">${data.intraday!=null?data.intraday:''} ${intraLabel}</div><div class="metric-label">日内位置</div></div>
+  </div>`;
+
+  // 信号标签
+  if (data.signals && data.signals.length > 0) {
+    html += `<div class="diag-signals">`;
+    data.signals.forEach(s => {
+      html += `<span class="diag-signal lv${s.level||1}" title="${s.desc||''}">${'★'.repeat(s.level||1)} ${s.name}</span>`;
+    });
+    html += `</div>`;
+  }
+
+  // 评分条
+  const cs = data.combined_score;
+  if (cs != null) {
+    const pctScore = Math.min(100, Math.max(0, cs * 10));
+    const barClass = cs >= 7 ? 'high' : (cs >= 4 ? 'mid' : 'low');
+    html += `<div class="diag-score"><div class="diag-score-row">
+      <span class="diag-score-label">综合评分</span>
+      <div class="diag-score-track"><div class="diag-score-fill ${barClass}" style="width:${pctScore}%"></div></div>
+      <span class="diag-score-val">${cs}</span>
+    </div></div>`;
+  }
+
+  // 流式内容占位区
+  html += `<div class="diag-stream-content"><div class="stream-loading">
+    <span class="stream-dot"></span><span class="stream-dot"></span><span class="stream-dot"></span>
+    观澜正在分析中...
+  </div></div>`;
+
+  html += `</div>`;
+  div.innerHTML = `<div class="msg-avatar">${iconSVG('smart_toy',20)}</div>${html}`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return div;
+}
+
+// 更新流式内容到诊断卡片或聊天区
+function updateStreamContent(target, text, diagData) {
+  const sections = parseDiagSections(text);
+  const sectionOrder = ['K线量价分析','量价数据','技术研判','资金面','综合评分'];
+  const sectionIcons = {
+    'K线量价分析':'show_chart','量价数据':'finance','技术研判':'insights',
+    '资金面':'water_drop','综合评分':'trending_up'
+  };
+  let html = '';
+  sectionOrder.forEach(key => {
+    if (sections[key]) {
+      const icon = sectionIcons[key] || 'chevron_right';
+      const cls = key === 'K线量价分析' ? 'diag-section kline-analysis' : 'diag-section';
+      html += `<div class="${cls}"><h4><span class="diag-section-icon">${iconSVG(icon,16)}</span>${key}</h4>${sections[key]}</div>`;
+    }
+  });
+  if (sections['操作建议']) {
+    const adviceHtml = parseAdviceChips(sections['操作建议']);
+    html += `<div class="diag-advice"><h4>${iconSVG('lightbulb',16)} 操作建议</h4>${adviceHtml}</div>`;
+  }
+  if (sections['一句话']) {
+    html += `<div class="diag-footer">${iconSVG('format_quote',14)} ${sections['一句话']}</div>`;
+  }
+  // 如果还没解析出段，显示原始文本
+  if (!html && text) {
+    html = `<div class="diag-section"><p>${text.replace(/\n/g,'<br>')}</p></div>`;
+  }
+  target.innerHTML = html;
+
+  // 滚动到底部
+  const msgs = document.getElementById('chatMessages');
+  msgs.scrollTop = msgs.scrollHeight;
+  saveChatHistory();
+}
+
+// 流式更新普通聊天消息
+function updateStreamChat(text, meta) {
+  const msgs = document.getElementById('chatMessages');
+  let placeholder = msgs.querySelector('.streaming-msg');
+
+  if (!placeholder) {
+    // 创建流式占位消息
+    placeholder = document.createElement('div');
+    placeholder.className = 'chat-msg assistant streaming-msg';
+    placeholder.innerHTML = `<div class="msg-avatar">${iconSVG('smart_toy',20)}</div><div class="msg-bubble stream-bubble"><div class="stream-loading" style="padding:0;margin:0 0 8px 0">
+      <span class="stream-dot"></span><span class="stream-dot"></span><span class="stream-dot"></span>
+    </div><div class="stream-text"></div></div>`;
+    msgs.appendChild(placeholder);
+  }
+
+  const textEl = placeholder.querySelector('.stream-text');
+  if (textEl) {
+    textEl.innerHTML = text.replace(/\n/g, '<br>').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  }
+
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+// 板块卡片壳子
+function appendSectorCardShell() {
+  const msgs = document.getElementById('chatMessages');
+  const wc = msgs.querySelector('.welcome-card');
+  if (wc) wc.remove();
+
+  const div = document.createElement('div');
+  div.className = 'chat-msg assistant';
+  div.innerHTML = `<div class="msg-avatar">${iconSVG('smart_toy',20)}</div>
+    <div class="sector-card">
+      <div class="sector-card-header">${iconSVG('local_fire_department',18)} 板块分析</div>
+      <div class="sector-stream-content"><div class="stream-loading">
+        <span class="stream-dot"></span><span class="stream-dot"></span><span class="stream-dot"></span>
+        观澜正在分析板块行情...
+      </div></div>
+    </div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return div;
+}
+
+// 板块卡片最终渲染
+function appendSectorCard(reply, userMsg) {
+  const msgs = document.getElementById('chatMessages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg assistant';
+
+  // 提取板块名称
+  let sectorName = '';
+  const snMatch = userMsg.match(/(\S+?)板块/) || userMsg.match(/(\S+?)(?:行情|分析|怎么样)/);
+  if (snMatch) sectorName = snMatch[1];
+
+  const sections = parseDiagSections(reply);
+  let content = '';
+  // 用 ▸ 分段
+  const knownSecs = ['板块概况','资金流向','龙头个股','持续性判断','操作策略','风险提示'];
+  knownSecs.forEach(key => {
+    if (sections[key]) {
+      content += `<div class="diag-section"><h4>${iconSVG('chevron_right',14)} ${key}</h4>${sections[key]}</div>`;
+    }
+  });
+  // 如果没解析到段，显示原始文本
+  if (!content) {
+    // 尝试按双换行分段
+    const parts = reply.split(/\n\n+/).filter(p => p.trim());
+    parts.forEach(p => {
+      content += `<div class="diag-section"><p>${p.replace(/\n/g,'<br>')}</p></div>`;
+    });
+  }
+
+  div.innerHTML = `<div class="msg-avatar">${iconSVG('smart_toy',20)}</div>
+    <div class="sector-card">
+      <div class="sector-card-header">${iconSVG('local_fire_department',18)} ${sectorName||'板块'}分析</div>
+      ${content}
+      <div class="sector-card-footer">${iconSVG('info',12)} 数据基于实时资金流向，仅供参考</div>
+    </div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  saveChatHistory();
 }
 
 function clearChat() {
@@ -1965,7 +2472,14 @@ function updateSuggestions() {
     });
   }
 
-  // ── 6. Multi-Agent 辩论（仅 live 模式）──
+  // ── 6. 持仓陪跑 ──
+  suggestions.push({
+    icon: 'track_changes',
+    text: '持仓陪跑：输入持仓获取操作策略分析',
+    action: () => showHoldingsPanel(),
+  });
+
+  // ── 7. Multi-Agent 辩论（仅 live 模式）──
   if (picks && picks.mode === 'live') {
     suggestions.push({
       icon: 'psychology',
@@ -2019,6 +2533,126 @@ async function loadDebate() {
     }
     appendChat('assistant', text);
   } catch(e) { appendChat('assistant', '辩论暂不可用'); }
+}
+
+// ── 持仓陪跑 ────────────────────────────────────────────
+
+function showHoldingsPanel() {
+  const msgs = document.getElementById('chatMessages');
+  const wc = msgs.querySelector('.welcome-card');
+  const chips = msgs.querySelector('.chip-group');
+  if (wc) wc.remove();
+  if (chips) chips.style.display = 'none';
+
+  // 移除已有的持仓面板
+  msgs.querySelectorAll('.holdings-panel-msg').forEach(m => m.remove());
+
+  const div = document.createElement('div');
+  div.className = 'chat-msg assistant holdings-panel-msg';
+  div.innerHTML = `<div class="msg-avatar">${iconSVG('smart_toy',20)}</div>
+    <div class="holdings-panel">
+      <div class="holdings-panel-header">${iconSVG('track_changes',18)} 持仓陪跑</div>
+      <div class="holdings-form">
+        <div><label>股票代码</label><input id="hpCode1" placeholder="600519" maxlength="6"></div>
+        <div><label>成本价</label><input id="hpCost1" placeholder="1680.00" type="number" step="0.01"></div>
+        <div><label>股数</label><input id="hpShares1" placeholder="100" type="number" step="1"></div>
+        <div><label>股票代码</label><input id="hpCode2" placeholder="000001" maxlength="6"></div>
+        <div><label>成本价</label><input id="hpCost2" placeholder="10.50" type="number" step="0.01"></div>
+        <div><label>股数</label><input id="hpShares2" placeholder="200" type="number" step="1"></div>
+        <div><label>股票代码</label><input id="hpCode3" placeholder="300750" maxlength="6"></div>
+        <div><label>成本价</label><input id="hpCost3" placeholder="" type="number" step="0.01"></div>
+        <div><label>股数</label><input id="hpShares3" placeholder="" type="number" step="1"></div>
+        <div class="full-width" style="display:flex;gap:8px;align-items:end">
+          <button class="holdings-refresh-btn" onclick="analyzeHoldings()">${iconSVG('query_stats',14)} 开始分析</button>
+          <span style="font-size:10px;color:var(--text-tertiary);padding:8px 0">输入持仓信息，观澜帮你分析操作策略</span>
+        </div>
+      </div>
+      <div id="holdingsResult" class="holdings-analysis"></div>
+    </div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+async function analyzeHoldings() {
+  const resultEl = document.getElementById('holdingsResult');
+  resultEl.innerHTML = `<div class="stream-loading">
+    <span class="stream-dot"></span><span class="stream-dot"></span><span class="stream-dot"></span>
+    观澜正在分析持仓...
+  </div>`;
+
+  const positions = [];
+  for (let i = 1; i <= 3; i++) {
+    const code = document.getElementById('hpCode' + i)?.value?.trim();
+    const cost = parseFloat(document.getElementById('hpCost' + i)?.value);
+    const shares = parseInt(document.getElementById('hpShares' + i)?.value);
+    if (code && code.match(/^\d{6}$/) && cost > 0 && shares > 0) {
+      // Calculate weight proportionally
+      const totalValue = positions.reduce((s, p) => s + p.cost * p.shares, 0) + cost * shares;
+      positions.forEach(p => p.weight = Math.round(p.cost * p.shares / totalValue * 100));
+      positions.push({ code, cost, shares, weight: Math.round(cost * shares / totalValue * 100) });
+    }
+  }
+
+  if (positions.length === 0) {
+    resultEl.innerHTML = '<p style="color:var(--text-tertiary);padding:16px">请至少输入一只股票的完整信息（代码+成本+股数）</p>';
+    return;
+  }
+
+  try {
+    const r = await fetch('/api/holdings/analyze', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ positions })
+    });
+    const d = await r.json();
+
+    if (d.error) { resultEl.innerHTML = `<p style="color:var(--red);padding:16px">${d.error}</p>`; return; }
+
+    // 渲染持仓摘要
+    let html = '<h4>' + iconSVG('account_balance',14) + ' 持仓概况</h4>';
+    html += '<div style="margin-bottom:12px">';
+    (d.positions || []).forEach(p => {
+      const pnlClass = (p.pnl_pct || 0) >= 0 ? 'profit' : 'loss';
+      const pnlSign = (p.pnl_pct || 0) >= 0 ? '+' : '';
+      html += `<span class="holdings-position-chip ${pnlClass}">${p.name||p.code}
+        现价${p.price||'?'} 成本${p.cost} ${pnlSign}${p.pnl_pct||0}%</span> `;
+    });
+    html += '</div>';
+
+    // 市场背景
+    if (d.market_context) {
+      const mc = d.market_context;
+      html += `<div style="font-size:11px;color:var(--text-tertiary);margin-bottom:12px">
+        市场广度 ${(mc.breadth*100).toFixed(0)}% | 风险 ${mc.risk_level}
+        ${mc.hot_sectors?.length ? ' | 热板块: '+mc.hot_sectors.slice(0,3).join(' ') : ''}
+      </div>`;
+    }
+
+    // Agent 分析
+    if (d.analysis) {
+      html += '<h4>' + iconSVG('psychology',14) + ' 操作策略</h4>';
+      // 解析分析中的操作建议
+      const lines = d.analysis.split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        if (trimmed.startsWith('操作:')) {
+          const opMatch = trimmed.match(/操作:\s*(.+?)\s+目标:\s*(.+?)\s+止损:\s*(.+?)\s+仓位调整:\s*(.+)/);
+          if (opMatch) {
+            html += `<div class="diag-advice-chip entry">${opMatch[1]}</div>
+              <div class="diag-advice-chip target">目标 ${opMatch[2]}</div>
+              <div class="diag-advice-chip stop">止损 ${opMatch[3]}</div>
+              <div style="font-size:11px;color:var(--text-secondary);margin:4px 0 12px">${opMatch[4]}</div>`;
+            continue;
+          }
+        }
+        html += `<div style="font-size:12px;line-height:1.7;color:var(--text-secondary)">${trimmed}</div>`;
+      }
+    }
+
+    resultEl.innerHTML = html;
+  } catch(e) {
+    resultEl.innerHTML = '<p style="color:var(--red);padding:16px">分析请求失败，请稍后重试</p>';
+  }
 }
 
 // ── Init ──────────────────────────────────────────────

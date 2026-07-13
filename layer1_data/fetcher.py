@@ -107,14 +107,59 @@ class DataFetcher:
     # ── 行情数据 ─────────────────────────────────────────────────
 
     def current_market(self, code_list: Optional[list] = None) -> pd.DataFrame:
-        import adata
-        df = adata.stock.market.list_market_current(code_list=code_list)
-        df = _normalize_cols(df)
-        if df is not None and not df.empty:
-            for col in _NUM_COLS:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-        return df
+        """获取实时行情 — adata(push2) 优先，失败降级到腾讯 qt.gtimg.cn"""
+        # Primary: adata
+        try:
+            import adata
+            df = adata.stock.market.list_market_current(code_list=code_list)
+            df = _normalize_cols(df)
+            if df is not None and not df.empty:
+                for col in _NUM_COLS:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                return df
+        except Exception as e:
+            logger.debug("adata current_market 失败，降级腾讯: %s", e)
+
+        # Fallback: Tencent API
+        if code_list:
+            try:
+                return self._tencent_market(code_list)
+            except Exception as e2:
+                logger.warning("腾讯行情降级也失败: %s", e2)
+
+        return pd.DataFrame()
+
+    def _tencent_market(self, code_list: list) -> pd.DataFrame:
+        """腾讯 qt.gtimg.cn API 获取实时行情（push2 降级方案）。"""
+        import requests as req
+        tencent_codes = []
+        for c in code_list:
+            c = str(c).zfill(6)
+            prefix = "sh" if c.startswith("6") else "sz"
+            tencent_codes.append(f"{prefix}{c}")
+        url = f"http://qt.gtimg.cn/q={','.join(tencent_codes)}"
+        resp = req.get(url, timeout=5)
+        resp.encoding = 'gbk'
+        rows = []
+        for line in resp.text.strip().split(';\n'):
+            if not line.strip() or '=' not in line:
+                continue
+            _, value = line.split('=', 1)
+            value = value.strip().strip('"').strip("'")
+            fields = value.split('~')
+            if len(fields) < 33:
+                continue
+            rows.append({
+                "stock_code": fields[2],
+                "short_name": fields[1],
+                "price": float(fields[3]) if fields[3] else 0,
+                "change_pct": float(fields[32]) if fields[32] else 0,
+                "change": float(fields[31]) if fields[31] else 0,
+                "volume": int(fields[6]) * 100 if fields[6] else 0,  # 腾讯单位是手→股
+                "amount": float(fields[37]) * 10000 if len(fields) > 37 and fields[37] else 0,
+            })
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
 
     def kline(self, stock_code: str, start_date="1990-01-01",
               end_date=None, k_type=1) -> pd.DataFrame:

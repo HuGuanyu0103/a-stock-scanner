@@ -311,6 +311,18 @@ class Storage:
                 conn.close()
 
 
+def _ffill(seq: list) -> list:
+    """前向填充：将 None 替换为最近的非 None 值。首段全 None 则保持 None。"""
+    result = list(seq)
+    last = None
+    for i in range(len(result)):
+        if result[i] is not None:
+            last = result[i]
+        elif last is not None:
+            result[i] = last
+    return result
+
+
 class SectorFlowCollector:
     """板块资金流向实时采集器 v3。"""
 
@@ -423,6 +435,12 @@ class SectorFlowCollector:
             if self._data_date != today_str:
                 logger.info("新交易日首次 polling 成功，保存 %s 旧数据后切换至 %s",
                            self._data_date, today_str)
+                # 清除 push2 熔断器（新交易日重新尝试）
+                try:
+                    from .data_fetcher import reset_circuit_breakers
+                except ImportError:
+                    from data_fetcher import reset_circuit_breakers  # type: ignore[no-redef]
+                reset_circuit_breakers()
                 # 先把旧日期的内存数据写入 DB（防止重启丢失）
                 self._save_all_to_db()
                 # 再清空并切换日期
@@ -689,8 +707,8 @@ class SectorFlowCollector:
                 "name": sector_name,
                 "color": _hash_color(sector_name),
                 "times": minutes,
-                "values": values,
-                "ratio_values": ratio_values,
+                "values": _ffill(values),
+                "ratio_values": _ffill(ratio_values),
             }
 
         rank_data = [
@@ -868,8 +886,8 @@ class SectorFlowCollector:
             })
             series[user_name] = {
                 "name": user_name, "color": _hash_color(user_name),
-                "times": minutes, "values": values,
-                "ratio_values": ratio_values,
+                "times": minutes, "values": _ffill(values),
+                "ratio_values": _ffill(ratio_values),
             }
 
         # 精确匹配的板块
@@ -945,8 +963,8 @@ class SectorFlowCollector:
             })
             series[user_name] = {
                 "name": user_name, "color": _hash_color(user_name),
-                "times": minutes, "values": values,
-                "ratio_values": ratio_values,
+                "times": minutes, "values": _ffill(values),
+                "ratio_values": _ffill(ratio_values),
             }
 
         rank_data.sort(key=lambda x: x["value"], reverse=True)
