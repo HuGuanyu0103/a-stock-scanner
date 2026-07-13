@@ -656,6 +656,7 @@ class SectorFlowCollector:
         """从快照列表构建前端看板数据（仅 Top N 板块）。
 
         单快照也能构建 — 非交易时段可能只有 DB 中的最后一条数据。
+        x轴固定使用完整交易时间轴 9:30-15:00。
         """
         if not snapshots:
             # 无任何数据时返回空（不降级到 mock）
@@ -671,10 +672,15 @@ class SectorFlowCollector:
                 "data_date": self._data_date,
             }
 
-        minutes = [s["time"] for s in snapshots]
-
-        # 构建 {time: rank} 索引
+        # 构建实际快照的时间→数据索引
         snap_map: dict[str, list[dict]] = {s["time"]: s["rank"] for s in snapshots}
+
+        # 使用完整交易时间轴（9:30-15:00），x轴始终固定
+        full_minutes = _build_trade_minutes()
+        display_step = max(1, len(full_minutes) // 120)
+        minutes = full_minutes[::display_step]
+        if full_minutes and full_minutes[-1] not in minutes:
+            minutes.append(full_minutes[-1])
 
         # 最新时刻的排名 — 只取 Top N
         latest_rank = snapshots[-1]["rank"] if snapshots else []
@@ -720,10 +726,26 @@ class SectorFlowCollector:
         ]
         rank_data.sort(key=lambda x: x["value"], reverse=True)
 
+        # 确定当前时刻在 minutes 中的位置（不超最后实际快照）
+        last_snap_time = snapshots[-1]["time"] if snapshots else "15:00"
+        now_idx = len(minutes) - 1
+        for i, m in enumerate(minutes):
+            if m <= last_snap_time:
+                now_idx = i
+        now_label = minutes[now_idx] if now_idx < len(minutes) else "15:00"
+
+        # 截断：now_idx 之后的值置 None
+        for sdata in series.values():
+            for k in ("values", "ratio_values"):
+                arr = sdata.get(k, [])
+                for j in range(now_idx + 1, len(arr)):
+                    if j < len(arr):
+                        arr[j] = None
+
         return {
             "date": datetime.now().strftime("%Y-%m-%d"),
-            "time_label": minutes[-1] if minutes else "15:00",
-            "time_index": len(minutes) - 1,
+            "time_label": now_label,
+            "time_index": now_idx,
             "total_times": len(minutes),
             "minutes": minutes,
             "rank": rank_data,
@@ -820,10 +842,22 @@ class SectorFlowCollector:
 
         # 每 N 个时间点取一个，减少前端渲染压力（分钟级数据对图表显示冗余）
         all_minutes = sorted(merged_by_time.keys())
-        sample_step = max(1, len(all_minutes) // 120)  # 最多保留 120 个时间点
-        minutes = all_minutes[::sample_step]
-        if all_minutes and all_minutes[-1] not in minutes:
-            minutes.append(all_minutes[-1])  # 确保最新时间点在内
+
+        # 使用完整交易时间轴（9:30-15:00），x轴始终固定
+        full_minutes = _build_trade_minutes()
+        display_step = max(1, len(full_minutes) // 120)
+        minutes = full_minutes[::display_step]
+        if full_minutes and full_minutes[-1] not in minutes:
+            minutes.append(full_minutes[-1])  # 确保 15:00 在内
+
+        # 确定"当前时刻"在 minutes 中的位置：用最后一条实际快照时间
+        now_idx = len(minutes) - 1
+        if all_minutes:
+            last_data = all_minutes[-1]
+            for i, m in enumerate(minutes):
+                if m <= last_data:
+                    now_idx = i
+        now_time_label = minutes[now_idx] if now_idx < len(minutes) else minutes[-1]
 
         # 无数据时返回空
         if not minutes:
@@ -969,10 +1003,18 @@ class SectorFlowCollector:
 
         rank_data.sort(key=lambda x: x["value"], reverse=True)
 
+        # 截断数据：now_idx 之后的值置 None，避免图线画到未来
+        for sdata in series.values():
+            for k in ("values", "ratio_values"):
+                arr = sdata.get(k, [])
+                for j in range(now_idx + 1, len(arr)):
+                    if j < len(arr):
+                        arr[j] = None
+
         return {
             "date": datetime.now().strftime("%Y-%m-%d"),
-            "time_label": minutes[-1] if minutes else "15:00",
-            "time_index": len(minutes) - 1,
+            "time_label": now_time_label,
+            "time_index": now_idx,
             "total_times": len(minutes),
             "minutes": minutes,
             "rank": rank_data,
@@ -1085,6 +1127,7 @@ class SectorFlowCollector:
         """获取指定板块最近 N 分钟的资金流向时间序列。
 
         从内存快照中提取该板块在每个时间点的主力净流入额和净占比。
+        支持 SECTOR_NAME_MAP 名称映射 和 SECTOR_COMPOSITE 加权合成。
 
         Returns:
             {"name": str, "times": [str], "values": [float|None], "ratios": [float|None],
@@ -1097,21 +1140,61 @@ class SectorFlowCollector:
         if not concept_snaps and not industry_snaps:
             return {"name": sector_name, "error": "无今日快照数据"}
 
-        # 从概念和行业快照中分别提取该板块的时间序列
-        # 注意：不能简单合并再按时间去重，因为同时间的概念和行业快照含不同板块
-        time_data = {}
+        # 解析搜索名称：原始名 + NAME_MAP 映射名
+        search_names = [sector_name]
+        mapped = SECTOR_NAME_MAP.get(sector_name)
+        if mapped:
+            search_names.append(mapped)
+
+        # 检查是否是加权合成板块
+        composite = SECTOR_COMPOSITE.get(sector_name)
+
+        # 从概念和行业快照中提取时间序列
+        time_data = {}  # {time: (net_main, net_main_ratio, pct_chg)}
         for snap_list in (concept_snaps, industry_snaps):
             for snap in snap_list:
                 t = snap.get("time", "")
                 if t in time_data:
-                    continue  # 已从另一个类型获取
+                    continue
                 rank = snap.get("rank", [])
-                for item in rank:
-                    if item.get("name") == sector_name:
-                        time_data[t] = (item.get("net_main", 0),
-                                        item.get("net_main_ratio", 0),
-                                        item.get("pct_chg", 0))
-                        break
+
+                if composite:
+                    # 加权合成：从多个子板块聚合
+                    comp_values = {}  # {comp_name: (net_main, ratio, pct)}
+                    for item in rank:
+                        item_name = item.get("name", "")
+                        for comp_name, weight in composite:
+                            if item_name == comp_name:
+                                comp_values[comp_name] = (
+                                    item.get("net_main", 0),
+                                    item.get("net_main_ratio", 0),
+                                    item.get("pct_chg", 0),
+                                )
+                    if len(comp_values) == len(composite):
+                        net_main = sum(
+                            comp_values[cn][0] * w for cn, w in composite
+                        )
+                        net_ratio = sum(
+                            comp_values[cn][1] * w for cn, w in composite
+                        )
+                        pct_chg = sum(
+                            comp_values[cn][2] * w for cn, w in composite
+                        )
+                        time_data[t] = (
+                            round(net_main, 2),
+                            round(net_ratio, 2),
+                            round(pct_chg, 2),
+                        )
+                else:
+                    # 直接名称匹配（含 NAME_MAP 映射）
+                    for item in rank:
+                        if item.get("name") in search_names:
+                            time_data[t] = (
+                                item.get("net_main", 0),
+                                item.get("net_main_ratio", 0),
+                                item.get("pct_chg", 0),
+                            )
+                            break
 
         sorted_times = sorted(time_data.keys())
         if recent_minutes > 0 and len(sorted_times) > recent_minutes:

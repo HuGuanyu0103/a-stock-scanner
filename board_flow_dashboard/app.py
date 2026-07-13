@@ -504,17 +504,21 @@ def api_agent_chat():
     hot_sectors = data.get("hot_sectors", [])
 
     agent = get_agent()
-    # 检测用户消息中的股票代码并获取实时数据
+    # 检测用户消息中的股票（代码或名称）并获取实时数据
+    resolved = _resolve_stock_code(user_message)
+    resolved_code = resolved[0] if resolved else ""
+    resolved_name = resolved[1] if resolved else ""
     stock_data_context, kline_data = _extract_stock_context(user_message, diagnose_data=diagnose_data)
 
-    # 安全网：如果消息含股票代码但数据获取失败，直接返回错误，防止 LLM 编造数据
-    stock_code_in_msg = _extract_stock_code(user_message)
-    logger.info("Chat: code=%s, ctx_len=%d, kline_len=%d, msg=%.80s",
-                stock_code_in_msg, len(stock_data_context), len(kline_data), user_message)
+    # 安全网：如果消息含股票但数据获取失败，直接返回错误，防止 LLM 编造数据
+    stock_code_in_msg = resolved_code
+    logger.info("Chat: code=%s, name=%s, ctx_len=%d, kline_len=%d, msg=%.80s",
+                stock_code_in_msg, resolved_name, len(stock_data_context), len(kline_data), user_message)
     if stock_code_in_msg and not stock_data_context:
+        label = f"{resolved_name}({stock_code_in_msg})" if resolved_name else stock_code_in_msg
         return jsonify({
             "reply": (
-                f"⚠️ 无法获取 {stock_code_in_msg} 的实时数据。\n\n"
+                f"⚠️ 无法获取 {label} 的实时数据。\n\n"
                 f"可能原因：1. 数据接口超时 2. 股票代码错误 3. 非交易时段数据未更新\n\n"
                 f"建议：稍后重试，或查看该股票所属板块的整体表现。"
             ),
@@ -534,6 +538,7 @@ def api_agent_chat():
         user_message, all_candidates, hot_sectors, signals, chat_history,
         stock_context=stock_data_context,
         sector_timeseries=sector_ts_context,
+        resolved_code=resolved_code,
     )
     if reply:
         return jsonify({
@@ -569,12 +574,17 @@ def api_agent_chat_stream():
     hot_sectors = data.get("hot_sectors", [])
 
     agent = get_agent()
+    # 检测用户消息中的股票（代码或名称）
+    resolved = _resolve_stock_code(user_message)
+    resolved_code = resolved[0] if resolved else ""
+    resolved_name = resolved[1] if resolved else ""
     stock_data_context, kline_data = _extract_stock_context(user_message, diagnose_data=diagnose_data)
 
-    stock_code_in_msg = _extract_stock_code(user_message)
+    stock_code_in_msg = resolved_code
     if stock_code_in_msg and not stock_data_context:
+        label = f"{resolved_name}({stock_code_in_msg})" if resolved_name else stock_code_in_msg
         return jsonify({
-            "reply": f"⚠️ 无法获取 {stock_code_in_msg} 的实时数据。请稍后重试。",
+            "reply": f"⚠️ 无法获取 {label} 的实时数据。请稍后重试。",
             "kline": "",
         })
 
@@ -592,7 +602,7 @@ def api_agent_chat_stream():
         ctx_len = len(stock_data_context)
 
         # Phase 1: 推送元数据（K线表格 + 基本信息，前端立即渲染卡片壳）
-        yield f"data: {json.dumps({'type': 'meta', 'kline': kline_data, '_ts': ts, '_code': stock_code_in_msg or '', '_ctx': ctx_len}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'meta', 'kline': kline_data, '_ts': ts, '_code': stock_code_in_msg or '', '_name': resolved_name or '', '_ctx': ctx_len}, ensure_ascii=False)}\n\n"
 
         # Phase 2: 流式推送 LLM 输出
         full_reply = ""
@@ -600,6 +610,7 @@ def api_agent_chat_stream():
             for chunk in agent.chat_stream(
                 user_message, all_candidates, hot_sectors, signals,
                 chat_history, stock_data_context, sector_ts_context,
+                resolved_code=resolved_code,
             ):
                 if chunk is None:
                     break
@@ -609,7 +620,7 @@ def api_agent_chat_stream():
             logger.error("SSE stream error: %s", e)
 
         # Phase 3: 完成信号
-        yield f"data: {json.dumps({'type': 'done', '_ts': ts, '_code': stock_code_in_msg or '', '_ctx': ctx_len}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'done', '_ts': ts, '_code': stock_code_in_msg or '', '_name': resolved_name or '', '_ctx': ctx_len}, ensure_ascii=False)}\n\n"
 
     return Response(
         stream_with_context(generate()),
@@ -645,10 +656,136 @@ def _get_daily_score_info(code: str) -> Optional[dict]:
         return None
 
 
-def _extract_stock_code(text):
-    """从文本中提取6位股票代码"""
+# ── 股票名称→代码全局索引（惰性加载）─────────────────────────
+_stock_name_index: Optional[dict] = None  # {"贵州茅台": "600519", "茅台": "600519", ...}
+
+
+def _build_stock_name_index() -> dict:
+    """构建股票名称→代码映射表。
+
+    数据来源：
+    1. adata 缓存的全部A股列表（~5000只，含完整名称）
+    2. 候选池实时数据（名称别名/简称）
+
+    每个股票产生多条索引：
+    - 完整名称 → 代码
+    - 去后缀简称（去掉"科技"/"股份"/"集团"等）→ 代码
+    - 2-4字核心品牌名（仅当唯一时）→ 代码
+    """
+    global _stock_name_index
+    if _stock_name_index is not None:
+        return _stock_name_index
+
+    idx: dict[str, str] = {}
+
+    # 来源1: adata 缓存的全量股票列表
+    try:
+        from layer1_data.fetcher import DataFetcher
+        fetcher = DataFetcher()
+        df = fetcher.all_stocks()
+        if df is not None and len(df) > 0:
+            for _, row in df.iterrows():
+                code = str(row.get("stock_code", "")).strip()
+                name = str(row.get("short_name", "")).strip()
+                if not code or not name or len(code) != 6:
+                    continue
+                # 完整名称
+                idx[name] = code
+                # 去常见后缀
+                short = re.sub(r'(科技|股份|集团|控股|实业|医药|电子|光电|智能|'
+                               r'新材|材料|电气|装备|重工|精工|能源|环境|'
+                               r'食品|饮料|传媒|通信|数据|软件|互联|激光|'
+                               r'生物|医疗|检测|技术|建设|工程|服务|银行|'
+                               r'证券|保险|信托|租赁|地产|物业|投资|发展|'
+                               r'有限|有限公司|股份公司)$', '', name)
+                if short and short != name and len(short) >= 2:
+                    if short not in idx:
+                        idx[short] = code
+                # 2-4字核心品牌名（仅当唯一时）
+                core = re.sub(r'[科技股份集团控股实业有限公司A-Za-z]', '', name)
+                if 2 <= len(core) <= 4 and core != name:
+                    if core not in idx:
+                        idx[core] = code
+                    else:
+                        # 冲突：标记为 None 表示不唯一
+                        idx[core] = None  # type: ignore
+                # 尾部品牌名：A股名称常为"地域+品牌"结构，取后2-3字作为品牌简称
+                # 如"贵州茅台"→"茅台"、"宁德时代"→"时代"
+                if len(name) >= 4:
+                    for k in [name[-2:], name[-3:]]:
+                        if k not in idx:
+                            idx[k] = code
+                        elif idx[k] is not None and idx[k] != code:
+                            idx[k] = None  # type: ignore
+            logger.info("股票名称索引: %d 条 (来自 adata %d 只股票)", len(idx), len(df))
+    except Exception as e:
+        logger.warning("构建股票名称索引失败(adata): %s", e)
+
+    # 清理冲突项
+    idx = {k: v for k, v in idx.items() if v is not None}
+
+    # 来源2: 候选池实时数据补充
+    try:
+        data = select_stocks(collector=collector)
+        for pool_name in ["pool_a", "pool_b"]:
+            for s in data.get(pool_name, []):
+                code = s.get("code", "")
+                name = s.get("name", "")
+                if code and name:
+                    idx[name] = code
+    except Exception:
+        pass
+
+    _stock_name_index = idx
+    logger.info("股票名称索引最终: %d 条", len(idx))
+    return idx
+
+
+def _resolve_stock_code(text: str) -> Optional[tuple[str, str]]:
+    """从文本中解析股票，返回 (代码, 名称) 或 None。
+
+    支持：
+    - 6位数字代码：如 "600519"
+    - 完整股票名称：如 "贵州茅台"
+    - 简称/品牌名：如 "茅台"、"宁德"
+    - 名称+诊断意图：如 "分析一下茅台"
+    """
+    if not text:
+        return None
+
+    # 1. 6位数字代码优先
     m = re.search(r'(?<!\d)(\d{6})(?!\d)', text)
-    return m.group(1) if m else None
+    if m:
+        code = m.group(1)
+        # 尝试获取名称
+        idx = _build_stock_name_index()
+        name = ""
+        for n, c in idx.items():
+            if c == code and len(n) >= 4:
+                name = n
+                break
+        logger.info("StockResolve: 代码匹配 %s -> %s", code, name or "?")
+        return (code, name)
+
+    # 2. 名称匹配：从索引中查找
+    idx = _build_stock_name_index()
+    if not idx:
+        return None
+
+    # 按名称长度降序匹配（优先完整名称，避免 "茅台" 匹配到 "贵州茅台" 之前误匹配其他）
+    for name in sorted(idx.keys(), key=len, reverse=True):
+        if name in text:
+            code = idx[name]
+            logger.info("StockResolve: 名称匹配 '%s' -> %s", name, code)
+            return (code, name)
+
+    return None
+
+
+def _extract_stock_code(text):
+    """从文本中提取6位股票代码（兼容旧接口，内部调用 _resolve_stock_code）。"""
+    result = _resolve_stock_code(text)
+    return result[0] if result else None
 
 def _analyze_kline_events(df):
     """分析K线历史，自动标注关键事件。返回 {行序号: [事件标签]} 和统计摘要。"""
@@ -848,7 +985,8 @@ def _extract_stock_context(user_message, diagnose_data: Optional[dict] = None):
     当 diagnose_data 可用时（前端已调用 /api/stock/diagnose 预加载），
     直接从诊断数据构建上下文，避免重复调用 quick_scan + analyze_stock。
     """
-    code = _extract_stock_code(user_message)
+    resolved = _resolve_stock_code(user_message)
+    code = resolved[0] if resolved else None
     if not code:
         logger.info("StockContext: 未提取到股票代码, msg=%.60s", user_message)
         return "", ""
@@ -1104,6 +1242,72 @@ def _extract_stock_context(user_message, diagnose_data: Optional[dict] = None):
             f"[请告知用户当前无法获取实时数据，建议稍后重试或查看候选池中其他标的。"
             f"禁止编造数据。]"
         ), ""
+
+
+@app.route("/api/stock/search")
+def api_stock_search():
+    """搜索股票（支持代码或名称模糊匹配）。前端用于诊断前解析股票名称。
+
+    支持两种查询模式：
+    1. 精确查询："茅台"、"600519" → 直接匹配
+    2. 全文查询："分析一下贵州茅台" → 从消息中提取股票名称再匹配
+
+    GET /api/stock/search?q=茅台
+    → {"matches": [{"code": "600519", "name": "贵州茅台"}, ...], "best": {"code": "600519", "name": "贵州茅台"}}
+    """
+    q = request.args.get("q", "").strip()
+    if not q:
+        return jsonify({"matches": [], "best": None})
+
+    idx = _build_stock_name_index()
+    matches = []
+
+    # 1. 精确代码匹配
+    if re.match(r'^\d{6}$', q):
+        for name, code in idx.items():
+            if code == q and len(name) >= 4:
+                matches.append({"code": code, "name": name})
+                break
+
+    # 2. 名称包含匹配（q 是短名称，在完整名称中查找，如 "茅台" in "贵州茅台"）
+    if not matches:
+        seen = set()
+        for name in sorted(idx.keys(), key=len, reverse=True):
+            if len(seen) >= 20:
+                break
+            if q in name:
+                code = idx[name]
+                if code not in seen:
+                    seen.add(code)
+                    matches.append({"code": code, "name": name})
+
+    # 3. 全文反向匹配（q 是完整消息如"分析一下贵州茅台"，从中提取已知股票名称）
+    if not matches and len(q) > 4:
+        seen = set()
+        for name in sorted(idx.keys(), key=len, reverse=True):
+            if len(name) < 2 or len(seen) >= 10:
+                continue
+            if name in q:
+                code = idx[name]
+                if code not in seen:
+                    seen.add(code)
+                    matches.append({"code": code, "name": name})
+
+    # 4. 候选池补充
+    if not matches:
+        try:
+            data = select_stocks(collector=collector)
+            for pool_name in ["pool_a", "pool_b"]:
+                for s in data.get(pool_name, []):
+                    name = s.get("name", "")
+                    if (q in name or (len(q) > 4 and name in q)) and len(matches) < 5:
+                        matches.append({"code": s.get("code", ""), "name": name})
+        except Exception:
+            pass
+
+    best = matches[0] if matches else None
+    logger.info("StockSearch: q='%s' → %d matches, best=%s", q, len(matches), best)
+    return jsonify({"matches": matches, "best": best})
 
 
 @app.route("/api/stock/analyze")

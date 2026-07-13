@@ -371,17 +371,21 @@ class DecisionAgent:
         chat_history: list[dict] = None,
         stock_context: str = "",
         sector_timeseries: str = "",
+        resolved_code: str = "",
     ) -> Optional[str]:
         """多轮对话——智能体核心入口。
 
         根据用户问题类型，自动构建最合适的 system prompt。
         个股分析是最重要的功能，会附带实时K线+技术面上下文。
+
+        Args:
+            resolved_code: 后端通过名称/代码解析到的股票代码，用于辅助问题分类
         """
         if not self._init_client():
             return None
 
         # 判断问题类型
-        question_type = self._classify_question(user_message)
+        question_type = self._classify_question(user_message, resolved_code)
 
         # 构建上下文
         intra_ctx = ContextBuilder.build_intraday_context(
@@ -474,17 +478,21 @@ class DecisionAgent:
         chat_history: list[dict] = None,
         stock_context: str = "",
         sector_timeseries: str = "",
+        resolved_code: str = "",
     ):
         """流式多轮对话——逐 chunk 返回，消除首字等待时间。
 
         与 chat() 使用相同的 prompt 构建逻辑，但通过 stream=True
         逐个 yield content delta。前端通过 SSE 接收，实现渐进式渲染。
+
+        Args:
+            resolved_code: 后端通过名称/代码解析到的股票代码，用于辅助问题分类
         """
         if not self._init_client():
             yield None
             return
 
-        question_type = self._classify_question(user_message)
+        question_type = self._classify_question(user_message, resolved_code)
         intra_ctx = ContextBuilder.build_intraday_context(
             candidates, hot_sectors, signals, 0.5
         )
@@ -563,8 +571,14 @@ class DecisionAgent:
             yield None
 
     @staticmethod
-    def _classify_question(msg: str) -> str:
-        """根据用户消息判断问题类型。"""
+    def _classify_question(msg: str, resolved_code: str = "") -> str:
+        """根据用户消息判断问题类型。
+
+        Args:
+            msg: 用户消息文本
+            resolved_code: 后端已解析的股票代码（通过名称或代码匹配），
+                           非空时优先判定为个股诊断。
+        """
         has_stock_code = bool(re.search(r'(?<!\d)\d{6}(?!\d)', msg))
 
         # 持股决策：持有/持仓/买入/卖出/止损/止盈/加仓/减仓/清仓
@@ -578,8 +592,8 @@ class DecisionAgent:
                                       "汇率", "海外", "外围", "纳斯达克", "标普", "道指",
                                       "恒生", "富时", "夜盘"]):
             return "external_info"
-        # 个股诊断：包含6位数字代码（排在 holding_decision/external_info 之后）
-        if has_stock_code:
+        # 个股诊断：包含6位数字代码 或 后端已解析到具体股票（排在 holding_decision/external_info 之后）
+        if has_stock_code or resolved_code:
             return "stock_analysis"
         # 板块分析
         if any(kw in msg for kw in ["板块", "行业", "概念", "赛道", "热点"]):
@@ -590,7 +604,7 @@ class DecisionAgent:
         # 选股推荐
         if any(kw in msg for kw in ["推荐", "选股", "买什么", "有什么", "机会", "候选"]):
             return "stock_pick"
-        # 个股分析fallback：短消息含分析关键词
+        # 个股分析fallback：短消息含分析关键词 或 后端已解析到股票
         if any(kw in msg for kw in ["分析", "诊断", "走势", "怎么看"]):
             if len(msg) < 30:
                 return "stock_analysis"

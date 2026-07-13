@@ -1385,7 +1385,7 @@ function initSectorChart() {
 function buildLegend() {
   if (!sectorData || !sectorData.rank) return;
   let html = '';
-  sectorData.rank.slice(0, 10).forEach(r => {
+  sectorData.rank.forEach(r => {
     html += `<div class="chart-legend-item" data-name="${r.name}"
       onmouseenter="highlightSeries('${r.name}')" onmouseleave="unhighlightSeries()">
       <span class="chart-legend-dot" style="background:${r.color||'#999'}"></span>${r.name}</div>`;
@@ -1426,17 +1426,17 @@ function updateSectorChart(timeIdx) {
 
   const echartsOptions = {
     tooltip: {
-      trigger: 'axis', backgroundColor: 'rgba(255,255,255,0.96)',
+      trigger: 'item', backgroundColor: 'rgba(255,255,255,0.96)',
       borderColor: '#e3e2e7', textStyle: { fontSize: 12, color: '#1a1b1f', fontFamily: 'Inter, sans-serif' },
-      formatter: function(ps) {
-        const valid = ps.filter(p => p.value != null);
-        if (!valid.length) return '';
-        valid.sort((a, b) => b.value - a.value);
-        let h = `<div style="font-weight:600;margin-bottom:4px">${timeLabel}</div>`;
-        valid.slice(0, 8).forEach(p => {
-          h += `<div style="display:flex;justify-content:space-between;gap:12px">${p.marker}${p.seriesName}<b style="font-family:var(--font-mono)">${(p.value>=0?'+':'')}${p.value.toFixed(2)}亿/分</b></div>`;
-        });
-        return h;
+      formatter: function(p) {
+        if (p.value == null) return '';
+        const ratio = sectorData.series[p.seriesName]?.ratio_values?.[p.dataIndex];
+        const ratioStr = ratio != null ? `${(ratio>=0?'+':'')}${ratio.toFixed(2)}%` : '--';
+        return `<div style="font-weight:600;margin-bottom:4px">${p.seriesName} · ${timeLabel}</div>
+          <div style="display:flex;gap:16px;font-family:var(--font-mono)">
+            <span>主力净额 <b>${(p.value>=0?'+':'')}${p.value.toFixed(2)}亿</b></span>
+            <span style="color:#717785">净占比 <b>${ratioStr}</b></span>
+          </div>`;
       }
     },
     grid: { left: 55, right: 16, top: 8, bottom: 24 },
@@ -2046,18 +2046,33 @@ async function sendChat() {
   const sendBtn = document.getElementById('chatSendBtn');
   sendBtn.disabled = true;
 
-  // 检测股票代码，预加载诊断数据
-  const stockMatch = msg.match(/\b(\d{6})\b/);
+  // 检测股票（代码或名称），预加载诊断数据
+  const stockCodeMatch = msg.match(/\b(\d{6})\b/);
   let diagData = null;
-  if (stockMatch) {
+  let resolvedStockCode = null;
+  if (stockCodeMatch) {
+    resolvedStockCode = stockCodeMatch[1];
+  } else {
+    // 无6位代码时，尝试通过名称搜索解析股票
     try {
-      const dr = await fetch('/api/stock/diagnose?code=' + stockMatch[1]);
+      const sr = await fetch('/api/stock/search?q=' + encodeURIComponent(msg));
+      const searchResult = await sr.json();
+      if (searchResult.best && searchResult.best.code) {
+        resolvedStockCode = searchResult.best.code;
+        console.log('名称解析股票:', searchResult.best.name, searchResult.best.code);
+      }
+    } catch(e) { /* 搜索失败不影响主流程 */ }
+  }
+
+  if (resolvedStockCode) {
+    try {
+      const dr = await fetch('/api/stock/diagnose?code=' + resolvedStockCode);
       diagData = await dr.json();
     } catch(e) { /* 诊断接口失败不影响主流程 */ }
   }
 
   // 板块消息检测
-  const isSectorMsg = /板块|行业|概念|赛道|热点/.test(msg) && !stockMatch;
+  const isSectorMsg = /板块|行业|概念|赛道|热点/.test(msg) && !resolvedStockCode;
 
   try {
     // 使用 SSE 流式端点，渐进渲染
