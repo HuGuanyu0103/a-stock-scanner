@@ -43,6 +43,7 @@ try:
     from .sentiment_collector import SentimentCollector
     from .news_monitor import NewsMonitor
     from .pre_market import PreMarketScanner
+    from .report_store import get_report_store, check_and_generate, REPORT_META, REPORT_TYPES
 except ImportError:
     from collector import SectorFlowCollector, WATCH_SECTORS  # type: ignore[no-redef]
     from data_fetcher import (  # type: ignore[no-redef]
@@ -57,6 +58,7 @@ except ImportError:
     from sentiment_collector import SentimentCollector  # type: ignore[no-redef]
     from news_monitor import NewsMonitor  # type: ignore[no-redef]
     from pre_market import PreMarketScanner  # type: ignore[no-redef]
+    from report_store import get_report_store, check_and_generate, REPORT_META, REPORT_TYPES  # type: ignore[no-redef]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -159,6 +161,30 @@ def api_data():
     else:
         data = collector.get_dashboard_data(sector_type=sector_type,
                                              watch_sectors=sectors_param.split(",") if sectors_param else None)
+    return jsonify(data)
+
+
+@app.route("/api/data/delta")
+def api_data_delta():
+    """增量更新：仅返回 since_time_idx 之后的新数据点。
+
+    前端轮询时使用，避免每次传输全量 ~30KB JSON。
+    ?type=watch&since=N&sectors=a,b,c
+    """
+    sector_type = request.args.get("type", "watch")
+    if sector_type not in ("concept", "industry", "watch"):
+        sector_type = "watch"
+    since = int(request.args.get("since", -1))
+    sectors_param = request.args.get("sectors", "").strip()
+
+    if collector is not None:
+        data = collector.get_dashboard_delta(
+            since,
+            watch_sectors=sectors_param.split(",") if sectors_param else None,
+        )
+    else:
+        data = {"time_label": "--:--", "time_index": 0, "total_times": 0,
+                "new_data": {}, "rank": [], "is_trading": False}
     return jsonify(data)
 
 
@@ -794,6 +820,146 @@ def api_daily_scorer_status():
 
 
 # ── 启动时自动跑日评分 ──────────────────────────────────────
+
+
+# ── 研究报告端点 ──────────────────────────────────────────
+
+@app.route("/api/research/reports")
+def api_research_reports():
+    """返回指定日期的所有报告。?date=YYYY-MM-DD（可选，默认今天）。"""
+    date_param = request.args.get("date", "").strip() or None
+    store = get_report_store()
+    reports = store.get_by_date(date_param)
+
+    # 补齐未生成的报告（返回占位信息供前端渲染时间线）
+    today = (date_param or datetime.now().strftime("%Y-%m-%d"))
+    existing_types = {r["report_type"] for r in reports}
+
+    result = []
+    for rtype in ["pre_market", "morning_close", "midday_preview", "full_day_review"]:
+        # 周末只显示已有的
+        is_weekend = datetime.strptime(today, "%Y-%m-%d").weekday() >= 5 if len(today) == 10 else False
+        meta = REPORT_META.get(rtype, {})
+
+        if rtype in existing_types:
+            r = next(r for r in reports if r["report_type"] == rtype)
+            result.append({
+                "id": r["id"],
+                "type": r["report_type"],
+                "title": r["title"],
+                "content": r["content"],
+                "data": json.loads(r["data_json"]) if r.get("data_json") else {},
+                "date": r["report_date"],
+                "generated_at": r["generated_at"],
+                "status": r.get("status", "generated"),
+            })
+        elif not is_weekend and today == datetime.now().strftime("%Y-%m-%d"):
+            # 今天还没到时间的报告
+            now_hm = datetime.now().hour * 60 + datetime.now().minute
+            due_hm = meta.get("hour", 0) * 60 + meta.get("minute", 0)
+            result.append({
+                "id": None,
+                "type": rtype,
+                "title": meta.get("title", rtype),
+                "content": "",
+                "data": {},
+                "date": today,
+                "generated_at": None,
+                "status": "pending" if now_hm < due_hm else "generating",
+                "due_time": meta.get("time", ""),
+            })
+
+    # 周五加周度总结
+    if len(today) == 10:
+        dt = datetime.strptime(today, "%Y-%m-%d")
+        if dt.weekday() == 4:
+            wk_in = [r for r in reports if r["report_type"] == "weekly_summary"]
+            if wk_in:
+                r = wk_in[0]
+                result.append({
+                    "id": r["id"], "type": r["report_type"], "title": r["title"],
+                    "content": r["content"],
+                    "data": json.loads(r["data_json"]) if r.get("data_json") else {},
+                    "date": r["report_date"], "generated_at": r["generated_at"],
+                    "status": r.get("status", "generated"),
+                })
+            elif today == datetime.now().strftime("%Y-%m-%d"):
+                result.append({
+                    "id": None, "type": "weekly_summary",
+                    "title": "周度总结", "content": "", "data": {},
+                    "date": today, "generated_at": None,
+                    "status": "pending", "due_time": "周五 15:30",
+                })
+
+    return jsonify({"reports": result, "date": today})
+
+
+@app.route("/api/research/report/<int:report_id>")
+def api_research_report(report_id):
+    """获取单个报告完整内容。"""
+    store = get_report_store()
+    r = store.get_by_id(report_id)
+    if not r:
+        return jsonify({"error": "报告不存在"}), 404
+    return jsonify({
+        "id": r["id"],
+        "type": r["report_type"],
+        "title": r["title"],
+        "content": r["content"],
+        "data": json.loads(r["data_json"]) if r.get("data_json") else {},
+        "date": r["report_date"],
+        "generated_at": r["generated_at"],
+        "status": r.get("status", "generated"),
+        "meta": REPORT_META.get(r["report_type"], {}),
+    })
+
+
+@app.route("/api/research/history")
+def api_research_history():
+    """返回有报告的日期列表。"""
+    store = get_report_store()
+    dates = store.get_available_dates(limit=60)
+    return jsonify({"dates": dates})
+
+
+@app.route("/api/research/generate", methods=["POST"])
+def api_research_generate():
+    """手动触发报告生成。?type=pre_market|morning_close|...&force=1"""
+    rtype = request.args.get("type", "pre_market").strip()
+    force = request.args.get("force", "0") == "1"
+
+    if rtype not in REPORT_TYPES:
+        return jsonify({"error": f"未知报告类型: {rtype}"}), 400
+
+    store = get_report_store()
+    gen_map = {
+        "pre_market": store.generate_pre_market,
+        "morning_close": store.generate_morning_close,
+        "midday_preview": store.generate_midday_preview,
+        "full_day_review": store.generate_full_day_review,
+        "weekly_summary": store.generate_weekly_summary,
+        "signal_review": store.generate_signal_review,
+    }
+
+    try:
+        r = gen_map[rtype](force=force)
+        if r:
+            return jsonify({"status": "ok", "report": {
+                "id": r["id"], "type": r["report_type"], "title": r["title"],
+                "content": r["content"][:500], "date": r["report_date"],
+                "generated_at": r["generated_at"],
+            }})
+        return jsonify({"status": "skipped", "message": f"{rtype} 不可生成（时间未到或已存在）"})
+    except Exception as e:
+        logger.error("报告生成失败 %s: %s", rtype, e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/research/check")
+def api_research_check():
+    """检查并自动生成应生成的报告（前端轮询此端点）。"""
+    generated = check_and_generate()
+    return jsonify({"generated": generated, "time": datetime.now().strftime("%H:%M:%S")})
 
 
 # ── AI Agent 端点 ─────────────────────────────────────────────
@@ -2093,6 +2259,17 @@ def _auto_run_daily_scorer():
 
 
 _auto_run_daily_scorer()
+
+# 启动时检查是否有应生成的报告（如启动时已在 9:25 之后但盘前简报未生成）
+def _auto_generate_reports():
+    try:
+        generated = check_and_generate()
+        if generated:
+            logger.info("启动时自动生成报告: %s", generated)
+    except Exception as e:
+        logger.warning("自动报告生成检查失败: %s", e)
+
+_auto_generate_reports()
 
 
 if __name__ == "__main__":

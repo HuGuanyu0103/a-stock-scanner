@@ -379,8 +379,7 @@ def generate_report() -> str:
                             ks.get("reason","")))
                 ks_ctx = "\n".join(ks_lines)
             brief = agent.generate_pre_market_brief(
-                indices, breadth, anomalies, hot_sectors,
-                key_stocks_context=ks_ctx
+                indices, breadth, anomalies, hot_sectors
             )
             if brief:
                 logger.info("Agent 简报生成成功")
@@ -466,6 +465,15 @@ def main():
     if dry_run:
         print("[DRY RUN] 未推送，仅预览")
         return
+
+    # 保存到 ReportStore（供前端研究报告标签页展示）
+    try:
+        from report_store import get_report_store
+        store = get_report_store()
+        store.save("pre_market", report, {"source": "cron", "generated_by": "pre_market_report.py"})
+        print("📋 报告已保存到本地存储")
+    except Exception as e:
+        print(f"⚠️ 保存到本地存储失败: {e}")
 
     success = send_report(report)
     if success:
