@@ -287,8 +287,13 @@ def _load_market_daily_cache():
         cf = DATA_DIR / "market_daily_cache.json"
         if cf.exists():
             _market_daily_cache = json.loads(cf.read_text())
+        # 如果是新的一天，把昨天的值挪到 _prev 供对比
+        today = datetime.now().strftime("%Y%m%d")
+        if _market_daily_cache.get("_date") != today:
+            yesterday_amt = _market_daily_cache.get("total_amount", 0)
+            _market_daily_cache = {"_date": today, "_prev_amount": yesterday_amt, "_prev_date": _market_daily_cache.get("_date", "")}
     except Exception:
-        _market_daily_cache = {}
+        _market_daily_cache = {"_date": datetime.now().strftime("%Y%m%d"), "_prev_amount": 0, "_prev_date": ""}
 
 def _save_market_daily_cache():
     try:
@@ -317,12 +322,39 @@ def _load_daily_scores_for_breadth():
 # 全市场涨跌缓存（60秒刷新）
 _adv_decline_cache: Optional[dict] = None
 _adv_decline_ts: float = 0
+_all_stock_codes_cache: list[str] = []
+
+def _get_all_stock_codes() -> list[str]:
+    """从 adata 本地缓存获取全市场 ~5500 只股票代码（含创业板/科创板/北交）。"""
+    global _all_stock_codes_cache
+    if _all_stock_codes_cache:
+        return _all_stock_codes_cache
+    try:
+        cache_path = os.path.expanduser(
+            "~/Library/Python/3.9/lib/python/site-packages/adata/stock/cache/code.csv"
+        )
+        if os.path.exists(cache_path):
+            import pandas as pd
+            df = pd.read_csv(cache_path)
+            if "stock_code" in df.columns:
+                codes = df["stock_code"].astype(str).str.zfill(6)
+                # 过滤退市/B股
+                if "short_name" in df.columns:
+                    mask = ~df["short_name"].str.contains("退|B股", na=False)
+                    codes = codes[mask]
+                _all_stock_codes_cache = codes.tolist()
+                logger.info("全市场股票代码: %d 只", len(_all_stock_codes_cache))
+                return _all_stock_codes_cache
+    except Exception as e:
+        logger.warning("读取 adata 股票缓存失败: %s", e)
+    return []
 
 def _fetch_market_adv_decline() -> Optional[dict]:
-    """从 adata 获取全市场涨跌家数 + 涨停/跌停。
+    """获取全市场涨跌家数 + 涨停/跌停。
 
-    用日评分缓存的 ~2700 只股票代码批量查询 adata，
-    结果缓存 60 秒避免重复全量拉取。
+    主源: adata.stock.market.list_market_current (~5500只全覆盖)
+    备源: 新浪总股数 + collector market_breadth 估算
+    缓存 60 秒。
     """
     global _adv_decline_cache, _adv_decline_ts
     import time as _time
@@ -330,48 +362,72 @@ def _fetch_market_adv_decline() -> Optional[dict]:
     if _adv_decline_cache and (now - _adv_decline_ts) < 60:
         return _adv_decline_cache
 
-    # 获取股票代码列表（用最近一期的日评分文件）
-    codes = list(_DAILY_SCORES_CACHE.keys()) if _DAILY_SCORES_CACHE else []
-    if not codes:
+    # ── 主源: adata 批量查询 ──
+    codes = _get_all_stock_codes()
+    if codes:
         try:
-            # 找最近日期的日评分文件
-            files = sorted(DATA_DIR.glob("daily_scores_*.json"))
-            if files:
-                _DAILY_SCORES_CACHE.update(json.loads(files[-1].read_text()))
-                codes = list(_DAILY_SCORES_CACHE.keys())
-        except Exception:
-            pass
-    if not codes:
-        return None
-
-    try:
-        import adata
-        all_up, all_down = 0, 0
-        all_lu, all_ld, total = 0, 0, 0
-        for i in range(0, len(codes), 500):
-            chunk = codes[i:i+500]
-            try:
-                df = adata.stock.market.list_market_current(code_list=chunk)
-                if df is None or df.empty:
+            import adata
+            all_up, all_down = 0, 0
+            all_lu, all_ld, total = 0, 0, 0
+            for i in range(0, len(codes), 500):
+                chunk = codes[i:i+500]
+                try:
+                    df = adata.stock.market.list_market_current(code_list=chunk)
+                    if df is None or df.empty:
+                        continue
+                    pct = df['change_pct'].astype(float)
+                    total += len(df)
+                    all_up += (pct > 0).sum()
+                    all_down += (pct < 0).sum()
+                    all_lu += (pct >= 9.8).sum()
+                    all_ld += (pct <= -9.8).sum()
+                except Exception:
                     continue
-                pct = df['change_pct'].astype(float)
-                total += len(df)
-                all_up += (pct > 0).sum()
-                all_down += (pct < 0).sum()
-                all_lu += (pct >= 9.8).sum()
-                all_ld += (pct <= -9.8).sum()
+            if total > 0:
+                _adv_decline_cache = {
+                    "up": int(all_up), "down": int(all_down),
+                    "total": int(total), "limit_up": int(all_lu),
+                    "limit_down": int(all_ld), "_src": "adata",
+                }
+                _adv_decline_ts = now
+                return _adv_decline_cache
+        except Exception as e:
+            logger.warning("adata 全市场涨跌获取失败: %s", e)
+
+    # ── 备源: 新浪总数 + collector breadth 估算 ──
+    try:
+        import requests as _rq3
+        s = _rq3.Session(); s.trust_env = False
+        r = s.get("https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeStockCount?node=hs_a", timeout=5)
+        total_sina = int(r.text.strip().strip('"'))
+        if total_sina > 1000:
+            # 从 DB 获取 sector-based breadth
+            try:
+                import sqlite3
+                conn = sqlite3.connect(str(DATA_DIR / "collector.db"))
+                today = datetime.now().strftime("%Y-%m-%d")
+                row = conn.execute("SELECT data FROM concept_snapshots WHERE date=? ORDER BY id DESC LIMIT 1", (today,)).fetchone()
+                conn.close()
+                if row:
+                    data = json.loads(row[0])
+                    sectors = data.get("sectors", [])
+                    up_s = sum(1 for s in sectors if (s.get("pct_chg") or 0) > 0)
+                    b = up_s / len(sectors) if sectors else 0.5
+                else:
+                    b = 0.5
             except Exception:
-                continue
-        if total > 0:
+                b = 0.5
+            up_est = int(total_sina * b)
             _adv_decline_cache = {
-                "up": int(all_up), "down": int(all_down),
-                "total": int(total), "limit_up": int(all_lu),
-                "limit_down": int(all_ld),
+                "up": up_est, "down": total_sina - up_est,
+                "total": total_sina, "limit_up": 0, "limit_down": 0,
+                "_src": "sina_est",
             }
             _adv_decline_ts = now
             return _adv_decline_cache
     except Exception as e:
-        logger.warning("adata 全市场涨跌获取失败: %s", e)
+        logger.warning("新浪涨跌估算失败: %s", e)
+
     return None
 
 
@@ -453,38 +509,20 @@ def api_market_overview():
     sent_data = signals.get("sentiment", {}).get("data", {})
     market = sent_data.get("market", {}) if sent_data else {}
 
-    # 涨跌家数 + 涨停/跌停 — 优先 adata 实时，降级 breadth 估算
+    # 涨跌家数 + 涨停/跌停
     adv_decline = _fetch_market_adv_decline()
+    adv_src = adv_decline.get("_src", "live") if adv_decline else "none"
     if adv_decline:
-        result["metrics"]["breadth"] = {"value": f"{adv_decline['up']}/{adv_decline['down']}", "label": "上涨/下跌", "_src": "live"}
-        # 涨停/跌停优先用 adata 数据
+        result["metrics"]["breadth"] = {"value": f"{adv_decline['up']}/{adv_decline['down']}", "label": "上涨/下跌", "_src": adv_src}
         lu = adv_decline.get("limit_up", 0)
         ld = adv_decline.get("limit_down", 0)
         if lu > 0 or ld > 0:
-            result["metrics"]["limit"] = {"value": f"{lu}/{ld}", "label": "涨停/跌停", "_src": "live"}
+            result["metrics"]["limit"] = {"value": f"{lu}/{ld}", "label": "涨停/跌停", "_src": adv_src}
         else:
-            # 降级用 sentiment_collector 的涨停数
-            limit_up_s = market.get("limit_up_count")
-            if limit_up_s is not None:
-                result["metrics"]["limit"] = {"value": f"{limit_up_s}/{ld}", "label": "涨停/跌停", "_src": "live"}
-            else:
-                result["metrics"]["limit"] = {"value": None, "label": "涨停/跌停", "_src": "none"}
+            result["metrics"]["limit"] = {"value": f"{lu}/{ld}", "label": "涨停/跌停", "_src": "fallback"}
     else:
-        # 降级：用 breadth 估算
-        total_stocks = len(_DAILY_SCORES_CACHE) if _DAILY_SCORES_CACHE else 5000
-        b = market.get("market_breadth", 0.5) or 0.5
-        up_est = int(total_stocks * b)
-        down_est = total_stocks - up_est
-        if total_stocks > 100:
-            result["metrics"]["breadth"] = {"value": f"{up_est}/{down_est}", "label": "上涨/下跌", "_src": "fallback"}
-        else:
-            result["metrics"]["breadth"] = {"value": None, "label": "上涨/下跌", "_src": "none"}
-        # 涨停/跌停降级
-        limit_up_s = market.get("limit_up_count")
-        if limit_up_s is not None:
-            result["metrics"]["limit"] = {"value": f"{limit_up_s}/--", "label": "涨停/跌停", "_src": "live"}
-        else:
-            result["metrics"]["limit"] = {"value": None, "label": "涨停/跌停", "_src": "none"}
+        result["metrics"]["breadth"] = {"value": None, "label": "上涨/下跌", "_src": "none"}
+        result["metrics"]["limit"] = {"value": None, "label": "涨停/跌停", "_src": "none"}
 
     # 缓存日评数据供降级使用
     _load_daily_scores_for_breadth()
@@ -504,23 +542,44 @@ def api_market_overview():
     else:
         result["metrics"]["sentiment"] = {"value": None, "label": "情绪指数", "_src": "none"}
 
-    # 全市场成交额 - 从腾讯指数数据提取（上证+深证成交额之和，万元→亿元）
+    # 全市场成交额 — 主源腾讯，备源新浪
     total_amount = 0
     for r in df_rows:
+        code = r.get("stock_code", "")
+        if code in ("399006",):  # 创业板指是深证子集，跳过避免重复计算
+            continue
         amt = r.get("amount", 0) or 0
         if amt > 0:
             total_amount += amt
+
+    # 备源：新浪财经（腾讯失败时）
+    if total_amount == 0:
+        try:
+            sina_sess = _rq.Session(); sina_sess.trust_env = False
+            sr = sina_sess.get("https://hq.sinajs.cn/list=sh000001,sz399001", timeout=5,
+                               headers={"Referer": "https://finance.sina.com.cn"})
+            sr.encoding = "gbk"
+            for line in sr.text.strip().split("\n"):
+                if "=" not in line: continue
+                _, v = line.split("=", 1); v = v.strip().strip('"')
+                fields = v.split(",")
+                if len(fields) > 9 and fields[9]:
+                    total_amount += float(fields[9]) / 1e4  # 新浪是元→万元
+            result["_amount_src"] = "sina"
+        except Exception:
+            pass
     if total_amount > 0:
         amt_yi = round(total_amount / 1e4)
-        # 较上一日变化
-        prev = _market_daily_cache.get("total_amount")
+        # 较上一日变化（绝对值）
+        prev = _market_daily_cache.get("_prev_amount", 0)
         delta_str = ""
-        if prev is not None:
-            delta = round((amt_yi - prev) / prev * 100, 1) if prev > 0 else 0
+        if prev > 0:
+            delta = amt_yi - prev
             sign = "+" if delta >= 0 else ""
-            delta_str = f" ({sign}{delta}%)"
+            delta_str = f" ({sign}{delta})"
         _market_daily_cache["total_amount"] = amt_yi
-        result["metrics"]["total_amount"] = {"value": str(amt_yi) + delta_str, "label": "成交额(亿)", "_src": "live"}
+        _save_market_daily_cache()
+        result["metrics"]["total_amount"] = {"value": str(amt_yi) + delta_str, "label": "成交额(亿)", "_src": result.get("_amount_src", "live")}
     else:
         result["metrics"]["total_amount"] = {"value": None, "label": "成交额(亿)", "_src": "none"}
 
