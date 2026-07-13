@@ -122,7 +122,7 @@ body {
 .dashboard { flex: 1; display: flex; padding: 20px; gap: 20px; overflow: hidden; }
 
 /* ── Left Main Panel ───────────────────── */
-.left-main { flex: 0 0 62%; display: flex; flex-direction: column; gap: 20px; overflow-y: auto; padding-bottom: 40px; }
+.left-main { flex: 2.5; display: flex; flex-direction: column; gap: 20px; overflow-y: auto; }
 .left-main::-webkit-scrollbar { width: 4px; }
 .left-main::-webkit-scrollbar-thumb { background: #d1d1d6; border-radius: 4px; }
 
@@ -158,11 +158,36 @@ body {
 }
 
 /* ── Chart Card ─────────────────────────── */
-.chart-card { padding: 24px; }
-.chart-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
-.chart-header h3 { font-size: 18px; font-weight: 600; letter-spacing: -0.2px; display: flex; align-items: center; gap: 8px; }
+.chart-card { padding: 20px; }
+.chart-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; padding-bottom: 10px; border-bottom: 1px solid var(--border-light); }
+.chart-header h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.2px; }
 .chart-header .chart-sub { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.5px; }
 .chart-header .material-symbols-outlined { font-size: 18px; color: var(--text-tertiary); cursor: help; }
+
+/* 资金流向双栏布局 */
+/* 大盘数据子模块 */
+.market-overview { margin-bottom: 16px; padding: 16px 20px; background: var(--surface-container); border-radius: 10px; }
+.mo-indices { display: flex; gap: 16px; margin-bottom: 10px; }
+.mo-index { flex: 1; text-align: center; }
+.mo-index .mo-idx-name { font-size: 11px; color: var(--text-tertiary); margin-bottom: 2px; }
+.mo-index .mo-idx-price { font-size: 18px; font-weight: 700; font-family: var(--font-mono); }
+.mo-index .mo-idx-change { font-size: 12px; font-family: var(--font-mono); margin-top: 2px; }
+.mo-metrics { display: flex; gap: 0; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--border-light); }
+.mo-metric { flex: 1; min-width: 60px; text-align: center; padding: 4px 8px; border-right: 1px solid var(--border-light); }
+.mo-metric:last-child { border-right: none; }
+.mo-metric .mo-m-icon { font-size: 10px; margin-bottom: 2px; }
+.mo-metric .mo-m-val { font-size: 14px; font-weight: 700; font-family: var(--font-mono); line-height: 1.2; }
+.mo-metric .mo-m-label { font-size: 10px; color: var(--text-tertiary); margin-top: 1px; white-space: nowrap; }
+.mo-index[data-src="cache"] .mo-idx-price,
+.mo-metric[data-src="cache"] .mo-m-val { opacity: 0.6; font-style: italic; }
+.mo-index[data-src="none"] .mo-idx-price,
+.mo-metric[data-src="none"] .mo-m-val { color: var(--text-tertiary); }
+
+#tabFlow { flex: 1; display: flex; flex-direction: column; }
+.flow-grid { display: grid; grid-template-columns: 3fr 1fr; gap: 16px; align-items: stretch; flex: 1; }
+.flow-left { display: flex; flex-direction: column; gap: 16px; }
+.flow-grid .chart-card { margin: 0; flex: 1; }
+.flow-grid .table-card { margin: 0; }
 
 /* Segmented control */
 .segmented { display: flex; background: var(--surface-container); padding: 3px; border-radius: 10px; gap: 2px; }
@@ -177,15 +202,31 @@ body {
 
 .chart-legend {
   display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px;
-  padding-top: 14px; border-top: 1px solid var(--border-light);
 }
 .chart-legend-item {
-  font-size: 11px; padding: 3px 10px; border-radius: 12px;
-  background: var(--surface-low); cursor: pointer; transition: all 0.15s;
-  display: flex; align-items: center; gap: 5px; font-weight: 450;
+  font-size: 11px; padding: 4px 10px; border-radius: 12px;
+  background: var(--surface-container); cursor: pointer; transition: all 0.15s;
+  display: flex; align-items: center; gap: 5px; font-weight: 450; color: var(--text-secondary);
 }
-.chart-legend-item:hover { background: #e8e8ed; transform: translateY(-1px); }
+.chart-legend-item:hover { background: #e8e8ed; color: var(--text); }
 .chart-legend-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.chart-legend-item .pill-remove { margin-left: 1px; font-size: 13px; opacity: 0; transition: opacity 0.15s; color: var(--text-tertiary); cursor: pointer; line-height: 1; font-weight: 400; }
+.chart-legend-item:hover .pill-remove { opacity: 1; }
+.chart-legend-item .pill-remove:hover { color: #e53935; }
+
+/* Sector picker modal */
+#sectorPickerModal { display: none; position: fixed; inset: 0; z-index: 1000; align-items: center; justify-content: center; }
+#sectorPickerModal .sp-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.3); }
+#sectorPickerModal .sp-dialog { position: relative; background: var(--card); border-radius: 14px; padding: 20px 24px; width: 360px; max-height: 70vh; display: flex; flex-direction: column; box-shadow: 0 8px 40px rgba(0,0,0,0.15); }
+.sp-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.sp-header h3 { font-size: 16px; font-weight: 600; margin: 0; }
+.sp-search { width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; font-family: var(--font); outline: none; box-sizing: border-box; }
+.sp-search:focus { border-color: var(--accent); }
+.sp-list { flex: 1; overflow-y: auto; margin-top: 10px; max-height: 300px; }
+.sp-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; transition: background 0.1s; }
+.sp-item:hover { background: var(--surface-low); }
+.sp-item.added { opacity: 0.5; cursor: default; }
+.sp-current { border-top: 1px solid var(--border-light); padding-top: 4px; }
 
 /* Sector type buttons */
 .sector-type-btn {
@@ -205,32 +246,32 @@ body {
 .stale-banner .stale-label { font-weight: 600; }
 
 /* ── Table Card ─────────────────────────── */
-.table-card { padding: 24px; flex: 1; }
-.table-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-.table-header h3 { font-size: 18px; font-weight: 600; letter-spacing: -0.2px; }
+.table-card { padding: 20px; flex: 1; }
+.table-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--border-light); }
+.table-header h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.2px; }
 
 /* Rank sort — in header right side */
-.rank-sort-bar { display: flex; gap: 2px; background: var(--surface-container); padding: 3px; border-radius: 10px; }
+.rank-sort-bar { display: flex; gap: 2px; background: var(--surface-container); padding: 2px; border-radius: 8px; }
 .rank-sort-bar button {
-  padding: 5px 14px; border: none; border-radius: 8px;
-  background: transparent; font-size: 12px; font-weight: 500; color: var(--text-secondary);
+  padding: 3px 10px; border: none; border-radius: 7px;
+  background: transparent; font-size: 11px; font-weight: 500; color: var(--text-secondary);
   cursor: pointer; font-family: var(--font); transition: all 0.15s;
 }
 .rank-sort-bar button.active { background: #fff; color: var(--text); font-weight: 600; box-shadow: var(--shadow-sm); }
 
 /* Rank list */
 .rank-item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 12px; border-radius: var(--radius-sm); font-size: 13px;
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-radius: 6px; font-size: 12px;
   transition: background 0.12s; cursor: pointer;
 }
 .rank-item:hover { background: var(--surface-low); }
-.rank-item .rank-idx { width: 22px; font-size: 12px; color: var(--text-tertiary); text-align: center; font-weight: 600; font-family: var(--font-mono); }
-.rank-item:nth-child(-n+3) .rank-idx { color: var(--accent); font-weight: 700; }
-.rank-item .rank-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.rank-item .rank-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
-.rank-item .rank-val { font-weight: 600; font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 13px; }
-.rank-item .rank-ratio { font-size: 11px; font-family: var(--font-mono); margin-left: 4px; font-weight: 500; }
+.rank-item .rank-idx { width: 18px; font-size: 11px; color: var(--text-tertiary); text-align: center; font-weight: 600; font-family: var(--font-mono); }
+.rank-item:nth-child(-n+3) .rank-idx { color: #2563eb; font-weight: 700; }
+.rank-item .rank-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.rank-item .rank-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; font-size: 12px; }
+.rank-item .rank-val { font-weight: 600; font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 11px; }
+.rank-item .rank-ratio { font-size: 10px; font-family: var(--font-mono); margin-left: 2px; font-weight: 500; }
 .up { color: var(--red); }
 .down { color: var(--green); }
 
@@ -665,6 +706,7 @@ body {
   .dashboard { flex-direction: column; }
   .left-main { flex: none; width: 100%; }
   .right-panel { min-height: 400px; }
+  .flow-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 768px) {
   .sidebar { width: 56px; padding: 12px 6px; }
@@ -676,9 +718,10 @@ body {
   .dashboard { padding: 10px; gap: 10px; }
   .section-header { flex-wrap: wrap; gap: 8px; }
   .section-header h2 { font-size: 17px; }
-  .chart-card, .table-card { padding: 14px; }
+  .chart-card, .table-card { padding: 12px; }
   #sectorChart { height: 240px; }
   .right-panel { border-radius: 10px; }
+  .flow-grid { grid-template-columns: 1fr; }
   .chat-input-tools { display: none; }
 }
 </style>
@@ -789,50 +832,60 @@ document.addEventListener('DOMContentLoaded', function() {
 
       <!-- Flow Tab -->
       <div id="tabFlow">
-        <div class="section-header">
-          <div class="section-header-left">
-            <h2>资金流向分析</h2>
-          </div>
-          <span id="chartMeta" style="font-size:13px;color:var(--text-secondary);font-weight:450">热门板块 · 加载中...</span>
-        </div>
 
-        <div class="stale-banner" id="staleBanner">
-          <span><span class="stale-label">⏸ 非交易时段</span> — 显示最后时刻数据</span>
-          <span id="staleDate"></span>
-        </div>
+        <!-- 左：自选板块 + 资金流向看板 | 右：板块资金排名 -->
+        <div class="flow-grid">
+          <div class="flow-left">
+            <div class="soft-card" style="padding:16px 20px">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;padding-bottom:10px;border-bottom:1px solid var(--border-light)">
+                <h3 style="font-size:15px;font-weight:600;margin:0">自选板块</h3>
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span style="font-size:11px;color:var(--text-tertiary)" id="pillCount">25 个</span>
+                  <button onclick="openSectorPicker()" title="添加板块" style="width:22px;height:22px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;font-size:14px;line-height:1;display:flex;align-items:center;justify-content:center;transition:all 0.15s" onmouseover="this.style.background='var(--surface-container)';this.style.borderColor='var(--accent)';this.style.color='var(--accent)'" onmouseout="this.style.background='transparent';this.style.borderColor='var(--border)';this.style.color='var(--text-secondary)'">+</button>
+                </div>
+              </div>
+              <div class="chart-legend" id="chartLegend"></div>
+            </div>
 
-        <div class="soft-card chart-card" style="margin-top:16px">
-          <div class="chart-header">
-            <div>
-              <h3>热门板块资金流向 <span class="material-symbols-outlined">info</span></h3>
-              <div class="chart-sub" id="chartSubTitle">热门板块资金流向 · 实时监控</div>
-            </div>
-            <div style="display:flex;align-items:center;gap:8px">
-              <select id="historyDateSelect" onchange="loadHistoryDate(this.value)" style="padding:4px 8px;border-radius:8px;border:1px solid var(--border);font-size:12px;font-family:var(--font-mono);background:var(--card);color:var(--text);cursor:pointer;display:none">
-                <option value="">实时</option>
-              </select>
-            </div>
-          </div>
-          <div id="sectorChart"><div class="loading"><div class="spinner"></div><div>加载中...</div></div></div>
-          <div class="chart-legend" id="chartLegend"></div>
-          <div class="replay-bar" id="replayBar" style="display:none">
-            <button class="replay-btn" id="playBtn" onclick="toggleReplay()">▶ 回放</button>
-            <div class="replay-timeline">
-              <input type="range" id="timeSlider" min="0" max="100" value="0" step="1">
-              <span id="timeLabel" style="font-size:12px;color:var(--text-secondary);min-width:40px;text-align:center;font-family:var(--font-mono)">09:31</span>
-            </div>
-          </div>
-        </div>
+            <div class="soft-card chart-card">
+              <div class="chart-header">
+                <div>
+                  <h3>板块资金流向</h3>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px">
+                  <select id="historyDateSelect" onchange="loadHistoryDate(this.value)" style="padding:4px 8px;border-radius:8px;border:1px solid var(--border);font-size:12px;font-family:var(--font-mono);background:var(--card);color:var(--text);cursor:pointer;display:none">
+                    <option value="">实时</option>
+                  </select>
+                </div>
+              </div>
 
-        <div class="soft-card table-card" style="margin-top:20px">
-          <div class="table-header">
-            <h3 id="rankTitle">热门板块排名</h3>
-            <div class="rank-sort-bar">
-              <button class="active" onclick="switchRankSort('net_main', this)">主力净额</button>
-              <button onclick="switchRankSort('net_ratio', this)">主力净占比</button>
+              <!-- 大盘数据子模块 -->
+              <div class="market-overview" id="marketOverview">
+                <div class="mo-indices" id="moIndices"></div>
+                <div class="mo-metrics" id="moMetrics"></div>
+              </div>
+
+              <div id="sectorChart"><div class="loading"><div class="spinner"></div><div>加载中...</div></div></div>
+              <div class="replay-bar" id="replayBar" style="display:none">
+                <button class="replay-btn" id="playBtn" onclick="toggleReplay()">▶ 回放</button>
+                <div class="replay-timeline">
+                  <input type="range" id="timeSlider" min="0" max="100" value="0" step="1">
+                  <span id="timeLabel" style="font-size:12px;color:var(--text-secondary);min-width:40px;text-align:center;font-family:var(--font-mono)">09:31</span>
+                </div>
+              </div>
             </div>
           </div>
-          <div id="rankList"><div class="loading">加载中...</div></div>
+
+          <div class="soft-card table-card">
+            <div class="table-header">
+              <h3 id="rankTitle">板块资金排名</h3>
+              <div class="rank-sort-bar">
+                <button class="active" onclick="switchRankSort('net_main', this)">主力净额</button>
+                <button onclick="switchRankSort('net_ratio', this)">主力净占比</button>
+              </div>
+            </div>
+            <div id="rankList"><div class="loading">加载中...</div></div>
+          </div>
         </div>
       </div>
 
@@ -1137,31 +1190,15 @@ function renderResearchCards() {
     </div>`;
 }
 
-// ── Stale Banner ──────────────────────────────────────
+// ── 侧边栏状态更新 ──────────────────────────────────────
 function updateStaleBanner(data) {
-  const banner = document.getElementById('staleBanner');
-  const today = new Date().toISOString().split('T')[0];
-  const dataDate = data.data_date || data.date || '';
-
-  if (data.is_trading === false) {
-    banner.style.display = 'flex';
-    const isToday = dataDate === today;
-    if (isToday) {
-      banner.innerHTML = '<span><span class="stale-label">⏸ 非交易时段</span> — 显示午休/收盘数据</span><span>' + dataDate + '</span>';
-      banner.style.background = '#f5f2eb';
-    } else {
-      banner.innerHTML = '<span><span class="stale-label">历史数据</span> — 数据日期 ' + dataDate + '（非今日数据）</span><span></span>';
-      banner.style.background = '#fef0f0';
-      banner.style.border = '1px solid #f5c6cb';
-    }
-  } else {
-    banner.style.display = 'none';
-  }
   // 更新侧边栏刷新时间
   const t = data.time_label || '';
   const refreshEl = document.getElementById('sidebarRefreshTime');
+  const statusEl = document.getElementById('sidebarMarketStatus');
   if (data.is_trading) {
     refreshEl.textContent = '实时轮询中 · 每3秒更新';
+    if (statusEl) statusEl.style.background = 'var(--surface-container)';
   } else {
     refreshEl.textContent = '数据时间: ' + (data.date || '') + ' ' + t + (t ? '' : ' (非交易时段)');
   }
@@ -1279,10 +1316,6 @@ async function loadHistoryDates() {
 
 async function loadHistoryDate(dateStr) {
   currentHistoryDate = dateStr;
-  const isLive = !dateStr;
-  document.getElementById('chartSubTitle').textContent = isLive
-    ? '热门板块资金流向 · 实时监控'
-    : '历史回放 · ' + dateStr;
   try {
     const url = '/api/data?type=' + sectorType + (dateStr ? '&date=' + dateStr : '');
     const res = await fetch(url);
@@ -1290,26 +1323,74 @@ async function loadHistoryDate(dateStr) {
     sectorData.is_trading = isLive;  // 历史数据显示非交易状态
     if (!isLive) sectorData.data_date = dateStr;
     updateStaleBanner(sectorData);
-    document.getElementById('chartMeta').textContent =
-      '热门板块 · ' + (sectorData.rank ? sectorData.rank.length : 0) + ' 个 · ' + (isLive ? '实时' : dateStr);
     initSectorChart();
     initReplay();
     updateSuggestions();
   } catch(e) { console.error(e); }
 }
 
+// ── 大盘数据 ─────────────────────────────────────────
+async function loadMarketOverview() {
+  const container = document.getElementById('marketOverview');
+  if (!container) return;
+  try {
+    const r = await fetch('/api/market/overview');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+
+    // 三大指数
+    let idxHtml = '';
+    data.indices.forEach(idx => {
+      const up = (idx.change_pct || 0) >= 0;
+      const color = up ? 'var(--red)' : 'var(--green)';
+      const sign = up ? '+' : '';
+      idxHtml += `<div class="mo-index" data-src="${idx._src}">
+        <div class="mo-idx-name">${idx.name}</div>
+        <div class="mo-idx-price" style="color:${idx.price != null ? color : 'var(--text-tertiary)'}">${idx.price != null ? idx.price.toFixed(0) : '--'}</div>
+        <div class="mo-idx-change" style="color:${idx.change_pct != null ? color : 'var(--text-tertiary)'}">${idx.change_pct != null ? sign + idx.change_pct.toFixed(2) + '%' : '--'}</div>
+      </div>`;
+    });
+    document.getElementById('moIndices').innerHTML = idxHtml;
+
+    // 6 指标
+    const m = data.metrics;
+    const items = ['total_amount', 'breadth', 'limit', 'po_ban', 'sentiment'];
+    let mHtml = '';
+    items.forEach(k => {
+      const v = m[k];
+      if (!v) return;
+      const val = v.value != null ? v.value : '--';
+      const src = v._src || 'none';
+      let valColor = '';
+      if (k === 'breadth' && typeof v.value === 'string' && v.value.includes('/')) {
+        const parts = v.value.split('/');
+        valColor = parseInt(parts[0]) > parseInt(parts[1]) ? 'color:var(--red)' : 'color:var(--green)';
+      }
+      if (k === 'sentiment' && typeof v.value === 'number') valColor = v.value >= 60 ? 'color:var(--red)' : v.value <= 30 ? 'color:var(--green)' : '';
+      mHtml += `<div class="mo-metric" data-src="${src}">
+        <div class="mo-m-val" style="${valColor}">${val}</div>
+        <div class="mo-m-label">${v.label}</div>
+      </div>`;
+    });
+    document.getElementById('moMetrics').innerHTML = mHtml;
+  } catch(e) {
+    container.innerHTML = '';
+  }
+}
+
 // ── Sector Data ───────────────────────────────────────
 async function loadSectorData() {
   try {
-    const res = await fetch('/api/data?type=' + sectorType);
+    const ws = getWatchSectors();
+    const res = await fetch('/api/data?type=' + sectorType + '&sectors=' + encodeURIComponent(ws.join(',')));
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const text = await res.text();
     sectorData = JSON.parse(text);
     updateStaleBanner(sectorData);
-    document.getElementById('chartMeta').textContent =
-      '热门板块 · ' + (sectorData.rank ? sectorData.rank.length : 0) + ' 个 · 数据时间 ' + (sectorData.time_label || '--:--');
-    document.getElementById('rankTitle').textContent = '热门板块排名';
+    document.getElementById('pillCount').textContent = (sectorData.rank ? sectorData.rank.length : 0) + ' 个';
+    document.getElementById('rankTitle').textContent = '板块资金排名';
     updateStatusPill(sectorData);
+    loadMarketOverview();  // 同步刷新大盘数据
     initSectorChart();
     initReplay();
     updateSuggestions();
@@ -1384,13 +1465,16 @@ function initSectorChart() {
 
 function buildLegend() {
   if (!sectorData || !sectorData.rank) return;
+  const watch = getWatchSectors();
   let html = '';
   sectorData.rank.forEach(r => {
     html += `<div class="chart-legend-item" data-name="${r.name}"
       onmouseenter="highlightSeries('${r.name}')" onmouseleave="unhighlightSeries()">
-      <span class="chart-legend-dot" style="background:${r.color||'#999'}"></span>${r.name}</div>`;
+      <span class="chart-legend-dot" style="background:${r.color||'#999'}"></span>${r.name}
+      <span class="pill-remove" onclick="event.stopPropagation();removeWatchSector('${r.name}')" title="移除">×</span></div>`;
   });
   document.getElementById('chartLegend').innerHTML = html;
+  document.getElementById('pillCount').textContent = (sectorData.rank ? sectorData.rank.length : 0) + ' 个';
 }
 
 function highlightSeries(name) {
@@ -1496,7 +1580,6 @@ function updateRank(timeIdx) {
     const sv = isRatio ? item.ratio : item.value;
     const cls = sv >= 0 ? 'up' : 'down';
     const barW = Math.min(100, Math.abs(sv) / maxAbs * 100);
-    const div = (item.pct < 0 && item.ratio > 0 && !isRatio) ? ' !' : '';
     const primary = isRatio
       ? `${(item.ratio>=0?'+':'')}${item.ratio.toFixed(2)}%`
       : `${(item.value>=0?'+':'')}${item.value.toFixed(2)} 亿`;
@@ -1504,7 +1587,7 @@ function updateRank(timeIdx) {
     html += `<div class="rank-item" onmouseenter="highlightSeries('${item.name}')" onmouseleave="unhighlightSeries()">
       <span class="rank-idx">${String(idx+1).padStart(2,'0')}</span>
       <span class="rank-dot" style="background:${item.color}"></span>
-      <span class="rank-name">${item.name}${div}</span>
+      <span class="rank-name">${item.name}</span>
       <span class="rank-val ${cls}">${primary}</span></div>
       <div style="height:2px;background:var(--surface-low);margin:0 12px 0 32px;border-radius:1px">
         <div style="height:2px;width:${barW}%;background:${sv>=0?'#ffdad6':'#d9f7be'};border-radius:1px"></div>
@@ -2698,11 +2781,90 @@ async function init() {
   }
 
   // 并行加载数据
-  Promise.allSettled([loadSectorData(), loadHistoryDates()]);
+  Promise.allSettled([loadSectorData(), loadHistoryDates(), loadMarketOverview()]);
 }
 
 // 监听页面关闭前保存
 window.addEventListener('beforeunload', () => saveChatHistory());
+
+// ── 自选板块管理 ──────────────────────────────────
+const DEFAULT_WATCH = ['光通信模块','通信设备','人形机器人','数据中心','玻璃基板','商业航天','AI芯片','半导体','军工','消费电子','低空经济','可控核聚变','光伏设备','固态电池','证券','医药商业','白酒','稀土永磁','锂电池','银行','创新药','黄金概念','有色金属','电网概念','存储芯片'];
+
+function getWatchSectors() {
+  try {
+    const raw = localStorage.getItem('watchSectors');
+    if (raw) { const arr = JSON.parse(raw); if (arr.length) return arr; }
+  } catch(e) {}
+  return [...DEFAULT_WATCH];
+}
+function saveWatchSectors(arr) {
+  localStorage.setItem('watchSectors', JSON.stringify(arr));
+}
+
+function addWatchSector(name) {
+  const arr = getWatchSectors();
+  if (arr.includes(name)) return;
+  arr.push(name);
+  saveWatchSectors(arr);
+  reloadWithWatchlist();
+}
+function removeWatchSector(name) {
+  let arr = getWatchSectors().filter(s => s !== name);
+  if (!arr.length) arr = [...DEFAULT_WATCH];
+  saveWatchSectors(arr);
+  reloadWithWatchlist();
+}
+function reloadWithWatchlist() {
+  const ws = getWatchSectors();
+  document.getElementById('pillCount').textContent = ws.length + ' 个';
+  loadSectorData();
+}
+
+// 板块选择弹窗
+async function openSectorPicker() {
+  let modal = document.getElementById('sectorPickerModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'sectorPickerModal';
+    modal.innerHTML = `<div class="sp-overlay" onclick="closeSectorPicker()"></div>
+      <div class="sp-dialog">
+        <div class="sp-header"><h3>添加自选板块</h3><button onclick="closeSectorPicker()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-tertiary)">&times;</button></div>
+        <input class="sp-search" id="spSearch" placeholder="搜索板块名称..." oninput="filterSectorPicker()" autofocus>
+        <div class="sp-list" id="spList"></div>
+        <div class="sp-current" id="spCurrent"></div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+  modal.style.display = 'flex';
+  // 加载可用板块
+  try {
+    const r = await fetch('/api/sectors/available');
+    const data = await r.json();
+    modal._sectors = data.sectors || [];
+  } catch(e) { modal._sectors = []; }
+  filterSectorPicker();
+  document.getElementById('spSearch').value = '';
+  document.getElementById('spSearch').focus();
+}
+function closeSectorPicker() {
+  const m = document.getElementById('sectorPickerModal');
+  if (m) m.style.display = 'none';
+}
+function filterSectorPicker() {
+  const q = (document.getElementById('spSearch')?.value || '').trim().toLowerCase();
+  const modal = document.getElementById('sectorPickerModal');
+  const all = modal?._sectors || [];
+  const current = getWatchSectors();
+  const filtered = q ? all.filter(s => s.toLowerCase().includes(q)) : all.slice(0, 30);
+  const html = filtered.map(s => {
+    const added = current.includes(s);
+    return `<div class="sp-item${added?' added':''}" onclick="${added?'':`addWatchSector('${s}')`}">
+      <span>${s}</span>${added?'<span style="font-size:11px;color:var(--text-tertiary)">已添加</span>':'<span style="color:var(--accent);font-size:18px">+</span>'}
+    </div>`;
+  }).join('') || '<div style="padding:20px;text-align:center;color:var(--text-tertiary)">无匹配板块</div>';
+  document.getElementById('spList').innerHTML = html;
+  document.getElementById('spCurrent').innerHTML = '<div style="font-size:11px;color:var(--text-tertiary);margin-top:4px">当前已选 ' + current.length + ' 个板块</div>';
+}
 
 init();
 </script>

@@ -239,7 +239,7 @@ def compute_sentiment_index(limit_up_data: Optional[dict],
         seal_strength * 20 +
         market_breadth * 20
     )
-    sentiment_index = round(min(100, max(0, sentiment * 100)), 1)
+    sentiment_index = round(min(100, max(0, sentiment)), 1)
 
     return {
         "sentiment_index": sentiment_index,
@@ -368,9 +368,11 @@ class SentimentCollector:
                 return 0.5
 
             data = json.loads(row[0])
-            rank = data.get("rank", []) if isinstance(data, dict) else data
-            up = sum(1 for s in rank if (s.get("pct_chg") or 0) > 0)
-            return round(up / len(rank), 2) if rank else 0.5
+            sectors = data.get("sectors", []) if isinstance(data, dict) else data
+            if not sectors:
+                return 0.5
+            up = sum(1 for s in sectors if (s.get("pct_chg") or 0) > 0)
+            return round(up / len(sectors), 2)
         except Exception:
             return 0.5
 

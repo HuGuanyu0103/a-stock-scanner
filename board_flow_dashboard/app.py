@@ -131,6 +131,7 @@ def _cleanup():
         get_signal_store().persist()
     except Exception:
         pass
+    _save_market_daily_cache()
 
 atexit.register(_cleanup)
 
@@ -146,16 +147,18 @@ signal.signal(signal.SIGINT, _signal_handler)
 
 @app.route("/api/data")
 def api_data():
-    """获取板块看板数据。?type=concept（默认）或 industry"""
+    """获取板块看板数据。?type=concept（默认）或 industry&sectors=a,b,c"""
     sector_type = request.args.get("type", "watch")
     if sector_type not in ("concept", "industry", "watch"):
         sector_type = "watch"
     date_param = request.args.get("date", "").strip()
+    sectors_param = request.args.get("sectors", "").strip()
 
     if date_param:
         data = collector.get_dashboard_data_for_date(date_param, sector_type=sector_type)
     else:
-        data = collector.get_dashboard_data(sector_type=sector_type)
+        data = collector.get_dashboard_data(sector_type=sector_type,
+                                             watch_sectors=sectors_param.split(",") if sectors_param else None)
     return jsonify(data)
 
 
@@ -246,6 +249,286 @@ def api_sector_timeseries():
     data = collector.get_sector_timeseries(name, minutes)
     return jsonify(data)
 
+
+@app.route("/api/sectors/available")
+def api_sectors_available():
+    """返回当前 API 快照中所有可用的板块名称（供自选板块增删搜索）。
+
+    从概念+行业快照中提取去重板块名，排除财报分类等非板块条目。
+    """
+    if not collector:
+        return jsonify({"sectors": []})
+    with collector._lock:
+        concept = list(collector._concept_snapshots)
+        industry = list(collector._industry_snapshots)
+    names = set()
+    # 过滤财报/日期分类：排除以年份开头的条目
+    import re as _re
+    report_pattern = _re.compile(r'^\d{4}')
+    for snap in concept + industry:
+        for r in snap.get("rank", []):
+            n = r.get("name", "")
+            if n and not report_pattern.match(n):
+                names.add(n)
+    return jsonify({"sectors": sorted(names)})
+
+
+# ── 大盘数据 ──────────────────────────────────────────────
+
+DATA_DIR = Path(__file__).parent / "data"
+
+# 日级缓存（成交额对照）
+_market_daily_cache: dict = {}
+_market_cache: dict = {}
+
+def _load_market_daily_cache():
+    global _market_daily_cache
+    try:
+        cf = DATA_DIR / "market_daily_cache.json"
+        if cf.exists():
+            _market_daily_cache = json.loads(cf.read_text())
+    except Exception:
+        _market_daily_cache = {}
+
+def _save_market_daily_cache():
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (DATA_DIR / "market_daily_cache.json").write_text(json.dumps(_market_daily_cache))
+    except Exception:
+        pass
+
+_load_market_daily_cache()
+
+# 日评分缓存（降级估算涨跌家数用）
+_DAILY_SCORES_CACHE: dict = {}
+
+def _load_daily_scores_for_breadth():
+    global _DAILY_SCORES_CACHE
+    if _DAILY_SCORES_CACHE:
+        return
+    try:
+        today = datetime.now().strftime("%Y%m%d")
+        cf = DATA_DIR / f"daily_scores_{today}.json"
+        if cf.exists():
+            _DAILY_SCORES_CACHE = json.loads(cf.read_text())
+    except Exception:
+        pass
+
+# 全市场涨跌缓存（60秒刷新）
+_adv_decline_cache: Optional[dict] = None
+_adv_decline_ts: float = 0
+
+def _fetch_market_adv_decline() -> Optional[dict]:
+    """从 adata 获取全市场涨跌家数 + 涨停/跌停。
+
+    用日评分缓存的 ~2700 只股票代码批量查询 adata，
+    结果缓存 60 秒避免重复全量拉取。
+    """
+    global _adv_decline_cache, _adv_decline_ts
+    import time as _time
+    now = _time.time()
+    if _adv_decline_cache and (now - _adv_decline_ts) < 60:
+        return _adv_decline_cache
+
+    # 获取股票代码列表（用最近一期的日评分文件）
+    codes = list(_DAILY_SCORES_CACHE.keys()) if _DAILY_SCORES_CACHE else []
+    if not codes:
+        try:
+            # 找最近日期的日评分文件
+            files = sorted(DATA_DIR.glob("daily_scores_*.json"))
+            if files:
+                _DAILY_SCORES_CACHE.update(json.loads(files[-1].read_text()))
+                codes = list(_DAILY_SCORES_CACHE.keys())
+        except Exception:
+            pass
+    if not codes:
+        return None
+
+    try:
+        import adata
+        all_up, all_down = 0, 0
+        all_lu, all_ld, total = 0, 0, 0
+        for i in range(0, len(codes), 500):
+            chunk = codes[i:i+500]
+            try:
+                df = adata.stock.market.list_market_current(code_list=chunk)
+                if df is None or df.empty:
+                    continue
+                pct = df['change_pct'].astype(float)
+                total += len(df)
+                all_up += (pct > 0).sum()
+                all_down += (pct < 0).sum()
+                all_lu += (pct >= 9.8).sum()
+                all_ld += (pct <= -9.8).sum()
+            except Exception:
+                continue
+        if total > 0:
+            _adv_decline_cache = {
+                "up": int(all_up), "down": int(all_down),
+                "total": int(total), "limit_up": int(all_lu),
+                "limit_down": int(all_ld),
+            }
+            _adv_decline_ts = now
+            return _adv_decline_cache
+    except Exception as e:
+        logger.warning("adata 全市场涨跌获取失败: %s", e)
+    return None
+
+
+@app.route("/api/market/overview")
+def api_market_overview():
+    """大盘概览：三大指数 + 6 个核心情绪指标，含降级标记。
+
+    数据源优先级：sentiment_collector > collector.northbound > Tencent qt > 缓存
+    """
+    import time as _time
+    result = {"indices": [], "metrics": {}, "_ts": datetime.now().strftime("%H:%M:%S")}
+
+    # ── 三大指数 ── 直接用腾讯 API，指定正确前缀
+    index_codes = {
+        "上证指数": "sh000001",
+        "深证成指": "sz399001",
+        "创业板指": "sz399006",
+    }
+    import requests as _rq
+    tencent_sess = _rq.Session()
+    tencent_sess.trust_env = False
+    df_rows = []
+    try:
+        url = "http://qt.gtimg.cn/q=sh000001,sz399001,sz399006"
+        resp = tencent_sess.get(url, timeout=5)
+        resp.encoding = 'gbk'
+        for line in resp.text.strip().split(';\n'):
+            if '=' not in line: continue
+            _, value = line.split('=', 1)
+            value = value.strip().strip('"').strip("'")
+            fields = value.split('~')
+            if len(fields) < 33: continue
+            # field[37] = 成交额(万元), 仅上证/深证指数有此字段
+            amount = float(fields[37]) if len(fields) > 37 and fields[37] else 0
+            df_rows.append({
+                "stock_code": fields[2],
+                "short_name": fields[1],
+                "price": float(fields[3]) if fields[3] else 0,
+                "change_pct": float(fields[32]) if fields[32] else 0,
+                "change": float(fields[31]) if fields[31] else 0,
+                "amount": amount,  # 万元
+            })
+    except Exception as e:
+        logger.warning("腾讯指数行情失败: %s", e)
+
+    for name, qt_code in index_codes.items():
+        found = None
+        for r in df_rows:
+            if r.get("stock_code") == qt_code or qt_code.endswith(r.get("stock_code", "")):
+                found = r
+                break
+        if found:
+            result["indices"].append({
+                "name": name,
+                "price": round(found["price"], 2),
+                "change_pct": round(found["change_pct"], 2),
+                "change": round(found.get("change", 0), 2),
+                "_src": "live",
+            })
+        else:
+            cached = _market_cache.get(name)
+            if cached:
+                cached["_src"] = "cache"
+                result["indices"].append(cached)
+            else:
+                result["indices"].append({"name": name, "price": None, "change_pct": None, "change": None, "_src": "none"})
+
+    # 缓存本次成功数据
+    for idx in result["indices"]:
+        if idx.get("_src") == "live":
+            _market_cache[idx["name"]] = {
+                "name": idx["name"], "price": idx["price"],
+                "change_pct": idx["change_pct"], "change": idx["change"],
+            }
+
+    # ── 6 个核心指标 ──
+    store = get_signal_store()
+    signals = store.get_all()
+    sent_data = signals.get("sentiment", {}).get("data", {})
+    market = sent_data.get("market", {}) if sent_data else {}
+
+    # 涨跌家数 + 涨停/跌停 — 优先 adata 实时，降级 breadth 估算
+    adv_decline = _fetch_market_adv_decline()
+    if adv_decline:
+        result["metrics"]["breadth"] = {"value": f"{adv_decline['up']}/{adv_decline['down']}", "label": "上涨/下跌", "_src": "live"}
+        # 涨停/跌停优先用 adata 数据
+        lu = adv_decline.get("limit_up", 0)
+        ld = adv_decline.get("limit_down", 0)
+        if lu > 0 or ld > 0:
+            result["metrics"]["limit"] = {"value": f"{lu}/{ld}", "label": "涨停/跌停", "_src": "live"}
+        else:
+            # 降级用 sentiment_collector 的涨停数
+            limit_up_s = market.get("limit_up_count")
+            if limit_up_s is not None:
+                result["metrics"]["limit"] = {"value": f"{limit_up_s}/{ld}", "label": "涨停/跌停", "_src": "live"}
+            else:
+                result["metrics"]["limit"] = {"value": None, "label": "涨停/跌停", "_src": "none"}
+    else:
+        # 降级：用 breadth 估算
+        total_stocks = len(_DAILY_SCORES_CACHE) if _DAILY_SCORES_CACHE else 5000
+        b = market.get("market_breadth", 0.5) or 0.5
+        up_est = int(total_stocks * b)
+        down_est = total_stocks - up_est
+        if total_stocks > 100:
+            result["metrics"]["breadth"] = {"value": f"{up_est}/{down_est}", "label": "上涨/下跌", "_src": "fallback"}
+        else:
+            result["metrics"]["breadth"] = {"value": None, "label": "上涨/下跌", "_src": "none"}
+        # 涨停/跌停降级
+        limit_up_s = market.get("limit_up_count")
+        if limit_up_s is not None:
+            result["metrics"]["limit"] = {"value": f"{limit_up_s}/--", "label": "涨停/跌停", "_src": "live"}
+        else:
+            result["metrics"]["limit"] = {"value": None, "label": "涨停/跌停", "_src": "none"}
+
+    # 缓存日评数据供降级使用
+    _load_daily_scores_for_breadth()
+
+    # 炸板率
+    po_ban = market.get("po_ban_rate")
+    if po_ban is not None:
+        result["metrics"]["po_ban"] = {"value": str(round(po_ban * 100)) + "%", "label": "炸板率", "_src": "live"}
+    else:
+        result["metrics"]["po_ban"] = {"value": None, "label": "炸板率", "_src": "none"}
+
+    # 情绪指数
+    sent_idx = market.get("sentiment_index")
+    if sent_idx is not None:
+        level = "过热" if sent_idx > 80 else ("偏热" if sent_idx > 60 else ("中性" if sent_idx > 40 else ("偏冷" if sent_idx > 20 else "冰点")))
+        result["metrics"]["sentiment"] = {"value": int(sent_idx), "label": f"情绪·{level}", "_src": "live"}
+    else:
+        result["metrics"]["sentiment"] = {"value": None, "label": "情绪指数", "_src": "none"}
+
+    # 全市场成交额 - 从腾讯指数数据提取（上证+深证成交额之和，万元→亿元）
+    total_amount = 0
+    for r in df_rows:
+        amt = r.get("amount", 0) or 0
+        if amt > 0:
+            total_amount += amt
+    if total_amount > 0:
+        amt_yi = round(total_amount / 1e4)
+        # 较上一日变化
+        prev = _market_daily_cache.get("total_amount")
+        delta_str = ""
+        if prev is not None:
+            delta = round((amt_yi - prev) / prev * 100, 1) if prev > 0 else 0
+            sign = "+" if delta >= 0 else ""
+            delta_str = f" ({sign}{delta}%)"
+        _market_daily_cache["total_amount"] = amt_yi
+        result["metrics"]["total_amount"] = {"value": str(amt_yi) + delta_str, "label": "成交额(亿)", "_src": "live"}
+    else:
+        result["metrics"]["total_amount"] = {"value": None, "label": "成交额(亿)", "_src": "none"}
+
+    return jsonify(result)
+
+
+# 大盘数据 session 缓存
+_market_cache: dict = {}
 
 # ── 个股资金流排名 ──────────────────────────────────────────
 

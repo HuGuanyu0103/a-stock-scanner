@@ -754,10 +754,18 @@ class SectorFlowCollector:
             "data_date": self._data_date,
         }
 
-    def get_dashboard_data(self, sector_type: str = "concept") -> dict:
-        """返回看板数据。watch 模式有缓存，避免每次请求都重建。"""
+    def get_dashboard_data(self, sector_type: str = "concept",
+                           watch_sectors: Optional[list[str]] = None) -> dict:
+        """返回看板数据。watch 模式有缓存，避免每次请求都重建。
+
+        Args:
+            watch_sectors: 可选的自选板块列表，用于覆盖默认 WATCH_SECTORS
+        """
         # watch 模式：缓存结果，仅在快照变化时重建
         if sector_type == "watch":
+            # 自定义列表不用缓存
+            if watch_sectors:
+                return self._build_watch_dashboard(watch_sectors)
             with self._lock:
                 c_len = len(self._concept_snapshots)
                 i_len = len(self._industry_snapshots)
@@ -785,22 +793,27 @@ class SectorFlowCollector:
         self._dash_cache = cached
         return result
 
-    def _build_watch_dashboard(self) -> dict:
+    def _build_watch_dashboard(self, watch_sectors: Optional[list[str]] = None) -> dict:
         """合并概念+行业快照，仅展示白名单板块。
 
         - SECTOR_NAME_MAP: 1对1名称映射
         - SECTOR_COMPOSITE: 加权合成（缺失板块用关联板块加权平均）
+
+        Args:
+            watch_sectors: 可选的自定义板块列表，默认使用 WATCH_SECTORS
         """
+        sectors = watch_sectors if watch_sectors else list(WATCH_SECTORS)
+
         with self._lock:
             concept = list(self._concept_snapshots)
             industry = list(self._industry_snapshots)
 
         # 收集所有需要的 API 名称
         api_to_user: dict[str, str] = {}  # API名 → 你的原始名
-        for name in WATCH_SECTORS:
+        for name in sectors:
             api_to_user[name] = name  # 精确匹配
         for user_name, api_name in SECTOR_NAME_MAP.items():
-            if user_name in WATCH_SECTORS:
+            if user_name in sectors:
                 api_to_user[api_name] = user_name
         for user_name, components in SECTOR_COMPOSITE.items():
             for api_name, _ in components:
@@ -827,7 +840,7 @@ class SectorFlowCollector:
             for r in merged_by_time[t]:
                 all_api_names.add(r["name"])
 
-        for watch_name in WATCH_SECTORS:
+        for watch_name in sectors:
             if watch_name in all_api_names:
                 continue  # 已经精确匹配
             # 尝试模糊匹配：API名包含WATCH名 或 WATCH名包含API名
@@ -925,19 +938,19 @@ class SectorFlowCollector:
             }
 
         # 精确匹配的板块
-        for name in WATCH_SECTORS:
+        for name in sectors:
             if name in SECTOR_NAME_MAP or name in SECTOR_COMPOSITE:
                 continue  # 由映射或合成处理
             _add_sector(name, name)
 
         # 1对1 映射板块
         for user_name, api_name in SECTOR_NAME_MAP.items():
-            if user_name in WATCH_SECTORS:
+            if user_name in sectors:
                 _add_sector(user_name, api_name)
 
         # ── 处理加权合成板块 ──
         for user_name, components in SECTOR_COMPOSITE.items():
-            if user_name not in WATCH_SECTORS or not components:
+            if user_name not in sectors or not components:
                 continue
             if user_name in seen_user_names:
                 continue
