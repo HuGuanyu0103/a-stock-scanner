@@ -100,7 +100,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
 
 # 始终启动实时采集器，永不使用模拟数据
-collector = SectorFlowCollector(poll_interval=3.0)
+collector = SectorFlowCollector(poll_interval=180.0)
 collector.start()
 logger.info("实时采集模式 — 采集器已启动")
 

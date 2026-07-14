@@ -151,182 +151,158 @@ def _unwrap_rank(data) -> list:
 
 
 class Storage:
-    """SQLite 持久化层。"""
+    """SQLite 持久化层（v4: 持久连接 + WAL 模式，减少磁盘 I/O）。"""
 
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self._lock = threading.Lock()
+        self._conn: Optional[sqlite3.Connection] = None
         self._init_db()
 
     def _init_db(self):
         with self._lock:
-            conn = sqlite3.connect(str(self.db_path))
+            conn = self._get_conn_unsafe()
             conn.executescript(DB_SCHEMA)
             conn.commit()
-            conn.close()
 
-    def _get_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path))
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        return conn
+    def _get_conn_unsafe(self) -> sqlite3.Connection:
+        """获取持久连接（需在 _lock 内调用）。"""
+        if self._conn is None:
+            self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._conn.execute("PRAGMA cache_size=-8000")  # 8MB 缓存
+        return self._conn
+
+    def close(self):
+        """关闭持久连接（仅在进程退出时调用）。"""
+        with self._lock:
+            if self._conn:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
 
     # ── concept ────────────────────────────────────────────
 
     def save_concept_snapshot(self, date_str: str, time_str: str, data: list):
         with self._lock:
-            conn = self._get_conn()
-            try:
-                conn.execute(
-                    "INSERT OR REPLACE INTO concept_snapshots (date, time, data) VALUES (?, ?, ?)",
-                    (date_str, time_str, json.dumps(data, ensure_ascii=False)),
-                )
-                conn.commit()
-            finally:
-                conn.close()
+            conn = self._get_conn_unsafe()
+            conn.execute(
+                "INSERT OR REPLACE INTO concept_snapshots (date, time, data) VALUES (?, ?, ?)",
+                (date_str, time_str, json.dumps(data, ensure_ascii=False)),
+            )
+            conn.commit()
 
     def load_concept_snapshots(self, date_str: str) -> list[dict]:
         with self._lock:
-            conn = self._get_conn()
-            try:
-                rows = conn.execute(
-                    "SELECT time, data FROM concept_snapshots WHERE date = ? ORDER BY time",
-                    (date_str,),
-                ).fetchall()
-                return [{"time": r[0], "rank": _unwrap_rank(json.loads(r[1]))} for r in rows]
-            finally:
-                conn.close()
+            conn = self._get_conn_unsafe()
+            rows = conn.execute(
+                "SELECT time, data FROM concept_snapshots WHERE date = ? ORDER BY time",
+                (date_str,),
+            ).fetchall()
+            return [{"time": r[0], "rank": _unwrap_rank(json.loads(r[1]))} for r in rows]
 
     def get_latest_concept_time(self, date_str: str) -> Optional[str]:
         with self._lock:
-            conn = self._get_conn()
-            try:
-                row = conn.execute(
-                    "SELECT time FROM concept_snapshots WHERE date = ? ORDER BY id DESC LIMIT 1",
-                    (date_str,),
-                ).fetchone()
-                return row[0] if row else None
-            finally:
-                conn.close()
+            conn = self._get_conn_unsafe()
+            row = conn.execute(
+                "SELECT time FROM concept_snapshots WHERE date = ? ORDER BY id DESC LIMIT 1",
+                (date_str,),
+            ).fetchone()
+            return row[0] if row else None
 
     # ── industry ───────────────────────────────────────────
 
     def save_industry_snapshot(self, date_str: str, time_str: str, data: list):
         with self._lock:
-            conn = self._get_conn()
-            try:
-                conn.execute(
-                    "INSERT OR REPLACE INTO industry_snapshots (date, time, data) VALUES (?, ?, ?)",
-                    (date_str, time_str, json.dumps(data, ensure_ascii=False)),
-                )
-                conn.commit()
-            finally:
-                conn.close()
+            conn = self._get_conn_unsafe()
+            conn.execute(
+                "INSERT OR REPLACE INTO industry_snapshots (date, time, data) VALUES (?, ?, ?)",
+                (date_str, time_str, json.dumps(data, ensure_ascii=False)),
+            )
+            conn.commit()
 
     def load_industry_snapshots(self, date_str: str) -> list[dict]:
         with self._lock:
-            conn = self._get_conn()
-            try:
-                rows = conn.execute(
-                    "SELECT time, data FROM industry_snapshots WHERE date = ? ORDER BY time",
-                    (date_str,),
-                ).fetchall()
-                return [{"time": r[0], "rank": _unwrap_rank(json.loads(r[1]))} for r in rows]
-            finally:
-                conn.close()
+            conn = self._get_conn_unsafe()
+            rows = conn.execute(
+                "SELECT time, data FROM industry_snapshots WHERE date = ? ORDER BY time",
+                (date_str,),
+            ).fetchall()
+            return [{"time": r[0], "rank": _unwrap_rank(json.loads(r[1]))} for r in rows]
 
     def get_latest_industry_time(self, date_str: str) -> Optional[str]:
         with self._lock:
-            conn = self._get_conn()
-            try:
-                row = conn.execute(
-                    "SELECT time FROM industry_snapshots WHERE date = ? ORDER BY id DESC LIMIT 1",
-                    (date_str,),
-                ).fetchone()
-                return row[0] if row else None
-            finally:
-                conn.close()
+            conn = self._get_conn_unsafe()
+            row = conn.execute(
+                "SELECT time FROM industry_snapshots WHERE date = ? ORDER BY id DESC LIMIT 1",
+                (date_str,),
+            ).fetchone()
+            return row[0] if row else None
 
     # ── northbound ─────────────────────────────────────────
 
     def save_northbound_snapshot(self, date_str: str, time_str: str,
                                   net_inflow: float, hk2sh: float, hk2sz: float):
         with self._lock:
-            conn = self._get_conn()
-            try:
-                conn.execute(
-                    "INSERT OR REPLACE INTO northbound_snapshots "
-                    "(date, time, net_inflow, hk2sh, hk2sz) VALUES (?, ?, ?, ?, ?)",
-                    (date_str, time_str, net_inflow, hk2sh, hk2sz),
-                )
-                conn.commit()
-            finally:
-                conn.close()
+            conn = self._get_conn_unsafe()
+            conn.execute(
+                "INSERT OR REPLACE INTO northbound_snapshots "
+                "(date, time, net_inflow, hk2sh, hk2sz) VALUES (?, ?, ?, ?, ?)",
+                (date_str, time_str, net_inflow, hk2sh, hk2sz),
+            )
+            conn.commit()
 
     def load_northbound_snapshots(self, date_str: str) -> list[dict]:
         with self._lock:
-            conn = self._get_conn()
-            try:
-                rows = conn.execute(
-                    "SELECT time, net_inflow, hk2sh, hk2sz "
-                    "FROM northbound_snapshots WHERE date = ? ORDER BY time",
-                    (date_str,),
-                ).fetchall()
-                return [
-                    {"time": r[0], "net_inflow": r[1],
-                     "hk2sh": r[2], "hk2sz": r[3]}
-                    for r in rows
-                ]
-            finally:
-                conn.close()
+            conn = self._get_conn_unsafe()
+            rows = conn.execute(
+                "SELECT time, net_inflow, hk2sh, hk2sz "
+                "FROM northbound_snapshots WHERE date = ? ORDER BY time",
+                (date_str,),
+            ).fetchall()
+            return [
+                {"time": r[0], "net_inflow": r[1],
+                 "hk2sh": r[2], "hk2sz": r[3]}
+                for r in rows
+            ]
 
     def get_latest_northbound_time(self, date_str: str) -> Optional[str]:
         with self._lock:
-            conn = self._get_conn()
-            try:
-                row = conn.execute(
-                    "SELECT time FROM northbound_snapshots WHERE date = ? ORDER BY id DESC LIMIT 1",
-                    (date_str,),
-                ).fetchone()
-                return row[0] if row else None
-            finally:
-                conn.close()
+            conn = self._get_conn_unsafe()
+            row = conn.execute(
+                "SELECT time FROM northbound_snapshots WHERE date = ? ORDER BY id DESC LIMIT 1",
+                (date_str,),
+            ).fetchone()
+            return row[0] if row else None
 
     # ── maintenance ────────────────────────────────────────
 
     def cleanup_old_data(self, keep_days: int = 30):
         cutoff = date.today().isoformat()
         with self._lock:
-            conn = self._get_conn()
-            try:
-                for table in ("concept_snapshots", "industry_snapshots",
-                              "northbound_snapshots"):
-                    conn.execute(
-                        f"DELETE FROM {table} WHERE date < date(?, ?)",
-                        (cutoff, f"-{keep_days} days"),
-                    )
-                conn.commit()
-                logger.info("清理 %d 天前的历史数据", keep_days)
-            finally:
-                conn.close()
+            conn = self._get_conn_unsafe()
+            for table in ("concept_snapshots", "industry_snapshots",
+                          "northbound_snapshots"):
+                conn.execute(
+                    f"DELETE FROM {table} WHERE date < date(?, ?)",
+                    (cutoff, f"-{keep_days} days"),
+                )
+            conn.commit()
+            logger.info("清理 %d 天前的历史数据", keep_days)
 
 
 def _ffill(seq: list) -> list:
-    """前向填充：将 None 替换为最近的非 None 值。首段全 None 则保持 None。"""
-    result = list(seq)
-    last = None
-    for i in range(len(result)):
-        if result[i] is not None:
-            last = result[i]
-        elif last is not None:
-            result[i] = last
-    return result
+    """不再填充：缺失即缺失，不编造数据。"""
+    return list(seq)
 
 
 class SectorFlowCollector:
     """板块资金流向实时采集器 v3。"""
 
-    def __init__(self, poll_interval: float = 3.0):
+    def __init__(self, poll_interval: float = 180.0):
         self._poll_interval = poll_interval
         self._base_poll_interval = poll_interval  # 记录基准间隔
         self._lock = threading.Lock()
@@ -352,6 +328,12 @@ class SectorFlowCollector:
         self._northbound_snapshots: list[dict] = []
         self._last_nb_cumulative: dict = {}  # v3: 用于计算北向增量
 
+        # v4: 增量构建缓存
+        self._display_minutes: list[str] = []       # 预计算的显示时间轴
+        self._display_minutes_cache_date: str = ""   # 时间轴缓存的日期
+        self._watch_api_cache: dict = {}             # api_data_by_time 增量缓存
+        self._watch_api_cache_key: tuple = ()        # (concept_len, industry_len, data_date)
+
         load_trading_calendar()
 
     # ── 生命周期 ────────────────────────────────────────────
@@ -370,6 +352,7 @@ class SectorFlowCollector:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5.0)
         self._save_all_to_db()
+        self._storage.close()
         logger.info("采集器已停止 | 概念:%d 行业:%d 北向:%d",
                      len(self._concept_snapshots),
                      len(self._industry_snapshots),
@@ -383,6 +366,11 @@ class SectorFlowCollector:
             self._last_nb_cumulative = {}
         self._consecutive_failures = 0
         self._poll_interval = self._base_poll_interval
+        # v4: 清除增量缓存
+        self._watch_api_cache = {}
+        self._watch_api_cache_key = ()
+        self._watch_cache = None
+        self._dash_cache = {}
         logger.info("采集器已重置")
 
     # ── 轮询主循环 ──────────────────────────────────────────
@@ -417,11 +405,19 @@ class SectorFlowCollector:
             any_success = True
             self._store_snapshot("concept", minute_key, concept["sectors"])
 
-        # 行业板块
+        # 行业板块（概念分页已有冷却，但最后一页到行业仍需间隔）
+        time.sleep(30.0)
         industry = fetch_industry_sectors_snapshot(timeout=8.0)
         if industry and industry.get("sectors"):
             any_success = True
             self._store_snapshot("industry", minute_key, industry["sectors"])
+
+        # 完整性检查：仅告警，不补拉（补拉触发额外请求会加剧 API 限流）
+        if any_success:
+            missing = self._check_watch_completeness()
+            if missing:
+                logger.warning("自选板块缺失 %d 个 API 名称: %s",
+                              len(missing), ", ".join(sorted(list(missing))[:8]))
 
         # 北向资金（v3: 时间驱动，间隙约 6s 即每 2 个 poll 周期采一次）
         if self._should_poll_northbound():
@@ -450,6 +446,13 @@ class SectorFlowCollector:
                     self._northbound_snapshots.clear()
                     self._last_nb_cumulative = {}
                 self._data_date = today_str
+                # v4: 清除增量缓存（新日期需要重建时间轴和索引）
+                self._display_minutes = []
+                self._display_minutes_cache_date = ""
+                self._watch_api_cache = {}
+                self._watch_api_cache_key = ()
+                self._watch_cache = None
+                self._dash_cache = {}
             self._new_day_data_arrived = True
 
         # 失败处理
@@ -675,12 +678,15 @@ class SectorFlowCollector:
         # 构建实际快照的时间→数据索引
         snap_map: dict[str, list[dict]] = {s["time"]: s["rank"] for s in snapshots}
 
-        # 使用完整交易时间轴（9:30-15:00），x轴始终固定
-        full_minutes = _build_trade_minutes()
-        display_step = max(1, len(full_minutes) // 120)
-        minutes = full_minutes[::display_step]
-        if full_minutes and full_minutes[-1] not in minutes:
-            minutes.append(full_minutes[-1])
+        # v4: 复用预计算的显示时间轴
+        if not self._display_minutes or self._display_minutes_cache_date != self._data_date:
+            full_minutes = _build_trade_minutes()
+            display_step = max(1, len(full_minutes) // 120)
+            self._display_minutes = full_minutes[::display_step]
+            if full_minutes and full_minutes[-1] not in self._display_minutes:
+                self._display_minutes.append(full_minutes[-1])
+            self._display_minutes_cache_date = self._data_date
+        minutes = self._display_minutes
 
         # 最新时刻的排名 — 只取 Top N
         latest_rank = snapshots[-1]["rank"] if snapshots else []
@@ -793,6 +799,96 @@ class SectorFlowCollector:
         self._dash_cache = cached
         return result
 
+    def get_dashboard_delta(self, since_time_idx: int,
+                            watch_sectors: Optional[list[str]] = None) -> dict:
+        """增量更新：仅返回 since_time_idx 之后的新数据点。
+
+        前端轮询时使用此方法，避免每次传输全量 ~30KB JSON。
+        首次加载仍用 get_dashboard_data() 获取全量数据。
+
+        Returns:
+            {"time_label": str, "time_index": int, "new_data": {name: {values, ratios}}, "rank": [...]}
+            如果无新数据，new_data 为空 dict。
+        """
+        sectors = watch_sectors if watch_sectors else list(WATCH_SECTORS)
+        full = self._build_watch_dashboard(sectors)
+        minutes = full["minutes"]
+        total = len(minutes)
+
+        if since_time_idx >= total - 1:
+            return {
+                "time_label": full["time_label"],
+                "time_index": full["time_index"],
+                "total_times": total,
+                "new_data": {},
+                "rank": full["rank"],
+                "is_trading": full.get("is_trading", False),
+                "data_date": full.get("data_date", ""),
+            }
+
+        # 提取 since+1 到当前的新数据
+        start = since_time_idx + 1
+        end = full["time_index"] + 1
+        new_minutes = minutes[start:end]
+
+        new_data = {}
+        for name, sdata in full["series"].items():
+            vals = sdata.get("values", [])
+            ratio_vals = sdata.get("ratio_values", [])
+            new_data[name] = {
+                "values": vals[start:end] if len(vals) > start else [],
+                "ratios": ratio_vals[start:end] if len(ratio_vals) > start else [],
+                "color": sdata.get("color", ""),
+            }
+
+        return {
+            "time_label": full["time_label"],
+            "time_index": full["time_index"],
+            "total_times": total,
+            "new_minutes": new_minutes,
+            "new_data": new_data,
+            "rank": full["rank"],
+            "is_trading": full.get("is_trading", False),
+            "data_date": full.get("data_date", ""),
+        }
+
+    def _check_watch_completeness(self, sectors: Optional[list[str]] = None) -> set[str]:
+        """检查自选板块所需 API 名称是否在最新快照中齐全。
+
+        返回缺失的 API 名称集合；空集表示完整。
+        """
+        targets = sectors if sectors else list(WATCH_SECTORS)
+        needed: set[str] = set()
+        for name in targets:
+            if name in SECTOR_COMPOSITE:
+                for api_name, _ in SECTOR_COMPOSITE[name]:
+                    needed.add(api_name)
+            elif name in SECTOR_NAME_MAP:
+                needed.add(SECTOR_NAME_MAP[name])
+            else:
+                needed.add(name)
+
+        with self._lock:
+            concept_names = set()
+            for cs in self._concept_snapshots[-1:]:
+                for r in cs.get("rank", []):
+                    concept_names.add(r["name"])
+            industry_names = set()
+            for ind in self._industry_snapshots[-1:]:
+                for r in ind.get("rank", []):
+                    industry_names.add(r["name"])
+
+        all_names = concept_names | industry_names
+        # 模糊匹配：API 名包含目标名 或 目标名包含 API 名
+        missing: set[str] = set()
+        for n in needed:
+            if n in all_names:
+                continue
+            matched = any(n in an or an in n for an in all_names)
+            if not matched:
+                missing.add(n)
+        return missing
+
     def _build_watch_dashboard(self, watch_sectors: Optional[list[str]] = None) -> dict:
         """合并概念+行业快照，仅展示白名单板块。
 
@@ -856,12 +952,16 @@ class SectorFlowCollector:
         # 每 N 个时间点取一个，减少前端渲染压力（分钟级数据对图表显示冗余）
         all_minutes = sorted(merged_by_time.keys())
 
-        # 使用完整交易时间轴（9:30-15:00），x轴始终固定
-        full_minutes = _build_trade_minutes()
-        display_step = max(1, len(full_minutes) // 120)
-        minutes = full_minutes[::display_step]
-        if full_minutes and full_minutes[-1] not in minutes:
-            minutes.append(full_minutes[-1])  # 确保 15:00 在内
+        # v4: 预计算显示时间轴（静态，每天只算一次）
+        cache_key = (len(concept), len(industry), self._data_date)
+        if not self._display_minutes or self._display_minutes_cache_date != self._data_date:
+            full_minutes = _build_trade_minutes()
+            display_step = max(1, len(full_minutes) // 120)
+            self._display_minutes = full_minutes[::display_step]
+            if full_minutes and full_minutes[-1] not in self._display_minutes:
+                self._display_minutes.append(full_minutes[-1])
+            self._display_minutes_cache_date = self._data_date
+        minutes = self._display_minutes
 
         # 确定"当前时刻"在 minutes 中的位置：用最后一条实际快照时间
         now_idx = len(minutes) - 1
@@ -887,15 +987,28 @@ class SectorFlowCollector:
                 "data_date": self._data_date,
             }
 
-        # 构建每时刻的 API 名 → 数据 索引
-        api_data_by_time: dict[str, dict[str, dict]] = {}
-        for t in minutes:
-            rank = merged_by_time.get(t, [])
-            api_data_by_time[t] = {}
-            for r in rank:
-                name = r["name"]
-                if name in allowed_api_names:
-                    api_data_by_time[t][name] = r
+        # v4: 增量构建 api_data_by_time — 仅在新增时间点时追加，避免每次全量扫描
+        if self._watch_api_cache_key == cache_key and self._watch_api_cache:
+            api_data_by_time = self._watch_api_cache
+            new_times = [t for t in minutes if t not in api_data_by_time]
+            for t in new_times:
+                rank = merged_by_time.get(t, [])
+                api_data_by_time[t] = {}
+                for r in rank:
+                    name = r["name"]
+                    if name in allowed_api_names:
+                        api_data_by_time[t][name] = r
+        else:
+            api_data_by_time: dict[str, dict[str, dict]] = {}
+            for t in minutes:
+                rank = merged_by_time.get(t, [])
+                api_data_by_time[t] = {}
+                for r in rank:
+                    name = r["name"]
+                    if name in allowed_api_names:
+                        api_data_by_time[t][name] = r
+            self._watch_api_cache = api_data_by_time
+            self._watch_api_cache_key = cache_key
 
         # ── 处理 1对1 板块（精确匹配 + SECTOR_NAME_MAP）──
         seen_user_names: set[str] = set()
@@ -1310,15 +1423,15 @@ class SectorFlowCollector:
     def get_available_dates(self) -> list[str]:
         """返回 DB 中所有有数据的交易日期，供前端日期选择器使用。"""
         try:
-            conn = self._storage._get_conn()
-            dates = set()
-            for table in ("concept_snapshots", "industry_snapshots"):
-                rows = conn.execute(
-                    f"SELECT DISTINCT date FROM {table} ORDER BY date DESC LIMIT 30"
-                ).fetchall()
-                dates.update(r[0] for r in rows)
-            conn.close()
-            return sorted(dates, reverse=True)
+            with self._storage._lock:
+                conn = self._storage._get_conn_unsafe()
+                dates = set()
+                for table in ("concept_snapshots", "industry_snapshots"):
+                    rows = conn.execute(
+                        f"SELECT DISTINCT date FROM {table} ORDER BY date DESC LIMIT 30"
+                    ).fetchall()
+                    dates.update(r[0] for r in rows)
+                return sorted(dates, reverse=True)
         except Exception:
             return [datetime.now().strftime("%Y-%m-%d")]
 

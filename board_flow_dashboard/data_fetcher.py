@@ -9,6 +9,7 @@ A 股板块资金流向数据获取层
 import json
 import logging
 import random
+import subprocess
 import time
 from datetime import datetime, date
 from typing import Optional
@@ -325,15 +326,127 @@ def fetch_rank_akshare() -> Optional[pd.DataFrame]:
         return None
 
 
+def _fetch_all_via_curl_parallel(fs: str, timeout: float = 15.0) -> Optional[list[dict]]:
+    """并行拉取 5 页，合并为同一时刻的全量快照，消除分页时间错位。"""
+    import os as _os, urllib.parse as _up
+    fields = "f12,f14,f3,f62,f184,f66,f72,f78,f84"
+    base_params = {
+        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+        "fltt": "2", "invt": "2", "fid": "f62",
+        "pz": "5000", "po": "1", "np": "1",
+        "fs": fs, "fields": fields,
+    }
+    config_lines = []
+    for pn in range(1, 6):
+        params = {**base_params, "pn": str(pn)}
+        url = "https://push2.eastmoney.com/api/qt/clist/get?" + _up.urlencode(params)
+        config_lines.append(f'url = "{url}"')
+        config_lines.append(f'output = "/tmp/curl_p{pn}.json"')
+        config_lines.append('user-agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"')
+        config_lines.append('referer = "https://data.eastmoney.com/"')
+        config_lines.append('')
+    config_path = "/tmp/curl_parallel.conf"
+    with open(config_path, "w") as f:
+        f.write("\n".join(config_lines))
+    try:
+        subprocess.run(
+            ["curl", "-x", "http://127.0.0.1:7897", "--parallel",
+             "--parallel-max", "5", "--max-time", str(int(timeout)),
+             "-s", "-K", config_path],
+            capture_output=True, timeout=timeout + 10,
+        )
+    except Exception:
+        pass
+    # 收集结果
+    seen: dict[str, dict] = {}
+    for pn in range(1, 6):
+        path = f"/tmp/curl_p{pn}.json"
+        if _os.path.exists(path):
+            try:
+                with open(path) as f:
+                    body = json.load(f).get("data", {})
+                for item in body.get("diff", []):
+                    name = item.get("f14", "")
+                    if not name:
+                        continue
+                    net_main = round(float(item.get("f62", 0)) / 1e8, 2)
+                    entry = {
+                        "name": name, "code": item.get("f12", ""),
+                        "net_main": net_main,
+                        "net_main_ratio": item.get("f184") or 0,
+                        "pct_chg": item.get("f3", 0),
+                    }
+                    if name in seen:
+                        if abs(net_main) > abs(seen[name]["net_main"]):
+                            seen[name] = entry
+                    else:
+                        seen[name] = entry
+            except Exception:
+                pass
+            try:
+                _os.remove(path)
+            except Exception:
+                pass
+    try:
+        _os.remove(config_path)
+    except Exception:
+        pass
+    if not seen:
+        return None
+    sectors = list(seen.values())
+    sectors.sort(key=lambda x: x["net_main"], reverse=True)
+    return sectors
+
+
+def _fetch_via_curl(fs: str, timeout: float = 10.0, pn: int = 1, po: int = 1) -> Optional[list[dict]]:
+    """curl 兜底：Python requests 无法走 Clash 代理时，用 curl 子进程取数据。"""
+    import urllib.parse
+    fields = "f12,f14,f3,f62,f184,f66,f72,f78,f84"
+    params = {
+        "pn": str(pn), "pz": "5000", "po": str(po), "np": "1",
+        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+        "fltt": "2", "invt": "2", "fid": "f62",
+        "fs": fs, "fields": fields,
+    }
+    url = "https://push2.eastmoney.com/api/qt/clist/get?" + urllib.parse.urlencode(params)
+    proxy = "http://127.0.0.1:7897"
+    cmd = ["curl", "-s", "--max-time", str(int(timeout)),
+           "-x", proxy,
+           "-H", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+           "-H", "Referer: https://data.eastmoney.com/",
+           url]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                timeout=timeout + 2)
+        if result.returncode != 0 or not result.stdout:
+            return None
+        data = json.loads(result.stdout).get("data", {})
+        items = data.get("diff", [])
+        if not items:
+            return None
+        sectors = []
+        for item in items:
+            sectors.append({
+                "name": item.get("f14", ""),
+                "code": item.get("f12", ""),
+                "net_main": round(float(item.get("f62", 0)) / 1e8, 2),
+                "net_main_ratio": item.get("f184") or 0,
+                "pct_chg": item.get("f3", 0),
+            })
+        return sectors
+    except Exception:
+        return None
+
+
 def _fetch_sectors_full(fs: str, timeout: float = 10.0) -> Optional[dict]:
     """拉取板块全量快照。
 
-    push2 API 支持 pz=5000 一次返回全量板块，无需分页。
-    降序取全量 + 升序取一页兜底，确保覆盖净流出板块。
-    按名称去重，绝对值大者优先。
+    API 的 pz 参数偶尔被忽略，回调默认 100。先尝试 pz=5000，
+    若返回不足预期则逐页补齐并升序兜底，确保板块全覆盖。
     """
     url = "https://push2.eastmoney.com/api/qt/clist/get"
     seen: dict[str, dict] = {}
+    min_expected = 80 if ":2" in fs else 400
 
     def _add_items(items):
         for item in items:
@@ -354,70 +467,71 @@ def _fetch_sectors_full(fs: str, timeout: float = 10.0) -> Optional[dict]:
             else:
                 seen[name] = entry
 
-    # 降序：pz=5000 一次拉全量
-    try:
-        params = {
-            "pn": "1", "pz": "5000", "po": "1", "np": "1",
-            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-            "fltt": "2", "invt": "2", "fid": "f62",
-            "fs": fs,
-            "fields": "f12,f14,f3,f62,f184,f66,f72,f78,f84",
-            "_": str(int(time.time() * 1000)),
-        }
-        resp = _http.get(url, params=params, timeout=timeout,
-                       verify=False, headers=EASTMONEY_HEADERS)
-        resp.raise_for_status()
-        items = resp.json().get("data", {}).get("diff", [])
-        _add_items(items)
-    except Exception as e:
-        logger.warning("全量拉取失败: %s，降级分页", e)
-        # 降级：分页拉取
-        for pn in range(1, 6):
+    base_params = {
+        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+        "fltt": "2", "invt": "2", "fid": "f62",
+        "fs": fs,
+        "fields": "f12,f14,f3,f62,f184,f66,f72,f78,f84",
+    }
+
+    def _fetch_page(pn: int, po: int = 1) -> bool:
+        """拉一页，Python requests 优先，带重试；失败则 curl 兜底。"""
+        # Python requests 重试 3 次
+        for attempt in range(3):
             try:
-                params = {
-                    "pn": str(pn), "pz": "200", "po": "1", "np": "1",
-                    "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-                    "fltt": "2", "invt": "2", "fid": "f62",
-                    "fs": fs,
-                    "fields": "f12,f14,f3,f62,f184,f66,f72,f78,f84",
-                    "_": str(int(time.time() * 1000)),
-                }
+                params = {**base_params, "pn": str(pn), "pz": "5000", "po": str(po), "np": "1",
+                          "_": str(int(time.time() * 1000))}
                 resp = _http.get(url, params=params, timeout=timeout,
                                verify=False, headers=EASTMONEY_HEADERS)
-                items = resp.json().get("data", {}).get("diff", [])
-                _add_items(items)
-                if len(items) < 50:
-                    break
+                resp.raise_for_status()
+                body = resp.json().get("data", {})
+                _add_items(body.get("diff", []))
+                nonlocal total_expected
+                if total_expected == 0:
+                    total_expected = body.get("total", 0)
+                return True
             except Exception:
-                break
+                if attempt < 2:
+                    time.sleep(5)  # 重试前等 5 秒
+        # curl 兜底
+        curl_items = _fetch_via_curl(fs, timeout, pn, po)
+        if curl_items:
+            logger.info("curl 兜底成功 pn=%d po=%d, items=%d", pn, po, len(curl_items))
+            _add_items(curl_items)
+            if total_expected == 0:
+                total_expected = len(curl_items)
+            return True
+        logger.info("curl 兜底失败 pn=%d po=%d", pn, po)
+        return False
 
-    # 反向兜底：升序 1 页捕漏（pz=5000 全量拉时通常不需要）
-    try:
-        params["po"] = "0"
-        params["pn"] = "1"
-        params["pz"] = "5000"
-        params["_"] = str(int(time.time() * 1000))
-        resp = _http.get(url, params=params, timeout=timeout,
-                       verify=False, headers=EASTMONEY_HEADERS)
-        reverse_items = resp.json().get("data", {}).get("diff", [])
-        new_count = 0
-        for item in reverse_items:
-            name = item.get("f14", "")
-            if not name:
-                continue
-            if name not in seen:
-                net_main = round(float(item.get("f62", 0)) / 1e8, 2)
-                seen[name] = {
-                    "name": name, "code": item.get("f12", ""),
-                    "net_main": net_main,
-                    "net_main_ratio": item.get("f184") or 0,
-                    "pct_chg": item.get("f3", 0),
-                }
-                new_count += 1
-        if new_count:
-            logger.info("反向兜底补漏 %d 个板块", new_count)
-    except Exception:
-        pass
+    # 并行拉取全量（无时间错位）
+    parallel_sectors = _fetch_all_via_curl_parallel(fs, timeout)
+    if parallel_sectors and len(parallel_sectors) >= min_expected * 0.6:
+        _add_items(parallel_sectors)
+        sectors = list(seen.values())
+        sectors.sort(key=lambda x: x["net_main"], reverse=True)
+        return {"time": _now_time(), "sectors": sectors}
+
+    # 并行失败 → 降级单页
+    total_expected = 0
+    if not _fetch_page(1, 1):
+        logger.warning("板块 API 全部方式失败: %s", fs)
+        return None
+
+    # 单页不够 → 顺序翻页补齐
+    if total_expected > 0 and len(seen) < total_expected:
+        logger.info("翻页补齐: %d/%d", len(seen), total_expected)
+        for pn in range(2, 10):
+            if len(seen) >= total_expected:
+                break
+            time.sleep(30)
+            if not _fetch_page(pn, 1):
+                logger.info("第%d页失败，15s后重试...", pn)
+                time.sleep(15)
+                if not _fetch_page(pn, 1):
+                    logger.info("第%d页停止", pn)
+                    break
+            logger.info("第%d页: 累计 %d/%d", pn, len(seen), total_expected)
 
     sectors = list(seen.values())
     if not sectors:

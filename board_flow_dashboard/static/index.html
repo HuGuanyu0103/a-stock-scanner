@@ -183,11 +183,11 @@ body {
 .mo-index[data-src="none"] .mo-idx-price,
 .mo-metric[data-src="none"] .mo-m-val { color: var(--text-tertiary); }
 
-#tabFlow { flex: 1; display: flex; flex-direction: column; }
-.flow-grid { display: grid; grid-template-columns: 3fr 1fr; gap: 16px; align-items: stretch; flex: 1; }
-.flow-left { display: flex; flex-direction: column; gap: 16px; }
-.flow-grid .chart-card { margin: 0; flex: 1; }
-.flow-grid .table-card { margin: 0; }
+#tabFlow { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.flow-grid { display: grid; grid-template-columns: 3fr 1fr; gap: 16px; align-items: stretch; flex: 1; min-height: 0; overflow: hidden; }
+.flow-left { display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+.flow-grid .chart-card { margin: 0; flex: 1; min-height: 0; }
+.flow-grid .table-card { margin: 0; overflow-y: auto; min-height: 0; }
 
 /* Segmented control */
 .segmented { display: flex; background: var(--surface-container); padding: 3px; border-radius: 10px; gap: 2px; }
@@ -682,9 +682,9 @@ body {
 
 /* Horizontal date timeline */
 .research-date-timeline {
-  display: flex; align-items: center; gap: 0; margin-bottom: 24px;
+  display: flex; align-items: center; gap: 0; margin-bottom: 0;
   padding: 4px; background: var(--surface-container); border-radius: 12px;
-  overflow-x: auto; -webkit-overflow-scrolling: touch;
+  overflow-x: auto; -webkit-overflow-scrolling: touch; flex-shrink: 0;
 }
 .research-date-timeline::-webkit-scrollbar { height: 2px; }
 .research-date-dot {
@@ -863,6 +863,74 @@ body {
   background: var(--border); animation: pulse 2s ease-in-out infinite;
 }
 
+/* ── Research 2×2 Grid ───────────────────── */
+.research-grid {
+  display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
+  gap: 16px; flex: 1; overflow: hidden;
+}
+.research-grid-card {
+  background: var(--card); border-radius: var(--radius-xl);
+  box-shadow: var(--shadow); border: 1px solid var(--border-light);
+  overflow-y: auto; display: flex; flex-direction: column;
+}
+.research-grid-card::-webkit-scrollbar { width: 3px; }
+.research-grid-card::-webkit-scrollbar-thumb { background: #d1d1d6; border-radius: 3px; }
+.research-grid-card .diag-header {
+  padding: 14px 16px; border-bottom: 1px solid var(--border-light);
+  background: linear-gradient(135deg, rgba(0,113,227,0.05), rgba(103,80,164,0.03));
+  display: flex; align-items: baseline; gap: 10px; flex-shrink: 0;
+}
+.research-grid-card .diag-header .diag-name { font-size: 14px; font-weight: 700; }
+.research-grid-card .diag-header .diag-price { font-size: 11px; font-weight: 600; font-family: var(--font); margin-left: auto; }
+.research-grid-card .diag-section {
+  padding: 10px 16px; border-bottom: 1px solid var(--border-light); flex-shrink: 0;
+}
+.research-grid-card .diag-section:last-of-type { border-bottom: none; }
+.research-grid-card .diag-section h4 { font-size: 12px; font-weight: 700; margin-bottom: 6px; }
+.research-grid-card .diag-section p { font-size: 12px; line-height: 1.65; }
+.research-grid-card .diag-section li { font-size: 12px; line-height: 1.65; }
+.research-grid-card .diag-metrics {
+  display: grid; gap: 1px; background: var(--border-light);
+  border-bottom: 1px solid var(--border-light); flex-shrink: 0;
+}
+.research-grid-card .diag-metric { padding: 10px 6px; }
+.research-grid-card .diag-metric .metric-val { font-size: 15px; }
+.research-grid-card .diag-metric .metric-label { font-size: 9px; }
+.research-grid-card .diag-signals { padding: 0 16px 10px 16px; flex-shrink: 0; }
+.research-grid-card .diag-signal { font-size: 10px; padding: 3px 8px; }
+.research-grid-card .diag-advice {
+  margin: 0 12px 12px 12px; padding: 12px; border-radius: 12px; flex-shrink: 0;
+}
+.research-grid-card .diag-advice h4 { font-size: 13px; margin-bottom: 8px; }
+.research-grid-card .diag-advice p { font-size: 12px; }
+.research-grid-card .diag-advice-chips { gap: 5px; }
+.research-grid-card .diag-advice-chip { font-size: 11px; padding: 4px 10px; }
+.research-grid-card .diag-score-row { padding: 0 16px; }
+.research-grid-card .diag-score-label { font-size: 10px; }
+.research-grid-card .diag-score-val { font-size: 13px; }
+.research-grid-card .rc-actions {
+  padding: 8px 12px; background: var(--surface); flex-shrink: 0;
+  border-top: 1px solid var(--border-light); margin-top: auto;
+  display: flex; gap: 6px;
+}
+.research-grid-card .rc-action-btn { font-size: 10px; padding: 4px 10px; }
+.research-grid-card .diag-score { padding: 10px 16px; flex-shrink: 0; }
+.research-grid-card .diag-score-track { height: 6px; }
+.research-grid-card .diag-kline { flex-shrink: 0; }
+.research-grid-card .diag-kline summary { padding: 8px 16px; font-size: 11px; }
+.research-grid-card .diag-kline pre { padding: 8px 16px; font-size: 9px; }
+.research-grid-card .diag-kline-events { padding: 6px 16px 10px; }
+.research-grid-card .diag-footer { padding: 8px 16px; font-size: 10px; flex-shrink: 0; }
+
+/* Pending card in research grid */
+.research-grid-card.pending-card {
+  display: flex; align-items: center; justify-content: center;
+  text-align: center;
+}
+.research-grid-card.pending-card .rc-pending-msg {
+  font-size: 13px; display: flex; flex-direction: column; align-items: center; gap: 8px;
+}
+
 /* Research mobile */
 @media (max-width: 768px) {
   .research-container { padding-left: 0; }
@@ -872,6 +940,7 @@ body {
   .research-date-nav { flex-wrap: wrap; }
   .research-date-dot { padding: 6px 10px; }
   .research-date-dot .dot-label { font-size: 11px; }
+  .research-grid { grid-template-columns: 1fr; grid-template-rows: auto; }
 }
 
 /* ── Timeline (legacy) ──────────────────── */
@@ -1117,7 +1186,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
       <!-- Research Tab -->
       <div id="tabResearch" style="display:none">
-        <div id="researchCards" style="overflow-y:auto;max-height:calc(100vh - 100px)">
+        <div id="researchCards" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
           <!-- Cards generated by JS -->
         </div>
       </div>
@@ -1235,7 +1304,16 @@ function switchLeftTab(tab) {
   if (tab !== 'research') stopResearchPoll();
   document.getElementById('tabFlow').style.display = tab === 'flow' ? '' : 'none';
   document.getElementById('tabPicks').style.display = tab === 'picks' ? '' : 'none';
-  document.getElementById('tabResearch').style.display = tab === 'research' ? '' : 'none';
+  const researchTabEl = document.getElementById('tabResearch');
+  if (tab === 'research') {
+    researchTabEl.style.display = 'flex';
+    researchTabEl.style.flexDirection = 'column';
+    researchTabEl.style.flex = '1';
+    researchTabEl.style.minHeight = '0';
+    researchTabEl.style.overflow = 'hidden';
+  } else {
+    researchTabEl.style.display = 'none';
+  }
   document.getElementById('tabWatchlist').style.display = tab === 'watchlist' ? '' : 'none';
   if (tab === 'picks') loadStockPicks();
   if (tab === 'research') loadResearchData();
@@ -1388,26 +1466,20 @@ function renderResearchCards() {
                         rtype === 'midday_preview' ? '12:55 午间休市后自动生成' :
                         rtype === 'full_day_review' ? '15:05 收盘后自动生成' : '待定时生成';
 
-      return `<div class="research-card pending">
-        <div class="research-card-inner">
-          <div class="research-card-head">
-            <span class="rc-icon">${iconSVG(icon, 20)}</span>
-            <span class="rc-title">${title}</span>
-            <span class="rc-time ${statusClass}">${statusLabel}</span>
-          </div>
-          <div class="research-card-body">
-            <div class="rc-pending-msg">
-              <span class="rc-pending-dot"></span>${pendingMsg}
-            </div>
-          </div>
+      return `<div class="research-grid-card pending-card">
+        <div class="rc-pending-msg">
+          <span style="font-size:28px">${iconSVG(icon, 28)}</span>
+          <span style="font-size:14px;font-weight:600;color:var(--text)">${title}</span>
+          <span style="font-size:11px;color:var(--text-tertiary)">${pendingMsg}</span>
+          <span style="font-size:11px;padding:3px 10px;border-radius:10px;background:var(--surface-container);color:var(--text-tertiary);font-weight:500">${statusLabel}</span>
         </div>
       </div>`;
     }
 
-    // ── Generated card: use diag-card style ──
+    // ── Generated card: use research-grid-card (soft-card style) ──
     const data = r.data || {};
     const statusBadge = r.status === 'updated' ? '已更新' : '已生成';
-    let html = `<div class="research-card generated"><div class="diag-card">`;
+    let html = `<div class="research-grid-card">`;
 
     // ── Header ──
     html += `<div class="diag-header">
@@ -1820,7 +1892,7 @@ function renderResearchCards() {
       <span style="margin-left:auto;font-size:10px;color:var(--text-tertiary)">${r.generated_at || ''}</span>
     </div>`;
 
-    html += `</div></div>`;
+    html += `</div>`;
     return html;
   }
 
@@ -1866,9 +1938,11 @@ function renderResearchCards() {
   }
 
   container.innerHTML = `
-    <div class="research-container">
+    <div class="research-container" style="display:flex;flex-direction:column;flex:1;gap:16px;overflow:hidden">
       ${dateTimelineHtml}
-      ${visibleCards.map(ct => buildCard(ct)).join('')}
+      <div class="research-grid">
+        ${visibleCards.map(ct => buildCard(ct)).join('')}
+      </div>
     </div>`;
 }
 
@@ -1921,7 +1995,7 @@ function updateStaleBanner(data) {
   const refreshEl = document.getElementById('sidebarRefreshTime');
   const statusEl = document.getElementById('sidebarMarketStatus');
   if (data.is_trading) {
-    refreshEl.textContent = '实时轮询中 · 每3秒更新';
+    refreshEl.textContent = '数据时间: ' + (data.date || '') + ' ' + (data.time_label || t);
     if (statusEl) statusEl.style.background = 'var(--surface-container)';
   } else {
     refreshEl.textContent = '数据时间: ' + (data.date || '') + ' ' + t + (t ? '' : ' (非交易时段)');
@@ -2273,7 +2347,7 @@ function updateSidebarStatus(data) {
 
   // 更新数据刷新时间
   if (data.is_trading) {
-    refreshEl.textContent = '数据刷新中 · 每3秒轮询';
+    refreshEl.textContent = '数据时间: ' + (data.data_date || data.date || '') + ' ' + (data.time_label || '');
   } else if (isStaleData) {
     refreshEl.textContent = '! 数据过期 (' + dataDate + ') · 等待开市';
   } else {
@@ -2357,12 +2431,17 @@ function updateSectorChart(timeIdx) {
     grid: { left: 55, right: 16, top: 8, bottom: 24 },
     xAxis: {
       type: 'category', data: minutes, boundaryGap: false,
-      axisLabel: { fontSize: 10, color: '#717785', interval: 0,
+      axisLabel: { fontSize: 10, color: '#717785',
+        interval: (index, value) => {
+          const labelPoints = new Set(['09:31','10:01','10:31','11:01','11:29','13:30','14:00','14:30','15:00']);
+          return labelPoints.has(value);
+        },
         formatter: v => {
-          const [h, m] = v.split(':').map(Number);
-          if (h === 11 && m === 30) return '11:30/13:00';
-          if (h === 13 && m === 0) return '';
-          return m === 0 || m === 30 ? v : '';
+          const labelMap = {
+            '09:31':'09:30','10:01':'10:00','10:31':'10:30','11:01':'11:00',
+            '11:29':'11:30/13:00','13:30':'13:30','14:00':'14:00','14:30':'14:30','15:00':'15:00'
+          };
+          return labelMap[v] || v;
         }
       },
       axisLine: { lineStyle: { color: '#e3e2e7' } }
@@ -2374,7 +2453,7 @@ function updateSectorChart(timeIdx) {
     },
     series: Object.entries(series).map(([name, sdata]) => ({
       name, type: 'line', data: sdata.values.slice(0, timeIdx + 1).map((v, i) => i < sdata.values.length ? v : null),
-      smooth: true, symbol: 'circle', symbolSize: 8, connectNulls: true,
+      smooth: true, symbol: 'circle', symbolSize: 8, connectNulls: false,
       itemStyle: { color: 'transparent', borderWidth: 0 },
       lineStyle: { width: 1.5, color: sdata.color },
       emphasis: { focus: 'series', lineStyle: { width: 3 }, itemStyle: { color: 'transparent', borderWidth: 0 } },
