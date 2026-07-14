@@ -384,38 +384,39 @@ body {
 
 /* ── Diagnosis Card ─────────────────────── */
 .diag-card {
-  background: var(--card); border-radius: 16px;
+  background: var(--card); border-radius: var(--radius-xl);
   border: 1px solid var(--border-light); box-shadow: var(--shadow);
-  overflow: hidden; margin: 4px 0;
+  overflow: hidden; margin: 0; width: 100%;
 }
 .diag-header {
-  padding: 18px 20px; background: linear-gradient(135deg, rgba(0,113,227,0.08), rgba(103,80,164,0.05));
-  display: flex; align-items: baseline; gap: 12px; border-bottom: 1px solid var(--border-light);
+  padding: 20px 24px; display: flex; align-items: baseline; gap: 12px;
+  border-bottom: 1px solid var(--border-light);
+  background: linear-gradient(135deg, rgba(0,113,227,0.06), rgba(0,113,227,0.01));
 }
 .diag-header .diag-name { font-size: 16px; font-weight: 700; color: var(--text); }
 .diag-header .diag-code { font-size: 12px; color: var(--text-tertiary); font-family: var(--font-mono); }
 .diag-header .diag-price { font-size: 22px; font-weight: 700; color: var(--text); margin-left: auto; font-family: var(--font-mono); }
-.diag-header .diag-pct { font-size: 14px; font-weight: 600; padding: 3px 10px; border-radius: 6px; }
+.diag-header .diag-pct { font-size: 14px; font-weight: 600; padding: 4px 12px; border-radius: 8px; }
 .diag-pct.up { background: var(--red-light); color: var(--red); }
 .diag-pct.down { background: var(--green-light); color: var(--green); }
 .diag-header .diag-notice {
-  font-size: 10px; padding: 2px 8px; border-radius: 99px;
-  background: rgba(245,158,11,0.12); color: var(--orange); font-weight: 600;
+  font-size: 10px; padding: 2px 10px; border-radius: 99px;
+  background: var(--accent-light); color: var(--accent); font-weight: 600;
 }
 
 .diag-kline { padding: 0; border-bottom: 1px solid var(--border-light); }
 .diag-kline summary {
-  padding: 10px 20px; font-size: 12px; font-weight: 600; color: var(--text-secondary);
+  padding: 12px 24px; font-size: 12px; font-weight: 600; color: var(--text-secondary);
   cursor: pointer; user-select: none; background: var(--surface);
 }
 .diag-kline summary:hover { color: var(--accent); }
 .diag-kline pre {
-  margin: 0; padding: 12px 20px; font-size: 10px; font-family: var(--font-mono);
-  line-height: 1.6; color: var(--text-secondary); background: #faf9fd;
+  margin: 0; padding: 14px 24px; font-size: 10px; font-family: var(--font-mono);
+  line-height: 1.6; color: var(--text-secondary); background: var(--surface-low);
   overflow-x: auto; white-space: pre;
 }
 .diag-kline-events {
-  display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 20px 12px;
+  display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 24px 14px;
   background: var(--surface); border-top: 1px solid var(--border-light);
 }
 .diag-kline-event {
@@ -435,18 +436,18 @@ body {
   background: var(--border-light); border-bottom: 1px solid var(--border-light);
 }
 .diag-metric {
-  background: var(--card); padding: 16px 10px; text-align: center; transition: background 0.15s;
+  background: var(--card); padding: 18px 12px; text-align: center; transition: background 0.15s;
 }
 .diag-metric:hover { background: rgba(0,113,227,0.02); }
 .diag-metric .metric-val { font-size: 18px; font-weight: 700; font-family: var(--font-mono); color: var(--text); letter-spacing: -0.3px; }
 .diag-metric .metric-label { font-size: 10px; color: var(--text-tertiary); margin-top: 5px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
 
 /* Section headers with SVG icons */
-.diag-section { padding: 18px 20px; border-bottom: 1px solid var(--border-light); }
+.diag-section { padding: 18px 24px; border-bottom: 1px solid var(--border-light); }
 .diag-section:last-child { border-bottom: none; }
 .diag-section h4 {
   font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 10px;
-  letter-spacing: 0.2px; display: flex; align-items: center; gap: 7px;
+  letter-spacing: 0.2px; display: flex; align-items: center; gap: 8px;
 }
 .diag-section h4 .diag-section-icon { width: 16px; height: 16px; flex-shrink: 0; }
 .diag-section h4 .diag-section-icon svg { width: 16px; height: 16px; }
@@ -465,35 +466,35 @@ body {
 .diag-section.kline-analysis h4 { color: var(--accent); font-size: 13px; }
 
 /* Signal tags with level colors */
-.diag-signals { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 20px 14px 20px; }
+.diag-signals { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 24px 16px 24px; }
 .diag-signal {
-  font-size: 11px; padding: 5px 11px; border-radius: 99px; font-weight: 600; letter-spacing: 0.2px;
+  font-size: 11px; padding: 5px 12px; border-radius: 99px; font-weight: 600; letter-spacing: 0.2px;
 }
-.diag-signal.lv5 { background: rgba(186,26,26,0.12); color: var(--red); font-weight: 700; }
-.diag-signal.lv4 { background: rgba(245,158,11,0.12); color: #b45309; font-weight: 700; }
+.diag-signal.lv5 { background: var(--accent-light); color: var(--accent); font-weight: 700; }
+.diag-signal.lv4 { background: var(--accent-light); color: var(--accent); font-weight: 700; }
 .diag-signal.lv3 { background: var(--accent-light); color: var(--accent); font-weight: 600; }
 .diag-signal.lv2, .diag-signal.lv1 { background: var(--surface-container); color: var(--text-secondary); }
 
 /* Score bar */
-.diag-score { padding: 14px 20px; border-bottom: 1px solid var(--border-light); }
-.diag-score-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.diag-score-label { font-size: 11px; color: var(--text-tertiary); min-width: 40px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.diag-score { padding: 16px 24px; border-bottom: 1px solid var(--border-light); }
+.diag-score-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.diag-score-label { font-size: 11px; color: var(--text-tertiary); min-width: 44px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
 .diag-score-track { flex: 1; height: 8px; background: var(--surface-container); border-radius: 99px; overflow: hidden; }
 .diag-score-fill { height: 100%; border-radius: 99px; transition: width 0.6s ease; }
-.diag-score-fill.high { background: linear-gradient(90deg, var(--red), #e05a2c); box-shadow: 0 1px 3px rgba(186,26,26,0.2); }
-.diag-score-fill.mid { background: linear-gradient(90deg, var(--orange), #e0a800); }
-.diag-score-fill.low { background: linear-gradient(90deg, var(--text-tertiary), #9ca3af); }
+.diag-score-fill.high { background: linear-gradient(90deg, var(--accent), #3399ff); }
+.diag-score-fill.mid { background: linear-gradient(90deg, var(--accent), #80b3e0); }
+.diag-score-fill.low { background: linear-gradient(90deg, var(--text-tertiary), #c1c6d6); }
 .diag-score-val { font-size: 15px; font-weight: 700; font-family: var(--font-mono); min-width: 32px; text-align: right; color: var(--text); }
 .diag-score-sub { display: flex; flex-wrap: wrap; gap: 14px; font-size: 10px; color: var(--text-tertiary); margin-top: 2px; }
 .diag-score-sub span { font-family: var(--font-mono); display: flex; align-items: center; gap: 3px; }
 
 /* Advice section — actionable chips */
 .diag-advice {
-  margin: 0 20px 20px 20px; padding: 20px; border-radius: 14px;
-  background: linear-gradient(135deg, rgba(245,158,11,0.08), rgba(0,113,227,0.04));
-  border: 1px solid rgba(245,158,11,0.3); box-shadow: 0 2px 8px rgba(245,158,11,0.06);
+  margin: 0 24px 20px 24px; padding: 20px; border-radius: 14px;
+  background: linear-gradient(135deg, rgba(0,113,227,0.04), rgba(0,113,227,0.01));
+  border: 1px solid rgba(0,113,227,0.15);
 }
-.diag-advice h4 { font-size: 15px; font-weight: 700; color: var(--orange); margin-bottom: 14px; display: flex; align-items: center; gap: 7px; }
+.diag-advice h4 { font-size: 14px; font-weight: 700; color: var(--accent); margin-bottom: 14px; display: flex; align-items: center; gap: 7px; }
 .diag-advice-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .diag-advice-chip {
   padding: 7px 14px; border-radius: 10px; font-size: 13px; font-weight: 700;
@@ -509,7 +510,7 @@ body {
 
 /* Footer one-liner */
 .diag-footer {
-  padding: 12px 20px; background: var(--surface); font-size: 12px;
+  padding: 12px 24px; background: var(--surface); font-size: 12px;
   color: var(--text-secondary); font-style: italic; border-top: 1px solid var(--border-light);
 }
 
@@ -528,63 +529,37 @@ body {
 .stream-text { font-size: 13px; line-height: 1.7; color: var(--text); }
 .stream-text b { color: var(--text); font-weight: 700; }
 
-/* ── 板块分析卡片 ── */
-.sector-card {
-  background: var(--card); border-radius: 16px; border: 1px solid var(--border-light);
-  box-shadow: var(--shadow); overflow: hidden; margin: 4px 0;
+/* ── 统一卡片样式（板块/大盘/持仓） ── */
+.sector-card, .market-card, .holding-card {
+  background: var(--card); border-radius: var(--radius-xl);
+  border: 1px solid var(--border-light); box-shadow: var(--shadow);
+  overflow: hidden; margin: 0; width: 100%;
 }
-.sector-card-header {
-  padding: 16px 20px; background: linear-gradient(135deg, rgba(245,158,11,0.08), rgba(255,138,0,0.03));
-  font-size: 15px; font-weight: 700; color: var(--orange);
-  display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border-light);
-}
-.sector-card .diag-section { padding: 14px 20px; border-bottom: 1px solid var(--border-light); }
-.sector-card .diag-section h4 { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
-.sector-card .diag-section p, .sector-card .diag-section li { font-size: 13px; line-height: 1.75; color: var(--text-secondary); margin: 0; }
-.sector-card-footer {
-  padding: 8px 20px; font-size: 10px; color: var(--text-tertiary);
-  background: var(--surface); display: flex; align-items: center; gap: 4px;
-}
-
-/* ── 大盘/外盘研判卡片 ── */
-.market-card {
-  background: var(--card); border-radius: 16px; border: 1px solid var(--border-light);
-  box-shadow: var(--shadow); overflow: hidden; margin: 4px 0;
-  border-top: 3px solid var(--accent);
-}
-.market-card-header {
-  padding: 16px 20px; background: linear-gradient(135deg, rgba(0,113,227,0.05), rgba(103,80,164,0.02));
+.sector-card-header, .market-card-header, .holding-card-header {
+  padding: 18px 24px; display: flex; align-items: center; gap: 10px;
+  border-bottom: 1px solid var(--border-light);
   font-size: 15px; font-weight: 700; color: var(--accent);
-  display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border-light);
+  background: linear-gradient(135deg, rgba(0,113,227,0.06), rgba(0,113,227,0.01));
 }
-.market-card .diag-section { padding: 12px 20px; }
-.market-card .diag-section h4 { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
-.market-card .diag-section p, .market-card .diag-section li { font-size: 13px; line-height: 1.7; color: var(--text-secondary); margin: 0; }
-.market-card-footer {
-  padding: 8px 20px; font-size: 10px; color: var(--text-tertiary);
-  background: var(--surface); display: flex; align-items: center; gap: 4px;
+.sector-card .diag-section, .market-card .diag-section, .holding-card .diag-section {
+  padding: 16px 24px; border-bottom: 1px solid var(--border-light);
 }
-.market-stream-content { padding: 20px; min-height: 60px; }
-
-/* ── 持仓分析卡片 ── */
-.holding-card {
-  background: var(--card); border-radius: 16px; border: 1px solid var(--border-light);
-  box-shadow: var(--shadow); overflow: hidden; margin: 4px 0;
-  border-top: 3px solid #6750a4;
+.sector-card .diag-section:last-child, .market-card .diag-section:last-child, .holding-card .diag-section:last-child {
+  border-bottom: none;
 }
-.holding-card-header {
-  padding: 16px 20px; background: linear-gradient(135deg, rgba(103,80,164,0.06), rgba(103,80,164,0.02));
-  font-size: 15px; font-weight: 700; color: #6750a4;
-  display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border-light);
+.sector-card .diag-section h4, .market-card .diag-section h4, .holding-card .diag-section h4 {
+  font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 8px;
+  display: flex; align-items: center; gap: 8px;
 }
-.holding-card .diag-section { padding: 12px 20px; }
-.holding-card .diag-section h4 { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
-.holding-card .diag-section p, .holding-card .diag-section li { font-size: 13px; line-height: 1.7; color: var(--text-secondary); margin: 0; }
-.holding-card-footer {
-  padding: 8px 20px; font-size: 10px; color: var(--text-tertiary);
-  background: var(--surface); display: flex; align-items: center; gap: 4px;
+.sector-card .diag-section p, .market-card .diag-section p, .holding-card .diag-section p,
+.sector-card .diag-section li, .market-card .diag-section li, .holding-card .diag-section li {
+  font-size: 13px; line-height: 1.75; color: var(--text-secondary); margin: 0;
 }
-.holding-stream-content { padding: 20px; min-height: 60px; }
+.sector-card-footer, .market-card-footer, .holding-card-footer {
+  padding: 10px 24px; font-size: 11px; color: var(--text-tertiary);
+  background: var(--surface); display: flex; align-items: center; gap: 6px;
+}
+.market-stream-content, .holding-stream-content { padding: 24px; min-height: 60px; }
 
 /* ── 持仓陪跑面板 ── */
 .holdings-panel {
@@ -654,11 +629,18 @@ body {
 
 /* Chat messages */
 .chat-msg {
-  max-width: 85%; padding: 12px 16px; border-radius: 16px;
+  max-width: 92%; padding: 12px 16px; border-radius: 16px;
   font-size: 13px; line-height: 1.6;
 }
 .chat-msg.assistant {
   align-self: flex-start; display: flex; gap: 10px; padding: 0; background: none;
+  max-width: 100%;
+}
+.chat-msg.assistant .diag-card,
+.chat-msg.assistant .sector-card,
+.chat-msg.assistant .market-card,
+.chat-msg.assistant .holding-card {
+  width: 100%;
 }
 .chat-msg.assistant .msg-avatar {
   width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
