@@ -22,7 +22,9 @@ import bisect
 import json
 import logging
 import random
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -1062,18 +1064,12 @@ def _select_stocks_real(collector=None):
                 sum(1 for s in hot_sectors if s.get("type") == "industry"),
                 len(hot_sectors))
 
-    # Step 2: 下钻成分股（串行 + 间隔，避免打满连接池）
-    seen_sectors = set()
-    all_stocks = []
-    for sector in hot_sectors:
-        if sector["name"] in seen_sectors:
-            continue
-        seen_sectors.add(sector["name"])
-
+    # Step 2: 下钻成分股（并行拉取，max_workers=5 防打满连接池）
+    def _fetch_one_sector(sector: dict) -> list:
+        """拉取单个板块成分股并充实因子，返回带 sector 标记的 stock 列表。"""
         code = sector.get("code", "")
         if not code:
-            continue  # 没有 code 无法下钻
-
+            return []
         stocks = []
         for attempt in range(3):
             stocks = _fetch_sector_stocks(code, top_n=STOCKS_PER_SECTOR)
@@ -1082,24 +1078,36 @@ def _select_stocks_real(collector=None):
             time.sleep(0.5)  # 重试前等待
         if not stocks:
             logger.warning("板块 %s(%s) 成分股3次重试均失败", sector["name"], code)
-            continue
-
-        time.sleep(0.3)  # 板块间间隔，防止并发打满连接池
-        # 充实因子：短动量 + 突破距离（用已有数据近似，后续可接日K线缓存）
+            return []
+        # 充实因子：短动量 + 突破距离
         for s in stocks:
             daily = _DAILY_SCORES.get(s.get("code", ""), {})
             factor_sc = daily.get("factor_score", 0) if daily else 0
-            s["short_momentum"] = round((factor_sc - 5) * 2, 2)  # factor_sc 5→0, 10→+10, 0→-10
-            # 突破距离：跑赢板块幅度 × 5（跑赢2%→+10, 跑输2%→-10）
+            s["short_momentum"] = round((factor_sc - 5) * 2, 2)
             dev = (s.get("pct_chg") or 0) - (sector.get("pct_chg") or 0)
             s["breakout_dist"] = round(dev * 5, 2)
-        for s in stocks:
             s["sector"] = sector["name"]
             s["sector_type"] = sector.get("type", "concept")
             s["sector_pct"] = sector.get("pct_chg", 0)
             s["price_deviation"] = round(
                 (s.get("pct_chg") or 0) - (sector.get("pct_chg") or 0), 2)
-        all_stocks.extend(stocks)
+        return stocks
+
+    seen_sectors = set()
+    deduped_sectors = []
+    for sector in hot_sectors:
+        if sector["name"] not in seen_sectors and sector.get("code"):
+            seen_sectors.add(sector["name"])
+            deduped_sectors.append(sector)
+
+    all_stocks = []
+    _t0 = time.time()
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        futures = {ex.submit(_fetch_one_sector, s): s for s in deduped_sectors}
+        for fut in as_completed(futures):
+            all_stocks.extend(fut.result())
+    logger.info("A池成分股并行拉取: %d板块 → %d只, 耗时 %.1fs",
+                len(deduped_sectors), len(all_stocks), time.time() - _t0)
 
     if not all_stocks:
         raise RuntimeError("无成分股数据")
@@ -1141,24 +1149,22 @@ def _select_stocks_real(collector=None):
             collector=collector, top_n=PULLBACK_MAX_SECTORS)
         if pullback_sectors:
             logger.info("B 池回调板块: %d 个", len(pullback_sectors))
-            b_seen_sectors = set()
+            # 去重 + 过滤无 code 板块
+            b_deduped = []
+            b_seen_names = set()
             for ps in pullback_sectors:
-                if ps["name"] in b_seen_sectors:
-                    continue
-                b_seen_sectors.add(ps["name"])
+                if ps["name"] not in b_seen_names and ps.get("code"):
+                    b_seen_names.add(ps["name"])
+                    b_deduped.append(ps)
 
+            def _fetch_one_b_sector(ps: dict) -> list:
                 code = ps.get("code", "")
-                if not code:
-                    continue
                 stocks = []
                 for attempt in range(3):
                     stocks = _fetch_sector_stocks(code, top_n=STOCKS_PER_SECTOR)
                     if stocks:
                         break
                     time.sleep(0.5)
-                if not stocks:
-                    continue
-                time.sleep(0.3)
                 for s in stocks:
                     s["sector"] = ps["name"]
                     s["sector_type"] = ps.get("type", "concept")
@@ -1166,7 +1172,15 @@ def _select_stocks_real(collector=None):
                     s["price_deviation"] = round(
                         (s.get("pct_chg") or 0) - (ps.get("today_return") or 0), 2)
                     s["pool"] = "B"
-                b_stocks_raw.extend(stocks)
+                return stocks
+
+            _t0b = time.time()
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                b_futures = {ex.submit(_fetch_one_b_sector, ps): ps for ps in b_deduped}
+                for fut in as_completed(b_futures):
+                    b_stocks_raw.extend(fut.result())
+            logger.info("B池成分股并行拉取: %d板块 → %d只, 耗时 %.1fs",
+                        len(b_deduped), len(b_stocks_raw), time.time() - _t0b)
 
             # B 池去重 + 过滤
             b_seen = {}
@@ -1565,6 +1579,53 @@ def select_stocks(collector=None) -> dict:
     _CACHE = result
     _CACHE_TTL = now
     return result
+
+
+# ── 后台预热 ─────────────────────────────────────────────
+
+_WARMUP_INTERVAL = 50.0  # 略小于 _CACHE_LIFETIME(60s)，确保缓存始终热
+_warmup_thread: Optional[threading.Thread] = None
+_warmup_stop = threading.Event()
+
+
+def _warmup_loop():
+    """后台预热线程：交易时段定期刷新选股缓存。"""
+    global _warmup_stop
+    logger.info("选股预热线程已启动 (间隔 %.0fs)", _WARMUP_INTERVAL)
+    while not _warmup_stop.is_set():
+        try:
+            _warmup_stop.wait(_WARMUP_INTERVAL)
+            if _warmup_stop.is_set():
+                break
+            # 检查是否交易时段
+            try:
+                from data_fetcher import _is_trading_time
+                if not _is_trading_time():
+                    continue
+            except Exception:
+                pass
+            # 执行预热
+            _t0 = time.time()
+            select_stocks()
+            logger.info("选股预热刷新完成, 耗时 %.1fs", time.time() - _t0)
+        except Exception as e:
+            logger.warning("选股预热失败: %s", e)
+
+
+def start_stock_warmup():
+    """启动后台选股预热线程（应用启动时调用）。"""
+    global _warmup_thread, _warmup_stop
+    if _warmup_thread and _warmup_thread.is_alive():
+        return
+    _warmup_stop.clear()
+    _warmup_thread = threading.Thread(target=_warmup_loop, daemon=True, name="stock-warmup")
+    _warmup_thread.start()
+
+
+def stop_stock_warmup():
+    """停止后台选股预热线程。"""
+    global _warmup_stop
+    _warmup_stop.set()
 
 
 # ── CLI 测试 ────────────────────────────────────────────────

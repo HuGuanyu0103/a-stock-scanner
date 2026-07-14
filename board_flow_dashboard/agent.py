@@ -346,7 +346,8 @@ class DecisionAgent:
             logger.info("未配置 DeepSeek API Key")
             self._api_available = False
             return False
-        self._client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+        self._client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com",
+                              timeout=30.0, max_retries=2)
         self._api_available = True
         return True
 

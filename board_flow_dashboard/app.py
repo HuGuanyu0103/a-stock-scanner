@@ -120,6 +120,14 @@ pre_market_scanner = PreMarketScanner()
 # 启动信号定期持久化（每 60s）
 get_signal_store().start_auto_persist(interval=60)
 
+# 启动选股预热线程（交易时段每 50s 自动刷新缓存）
+try:
+    from .stock_selector import start_stock_warmup
+except ImportError:
+    from stock_selector import start_stock_warmup  # type: ignore[no-redef]
+start_stock_warmup()
+logger.info("选股预热线程已启动")
+
 
 def _cleanup():
     if collector:
@@ -133,6 +141,12 @@ def _cleanup():
         get_signal_store().persist()
     except Exception:
         pass
+    # 停止选股预热
+    try:
+        from .stock_selector import stop_stock_warmup
+    except ImportError:
+        from stock_selector import stop_stock_warmup  # type: ignore[no-redef]
+    stop_stock_warmup()
     _save_market_daily_cache()
 
 atexit.register(_cleanup)
@@ -272,7 +286,7 @@ def api_sector_timeseries():
     if not name:
         return jsonify({"error": "请指定板块名称"}), 400
     minutes = min(int(request.args.get("minutes", 30)), 120)
-    data = collector.get_sector_timeseries(name, minutes)
+    data = collector.get_sector_timeseries(name, recent_minutes=minutes)
     return jsonify(data)
 
 
@@ -1037,7 +1051,7 @@ def api_agent_chat():
     sector_ts_context = ""
     for sector in WATCH_SECTORS:
         if sector in user_message:
-            ts = collector.get_sector_timeseries(sector, minutes=30)
+            ts = collector.get_sector_timeseries(sector, recent_minutes=30)
             if "error" not in ts:
                 sector_ts_context = json.dumps(ts, ensure_ascii=False)
             break
@@ -1048,6 +1062,11 @@ def api_agent_chat():
         sector_timeseries=sector_ts_context,
         resolved_code=resolved_code,
     )
+    qt = agent._classify_question(user_message, resolved_code)
+    _card_map = {"stock_analysis":"stock","sector_analysis":"sector","market_analysis":"market","external_info":"market","holding_decision":"holding"}
+    card_type = _card_map.get(qt, "text")
+    if card_type == "stock" and not stock_data_context:
+        card_type = "text"
     if reply:
         return jsonify({
             "reply": reply,
@@ -1055,6 +1074,7 @@ def api_agent_chat():
             "_ts": datetime.now().strftime("%H:%M:%S"),
             "_code": stock_code_in_msg or "",
             "_ctx": len(stock_data_context),
+            "card_type": card_type,
         })
     return jsonify({"error": "Agent 不可用", "reply": "抱歉，AI 助手暂时不可用，请稍后重试。",
                     "_ts": datetime.now().strftime("%H:%M:%S")})
@@ -1100,7 +1120,7 @@ def api_agent_chat_stream():
     sector_ts_context = ""
     for sector in WATCH_SECTORS:
         if sector in user_message:
-            ts = collector.get_sector_timeseries(sector, minutes=30)
+            ts = collector.get_sector_timeseries(sector, recent_minutes=30)
             if "error" not in ts:
                 sector_ts_context = json.dumps(ts, ensure_ascii=False)
             break
@@ -1109,11 +1129,24 @@ def api_agent_chat_stream():
         ts = datetime.now().strftime("%H:%M:%S")
         ctx_len = len(stock_data_context)
 
-        # Phase 1: 推送元数据（K线表格 + 基本信息，前端立即渲染卡片壳）
-        yield f"data: {json.dumps({'type': 'meta', 'kline': kline_data, '_ts': ts, '_code': stock_code_in_msg or '', '_name': resolved_name or '', '_ctx': ctx_len}, ensure_ascii=False)}\n\n"
+        # 预分类问题类型 → card_type（前端据此选择卡片壳）
+        qt = agent._classify_question(user_message, resolved_code)
+        _card_map = {
+            "stock_analysis": "stock", "sector_analysis": "sector",
+            "market_analysis": "market", "external_info": "market",
+            "holding_decision": "holding",
+        }
+        card_type = _card_map.get(qt, "text")
+        # 个股诊断需要 diagData 才有完整卡片，否则降级为文本
+        if card_type == "stock" and not stock_data_context:
+            card_type = "text"
+
+        # Phase 1: 推送元数据（含 card_type，前端立即渲染卡片壳）
+        yield f"data: {json.dumps({'type': 'meta', 'card_type': card_type, 'kline': kline_data, '_ts': ts, '_code': stock_code_in_msg or '', '_name': resolved_name or '', '_ctx': ctx_len}, ensure_ascii=False)}\n\n"
 
         # Phase 2: 流式推送 LLM 输出
         full_reply = ""
+        agent_error = False
         try:
             for chunk in agent.chat_stream(
                 user_message, all_candidates, hot_sectors, signals,
@@ -1121,14 +1154,16 @@ def api_agent_chat_stream():
                 resolved_code=resolved_code,
             ):
                 if chunk is None:
+                    agent_error = True
                     break
                 full_reply += chunk
                 yield f"data: {json.dumps({'type': 'chunk', 'data': chunk}, ensure_ascii=False)}\n\n"
         except Exception as e:
             logger.error("SSE stream error: %s", e)
+            agent_error = True
 
-        # Phase 3: 完成信号
-        yield f"data: {json.dumps({'type': 'done', '_ts': ts, '_code': stock_code_in_msg or '', '_name': resolved_name or '', '_ctx': ctx_len}, ensure_ascii=False)}\n\n"
+        # Phase 3: 完成信号（含错误标记，前端可据此兜底）
+        yield f"data: {json.dumps({'type': 'done', '_ts': ts, '_code': stock_code_in_msg or '', '_name': resolved_name or '', '_ctx': ctx_len, 'error': agent_error}, ensure_ascii=False)}\n\n"
 
     return Response(
         stream_with_context(generate()),
