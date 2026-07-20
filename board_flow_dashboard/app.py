@@ -2329,8 +2329,8 @@ def api_loop_auto_resolve():
 
 @app.route("/api/watch/positions", methods=["GET"])
 def api_watch_list():
-    """查询当前盯盘持仓列表。"""
-    return jsonify({"positions": position_watcher.get_positions()})
+    """查询当前盯盘持仓列表（含实时价与浮盈）。"""
+    return jsonify({"positions": position_watcher.get_positions_enriched()})
 
 
 @app.route("/api/watch/positions", methods=["POST"])

@@ -1023,9 +1023,15 @@ body {
 }
 /* 持仓盯盘 */
 .watch-lbl { display:block; font-size:11px; color:var(--text-tertiary); margin-bottom:4px; }
-.watch-inp { width:100%; box-sizing:border-box; padding:7px 10px; border:1px solid var(--outline,#ccc); border-radius:8px; font-size:13px; background:var(--surface); color:var(--text); }
-.watch-inp:focus { outline:none; border-color:var(--accent); }
-.watch-chip { display:inline-block; font-size:11px; padding:2px 8px; border-radius:10px; background:var(--accent-container,#e7e0ec); color:var(--accent); margin-right:6px; }
+.watch-inp { width:100%; box-sizing:border-box; padding:7px 10px; border:1px solid var(--border); border-radius:8px; font-size:13px; background:var(--surface); color:var(--text); transition:border-color .15s,box-shadow .15s; }
+.watch-inp:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-light); }
+.watch-chip { display:inline-block; font-size:11px; padding:2px 8px; border-radius:10px; background:var(--accent-light); color:var(--accent); margin-right:6px; }
+.watch-stat { text-align:center; padding:8px; background:var(--surface-low); border-radius:8px; }
+.watch-card-close { border:none; background:transparent; color:var(--text-tertiary); cursor:pointer; border-radius:8px; transition:background .15s,color .15s; padding:2px; }
+.watch-card-close:hover { background:var(--red-light); color:var(--red); }
+/* 止损-成本-现价-止盈 一维标尺 */
+.watch-track { position:relative; height:6px; border-radius:3px; margin:14px 4px 6px; background:linear-gradient(90deg,var(--green-light),var(--surface-container),var(--red-light)); }
+.watch-track-mark { position:absolute; top:-3px; width:12px; height:12px; border-radius:50%; border:2px solid var(--card); transform:translateX(-50%); box-shadow:var(--shadow-sm); }
 </style>
 <script>
 // ═══ SVG Icon System — 替代 Material Symbols 字体，零外部依赖 ═══
@@ -1410,6 +1416,7 @@ function toggleWatchForm() {
 
 async function submitWatch() {
   const msg = document.getElementById('watchFormMsg');
+  const btn = document.querySelector('#watchForm button[onclick="submitWatch()"]');
   const body = {
     code: document.getElementById('wfCode').value.trim(),
     name: document.getElementById('wfName').value.trim(),
@@ -1421,6 +1428,9 @@ async function submitWatch() {
   };
   if (!/^\d{6}$/.test(body.code)) { msg.textContent = '请输入6位股票代码'; return; }
   if (!body.cost || body.cost <= 0) { msg.textContent = '请输入有效成本价'; return; }
+  // 防重复提交：提交期间禁用按钮
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.textContent = '保存中...'; }
+  msg.textContent = '';
   try {
     const r = await fetch('/api/watch/positions', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1432,6 +1442,7 @@ async function submitWatch() {
     toggleWatchForm();
     loadWatchPositions();
   } catch(e) { msg.textContent = '网络错误: ' + e; }
+  finally { if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.textContent = '保存'; } }
 }
 
 async function loadWatchPositions() {
@@ -1443,10 +1454,10 @@ async function loadWatchPositions() {
     if (!list.length) {
       box.innerHTML = '<div class="soft-card" style="padding:40px;text-align:center;color:var(--text-tertiary)">'
         + '<span class="material-symbols-outlined" style="font-size:44px;display:block;margin-bottom:12px">visibility</span>'
-        + '暂无盯盘持仓，点击右上角「添加持仓」开始盯盘</div>';
+        + '<div style="margin-bottom:16px">暂无盯盘持仓，添加后系统将在盘中主动为你盯盘</div>'
+        + '<button onclick="toggleWatchForm()" style="border:none;background:var(--accent);color:#fff;padding:8px 20px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">+ 添加第一只持仓</button></div>';
       return;
     }
-    // 需要实时价：用 pnl 展示，实时价由后端盯盘循环推送，这里展示点位与成本
     box.innerHTML = list.map(renderWatchCard).join('');
   } catch(e) {
     box.innerHTML = '<div class="soft-card" style="padding:24px;color:var(--red)">加载失败: ' + e + '</div>';
@@ -1454,26 +1465,47 @@ async function loadWatchPositions() {
 }
 
 function renderWatchCard(p) {
-  const tp = p.target_price, sl = p.stop_price, cost = p.cost;
+  const cost = p.cost || 0;
+  const tp = p.target_price, sl = p.stop_price;
+  const cur = p.current_price, pnl = p.pnl_pct;
   const sig = p.signal ? '<span class="watch-chip">' + p.signal + '</span>' : '';
-  const sec = p.sector ? '<span class="watch-chip" style="background:var(--surface-container)">' + p.sector + '</span>' : '';
+  const sec = p.sector ? '<span class="watch-chip" style="background:var(--surface-container);color:var(--text-secondary)">' + p.sector + '</span>' : '';
+  // A股约定：涨红跌绿。浮盈为正→红，为负→绿
+  const pnlColor = pnl == null ? 'var(--text-tertiary)' : (pnl >= 0 ? 'var(--red)' : 'var(--green)');
+  const pnlTxt = pnl == null ? '--' : (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%';
+  const curTxt = cur == null ? '待盘中' : cur.toFixed(2);
+
+  // 止损—成本—止盈 一维标尺，标出现价位置
+  let track = '';
+  if (p.track_pos != null) {
+    const pct = (p.track_pos * 100).toFixed(1);
+    track = '<div class="watch-track"><div class="watch-track-mark" style="left:' + pct + '%;background:' + pnlColor + '"></div></div>'
+      + '<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-tertiary);margin:0 4px">'
+      + '<span>止损 ' + (sl ? sl.toFixed(2) : '--') + '</span><span>止盈 ' + (tp ? tp.toFixed(2) : '--') + '</span></div>';
+  }
+
   return '<div class="soft-card" style="padding:16px 18px;margin-bottom:12px">'
     + '<div style="display:flex;justify-content:space-between;align-items:flex-start">'
     +   '<div><span style="font-size:16px;font-weight:700">' + (p.stock_name || p.stock_code) + '</span>'
     +     '<span style="font-size:12px;color:var(--text-tertiary);margin-left:8px">' + p.stock_code + '</span>'
     +     '<div style="margin-top:6px">' + sig + sec + '</div></div>'
-    +   '<button onclick="removeWatch(' + p.id + ')" title="移除" style="border:none;background:transparent;color:var(--text-tertiary);cursor:pointer">'
-    +     '<span class="material-symbols-outlined" style="font-size:20px">close</span></button>'
+    +   '<div style="text-align:right"><div style="font-size:18px;font-weight:700;color:' + pnlColor + '">' + curTxt + '</div>'
+    +     '<div style="font-size:13px;font-weight:600;color:' + pnlColor + '">' + pnlTxt + '</div></div>'
     + '</div>'
-    + '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px">'
+    + track
+    + '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px">'
     +   watchStat('成本价', cost.toFixed(2), 'var(--text)')
     +   watchStat('止盈 (+' + (p.take_profit_pct||0) + '%)', tp ? tp.toFixed(2) : '--', 'var(--red)')
     +   watchStat('止损 (' + (p.stop_loss_pct||0) + '%)', sl ? sl.toFixed(2) : '--', 'var(--green)')
+    + '</div>'
+    + '<div style="text-align:right;margin-top:10px">'
+    +   '<button class="watch-card-close" onclick="removeWatch(' + p.id + ')" title="移除盯盘">'
+    +     '<span class="material-symbols-outlined" style="font-size:18px;vertical-align:middle">delete</span></button>'
     + '</div></div>';
 }
 
 function watchStat(label, val, color) {
-  return '<div style="text-align:center;padding:8px;background:var(--surface-container-low,var(--surface));border-radius:8px">'
+  return '<div class="watch-stat">'
     + '<div style="font-size:11px;color:var(--text-tertiary)">' + label + '</div>'
     + '<div style="font-size:15px;font-weight:700;color:' + color + ';margin-top:2px">' + val + '</div></div>';
 }

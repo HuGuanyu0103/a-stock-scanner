@@ -212,6 +212,31 @@ class PositionWatcher:
                 "SELECT * FROM watch_positions WHERE status='watching' "
                 "ORDER BY created_at DESC").fetchall()]
 
+    def get_positions_enriched(self) -> list[dict]:
+        """带实时价与浮盈的持仓列表（供前端盯盘卡片展示现价/盈亏）。
+
+        取价失败时 price 为 None，前端优雅降级为「--」。
+        """
+        positions = self.get_positions()
+        if not positions:
+            return []
+        prices = self._fetch_prices([p["stock_code"] for p in positions])
+        for p in positions:
+            price = prices.get(p["stock_code"])
+            p["current_price"] = round(price, 3) if price else None
+            cost = p.get("cost") or 0
+            if price and cost:
+                p["pnl_pct"] = round((price - cost) / cost * 100, 2)
+                # 现价在「止损→止盈」标尺上的位置(0~1)，供前端进度条
+                stop = p.get("stop_price") or 0
+                target = p.get("target_price") or 0
+                if target > stop:
+                    p["track_pos"] = max(0.0, min(1.0,
+                                                  (price - stop) / (target - stop)))
+            else:
+                p["pnl_pct"] = None
+        return positions
+
     # ── 盯盘循环 ──────────────────────────────────────────────
     def start(self):
         if self._running:
