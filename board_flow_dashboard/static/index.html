@@ -1021,6 +1021,11 @@ body {
   .flow-grid { grid-template-columns: 1fr; }
   .chat-input-tools { display: none; }
 }
+/* 持仓盯盘 */
+.watch-lbl { display:block; font-size:11px; color:var(--text-tertiary); margin-bottom:4px; }
+.watch-inp { width:100%; box-sizing:border-box; padding:7px 10px; border:1px solid var(--outline,#ccc); border-radius:8px; font-size:13px; background:var(--surface); color:var(--text); }
+.watch-inp:focus { outline:none; border-color:var(--accent); }
+.watch-chip { display:inline-block; font-size:11px; padding:2px 8px; border-radius:10px; background:var(--accent-container,#e7e0ec); color:var(--accent); margin-right:6px; }
 </style>
 <script>
 // ═══ SVG Icon System — 替代 Material Symbols 字体，零外部依赖 ═══
@@ -1113,6 +1118,9 @@ document.addEventListener('DOMContentLoaded', function() {
     </a>
     <a onclick="switchLeftTab('watchlist');syncSidebar(this)">
       <span class="material-symbols-outlined">star</span> 自选股
+    </a>
+    <a onclick="switchLeftTab('watch');syncSidebar(this)">
+      <span class="material-symbols-outlined">visibility</span> 持仓盯盘
     </a>
   </nav>
   <div style="margin:12px 8px;padding:8px 12px;border-radius:8px;background:var(--surface-container);font-size:10px;color:var(--text-tertiary)">
@@ -1248,6 +1256,40 @@ document.addEventListener('DOMContentLoaded', function() {
           </div>
         </div>
       </div>
+
+      <!-- ── 持仓盯盘 ── -->
+      <div id="tabWatch" style="display:none">
+        <div class="section-header">
+          <div class="section-header-left">
+            <h2>持仓盯盘</h2>
+            <p>主动盯盘 · 触及止盈止损自动提醒（微信推送）</p>
+          </div>
+          <button class="mock-btn" onclick="toggleWatchForm()" id="watchAddBtn"
+            style="border:none;background:var(--accent);color:#fff;padding:8px 16px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px">
+            <span class="material-symbols-outlined" style="font-size:18px">add</span>添加持仓
+          </button>
+        </div>
+
+        <!-- 录入表单 -->
+        <div id="watchForm" class="soft-card" style="display:none;padding:20px;margin-top:16px">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px">
+            <div><label class="watch-lbl">股票代码*</label><input id="wfCode" class="watch-inp" placeholder="6位代码" maxlength="6"></div>
+            <div><label class="watch-lbl">名称</label><input id="wfName" class="watch-inp" placeholder="选填"></div>
+            <div><label class="watch-lbl">成本价*</label><input id="wfCost" class="watch-inp" type="number" step="0.01" placeholder="买入均价"></div>
+            <div><label class="watch-lbl">买入信号</label><input id="wfSignal" class="watch-inp" placeholder="如 放量上攻(选填)"></div>
+            <div><label class="watch-lbl">所属板块</label><input id="wfSector" class="watch-inp" placeholder="选填,用于退潮提示"></div>
+            <div><label class="watch-lbl">止盈%(选填)</label><input id="wfTp" class="watch-inp" type="number" step="0.1" placeholder="默认按信号"></div>
+            <div><label class="watch-lbl">止损%(选填)</label><input id="wfSl" class="watch-inp" type="number" step="0.1" placeholder="默认按信号"></div>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:16px">
+            <button class="mock-btn" onclick="submitWatch()" style="border:none;background:var(--accent);color:#fff;padding:8px 18px;border-radius:8px;font-weight:600;cursor:pointer">保存</button>
+            <button class="mock-btn" onclick="toggleWatchForm()" style="border:1px solid var(--outline);background:transparent;color:var(--text-secondary);padding:8px 18px;border-radius:8px;cursor:pointer">取消</button>
+            <span id="watchFormMsg" style="align-self:center;font-size:12px;color:var(--red)"></span>
+          </div>
+        </div>
+
+        <div id="watchList" style="margin-top:16px"><div class="loading">加载持仓中...</div></div>
+      </div>
     </div>
 
     <!-- ── RIGHT PANEL: AI ── -->
@@ -1341,11 +1383,13 @@ function switchLeftTab(tab) {
     researchTabEl.style.display = 'none';
   }
   document.getElementById('tabWatchlist').style.display = tab === 'watchlist' ? '' : 'none';
+  document.getElementById('tabWatch').style.display = tab === 'watch' ? '' : 'none';
   // 已预加载则直接渲染，未加载才拉取
   if (tab === 'picks') {
     if (window._lastPicksData) renderPicks(window._lastPicksData);
     else loadStockPicks();
   }
+  if (tab === 'watch') { loadWatchPositions(); }
   if (tab === 'research') {
     if (researchReports.length) renderResearchCards();
     else loadResearchData();
@@ -1354,6 +1398,92 @@ function switchLeftTab(tab) {
     if (sectorChart) setTimeout(() => sectorChart.resize(), 100);
     if (sectorData && sectorData.is_trading) scheduleDeltaPoll();
   }
+}
+
+// ── 持仓盯盘 ────────────────────────────────────────────
+function toggleWatchForm() {
+  const f = document.getElementById('watchForm');
+  const show = f.style.display === 'none';
+  f.style.display = show ? '' : 'none';
+  if (show) { document.getElementById('watchFormMsg').textContent = ''; }
+}
+
+async function submitWatch() {
+  const msg = document.getElementById('watchFormMsg');
+  const body = {
+    code: document.getElementById('wfCode').value.trim(),
+    name: document.getElementById('wfName').value.trim(),
+    cost: parseFloat(document.getElementById('wfCost').value),
+    signal: document.getElementById('wfSignal').value.trim(),
+    sector: document.getElementById('wfSector').value.trim(),
+    take_profit_pct: document.getElementById('wfTp').value,
+    stop_loss_pct: document.getElementById('wfSl').value,
+  };
+  if (!/^\d{6}$/.test(body.code)) { msg.textContent = '请输入6位股票代码'; return; }
+  if (!body.cost || body.cost <= 0) { msg.textContent = '请输入有效成本价'; return; }
+  try {
+    const r = await fetch('/api/watch/positions', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if (!d.ok) { msg.textContent = d.error || '保存失败'; return; }
+    ['wfCode','wfName','wfCost','wfSignal','wfSector','wfTp','wfSl'].forEach(id => document.getElementById(id).value = '');
+    toggleWatchForm();
+    loadWatchPositions();
+  } catch(e) { msg.textContent = '网络错误: ' + e; }
+}
+
+async function loadWatchPositions() {
+  const box = document.getElementById('watchList');
+  try {
+    const r = await fetch('/api/watch/positions');
+    const d = await r.json();
+    const list = d.positions || [];
+    if (!list.length) {
+      box.innerHTML = '<div class="soft-card" style="padding:40px;text-align:center;color:var(--text-tertiary)">'
+        + '<span class="material-symbols-outlined" style="font-size:44px;display:block;margin-bottom:12px">visibility</span>'
+        + '暂无盯盘持仓，点击右上角「添加持仓」开始盯盘</div>';
+      return;
+    }
+    // 需要实时价：用 pnl 展示，实时价由后端盯盘循环推送，这里展示点位与成本
+    box.innerHTML = list.map(renderWatchCard).join('');
+  } catch(e) {
+    box.innerHTML = '<div class="soft-card" style="padding:24px;color:var(--red)">加载失败: ' + e + '</div>';
+  }
+}
+
+function renderWatchCard(p) {
+  const tp = p.target_price, sl = p.stop_price, cost = p.cost;
+  const sig = p.signal ? '<span class="watch-chip">' + p.signal + '</span>' : '';
+  const sec = p.sector ? '<span class="watch-chip" style="background:var(--surface-container)">' + p.sector + '</span>' : '';
+  return '<div class="soft-card" style="padding:16px 18px;margin-bottom:12px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:flex-start">'
+    +   '<div><span style="font-size:16px;font-weight:700">' + (p.stock_name || p.stock_code) + '</span>'
+    +     '<span style="font-size:12px;color:var(--text-tertiary);margin-left:8px">' + p.stock_code + '</span>'
+    +     '<div style="margin-top:6px">' + sig + sec + '</div></div>'
+    +   '<button onclick="removeWatch(' + p.id + ')" title="移除" style="border:none;background:transparent;color:var(--text-tertiary);cursor:pointer">'
+    +     '<span class="material-symbols-outlined" style="font-size:20px">close</span></button>'
+    + '</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px">'
+    +   watchStat('成本价', cost.toFixed(2), 'var(--text)')
+    +   watchStat('止盈 (+' + (p.take_profit_pct||0) + '%)', tp ? tp.toFixed(2) : '--', 'var(--red)')
+    +   watchStat('止损 (' + (p.stop_loss_pct||0) + '%)', sl ? sl.toFixed(2) : '--', 'var(--green)')
+    + '</div></div>';
+}
+
+function watchStat(label, val, color) {
+  return '<div style="text-align:center;padding:8px;background:var(--surface-container-low,var(--surface));border-radius:8px">'
+    + '<div style="font-size:11px;color:var(--text-tertiary)">' + label + '</div>'
+    + '<div style="font-size:15px;font-weight:700;color:' + color + ';margin-top:2px">' + val + '</div></div>';
+}
+
+async function removeWatch(id) {
+  if (!confirm('确认移除这条盯盘持仓？')) return;
+  try {
+    await fetch('/api/watch/positions/' + id, { method: 'DELETE' });
+    loadWatchPositions();
+  } catch(e) { alert('移除失败: ' + e); }
 }
 
 // ── Research State ────────────────────────────────────
