@@ -137,6 +137,12 @@ position_watcher = get_position_watcher()
 position_watcher.start()
 logger.info("持仓盯盘助手已启动")
 
+# P1-1: 决策自动结算调度（让胜率飞轮自动运转，不依赖手动点按钮）
+try:
+    get_decision_store().start_auto_resolve(check_interval=3600.0)
+except Exception as _e:
+    logger.warning("自动结算调度启动失败: %s", _e)
+
 
 def _cleanup():
     if collector:
@@ -1019,6 +1025,27 @@ def api_agent_intraday():
     if result:
         result["mode"] = data.get("mode", "live")
         result["risk_level"] = data.get("risk_level", "low")
+        # P1-5: 把 Agent 推荐写入影子模式（当日去重），供后续度量选择价值/超额收益
+        try:
+            picks = result.get("top_picks", []) or []
+            cand_by_code = {c.get("code", ""): c for c in all_candidates}
+            shadow = []
+            for p in picks:
+                c = cand_by_code.get(p.get("code", ""), {})
+                shadow.append({
+                    "code": p.get("code", ""),
+                    "name": p.get("name", "") or c.get("name", ""),
+                    "sector": c.get("sector", ""),
+                    "pool": c.get("pool", ""),
+                    "signal": c.get("signal", ""),
+                    "price": c.get("price", 0) or 0,
+                    "confidence": p.get("confidence", 3),
+                    "score": c.get("score", 0) or 0,
+                })
+            if shadow:
+                get_decision_store().record_shadow_batch_daily(shadow)
+        except Exception as e:
+            logger.debug("影子记录跳过(不阻断选股): %s", e)
         return jsonify(result)
     return jsonify({
         "error": "Agent 不可用",
@@ -1045,6 +1072,7 @@ def api_agent_chat():
     store = get_signal_store()
     signals = store.get_all()
     hot_sectors = data.get("hot_sectors", [])
+    market_breadth = data.get("market_breadth", 0.5)  # P1-2: 真实市场广度
 
     agent = get_agent()
     # 检测用户消息中的股票（代码或名称）并获取实时数据
@@ -1082,6 +1110,7 @@ def api_agent_chat():
         stock_context=stock_data_context,
         sector_timeseries=sector_ts_context,
         resolved_code=resolved_code,
+        breadth=market_breadth,
     )
     qt = agent._classify_question(user_message, resolved_code)
     _card_map = {"stock_analysis":"stock","sector_analysis":"sector","market_analysis":"market","external_info":"market","holding_decision":"holding"}
@@ -1121,6 +1150,7 @@ def api_agent_chat_stream():
     store = get_signal_store()
     signals = store.get_all()
     hot_sectors = data.get("hot_sectors", [])
+    market_breadth = data.get("market_breadth", 0.5)  # P1-2: 真实市场广度
 
     agent = get_agent()
     # 检测用户消息中的股票（代码或名称）
@@ -1173,6 +1203,7 @@ def api_agent_chat_stream():
                 user_message, all_candidates, hot_sectors, signals,
                 chat_history, stock_data_context, sector_ts_context,
                 resolved_code=resolved_code,
+                breadth=market_breadth,
             ):
                 if chunk is None:
                     agent_error = True

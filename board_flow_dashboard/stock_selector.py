@@ -1686,7 +1686,8 @@ def stop_stock_warmup():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    data = select_stocks(use_mock=True)
+    # 修复: select_stocks 无 use_mock 参数；直接调用（非交易时段返回缓存）
+    data = select_stocks()
     print(json.dumps(data, ensure_ascii=False, indent=2)[:800])
     print(f"\n共 {data['total']} 只候选 · A池{len(data.get('pool_a', []))} B池{len(data.get('pool_b', []))} · 模式={data['mode']}")
     for c in data['candidates'][:10]:
