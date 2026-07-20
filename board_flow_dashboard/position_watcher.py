@@ -309,6 +309,39 @@ class PositionWatcher:
         aux = self._aux_hints(pos)
         self._push_alert(pos, price, pnl_pct, kind, action, aux)
 
+        # P0-4: 硬触发(止盈/止损)= 一次完整决策了结，写入决策闭环参与胜率统计
+        if kind in ("take_profit", "stop_loss"):
+            self._record_to_loop(pos, price)
+
+    def _record_to_loop(self, pos: dict, exit_price: float):
+        """把触发了结的持仓写入 decision_store（record + 立即结算），进入胜率飞轮。
+
+        盯盘助手是「选→盯→结算→统计」闭环的最后一环：一旦触及止盈/止损，
+        意味着一笔完整交易结束，据此为决策闭环补充真实样本。
+        """
+        try:
+            try:
+                from .decision_store import get_decision_store  # type: ignore
+            except ImportError:
+                from decision_store import get_decision_store  # type: ignore
+            ds = get_decision_store()
+            did = ds.record_decision(
+                stock_code=pos["stock_code"],
+                stock_name=pos.get("stock_name", ""),
+                entry_price=pos["cost"],
+                sector=pos.get("sector", ""),
+                pool=pos.get("pool", ""),
+                signal=pos.get("signal", ""),
+                source="watcher",
+            )
+            ds.mark_exited(did, exit_price, notes=" via 盯盘触发")
+            # 该持仓已了结，停止继续盯盘
+            self.remove_position(pos["id"])
+            logger.info("盯盘了结入闭环: %s 成本%.2f 卖出%.2f",
+                        pos["stock_code"], pos["cost"], exit_price)
+        except Exception as e:
+            logger.warning("盯盘了结写入决策闭环失败: %s", e)
+
     def _cooldown_ok(self, code: str, kind: str) -> bool:
         key = f"{code}:{kind}"
         now = time.time()

@@ -209,7 +209,7 @@ class DecisionStore:
         with self._lock:
             with self._get_conn() as conn:
                 conn.execute("DELETE FROM signal_combo_stats")
-                conn.execute("INSERT INTO signal_combo_stats (signal_combo,total_trades,win_trades,avg_return) SELECT signal_combo,COUNT(*) as t,SUM(CASE WHEN return_pct>0 THEN 1 ELSE 0) as w,AVG(return_pct) as a FROM decisions WHERE status='closed' AND signal_combo!='' GROUP BY signal_combo HAVING t>=2")
+                conn.execute("INSERT INTO signal_combo_stats (signal_combo,total_trades,win_trades,avg_return) SELECT signal_combo,COUNT(*) as t,SUM(CASE WHEN return_pct>0 THEN 1 ELSE 0 END) as w,AVG(return_pct) as a FROM decisions WHERE status='closed' AND signal_combo!='' GROUP BY signal_combo HAVING t>=2")
 
 _store: Optional[DecisionStore] = None
 def get_decision_store() -> DecisionStore:

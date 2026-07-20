@@ -40,6 +40,8 @@ factors:
     macd_state: 0.08
     big_order_ratio: 0.08
 serverchan:
-  send_key: SCT371771TqRViyDFsjzJW8iTBztFI6jEj
+  # 密钥不再明文入库；通过环境变量 SERVERCHAN_KEY 注入（push.py 已支持兜底）
+  send_key: ''
 wecom:
+  # 或通过环境变量 WECOM_WEBHOOK_URL 注入
   webhook_url: ''

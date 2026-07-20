@@ -1006,8 +1006,15 @@ def api_agent_intraday():
     hot_sectors = data.get("hot_sectors", [])
 
     agent = get_agent()
+    # P0-3: 注入历史决策反馈上下文，让选股 Agent 参考历史胜率（闭环飞轮）
+    loop_context = ""
+    try:
+        loop_context = get_decision_store().get_loop_context()
+    except Exception as e:
+        logger.debug("loop_context 获取失败(不阻断选股): %s", e)
     result = agent.generate_intraday_picks(
         all_candidates, hot_sectors, signals, breadth,
+        loop_context=loop_context,
     )
     if result:
         result["mode"] = data.get("mode", "live")
