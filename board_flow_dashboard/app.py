@@ -128,6 +128,15 @@ except ImportError:
 start_stock_warmup()
 logger.info("选股预热线程已启动")
 
+# 持仓盯盘助手（交易时段轮询持仓价格，触及点位主动推送）
+try:
+    from .position_watcher import get_position_watcher
+except ImportError:
+    from position_watcher import get_position_watcher  # type: ignore[no-redef]
+position_watcher = get_position_watcher()
+position_watcher.start()
+logger.info("持仓盯盘助手已启动")
+
 
 def _cleanup():
     if collector:
@@ -147,6 +156,11 @@ def _cleanup():
     except ImportError:
         from stock_selector import stop_stock_warmup  # type: ignore[no-redef]
     stop_stock_warmup()
+    # 停止持仓盯盘
+    try:
+        position_watcher.stop()
+    except Exception:
+        pass
     _save_market_daily_cache()
 
 atexit.register(_cleanup)
@@ -2271,6 +2285,53 @@ def api_loop_auto_resolve():
     ds = get_decision_store()
     n = ds.auto_resolve()
     return jsonify({"resolved": n})
+
+
+# ── 持仓盯盘助手 ──────────────────────────────────────────────
+
+@app.route("/api/watch/positions", methods=["GET"])
+def api_watch_list():
+    """查询当前盯盘持仓列表。"""
+    return jsonify({"positions": position_watcher.get_positions()})
+
+
+@app.route("/api/watch/positions", methods=["POST"])
+def api_watch_add():
+    """新增盯盘持仓。支持手动添加任意股票；点位按信号自动、可手动覆盖。"""
+    body = request.get_json(silent=True) or {}
+    result = position_watcher.add_position(
+        code=str(body.get("code", "")).strip(),
+        name=str(body.get("name", "")).strip(),
+        cost=float(body.get("cost", 0) or 0),
+        signal=str(body.get("signal", "")).strip(),
+        sector=str(body.get("sector", "")).strip(),
+        take_profit_pct=(float(body["take_profit_pct"])
+                         if body.get("take_profit_pct") not in (None, "") else None),
+        stop_loss_pct=(float(body["stop_loss_pct"])
+                       if body.get("stop_loss_pct") not in (None, "") else None),
+        source=str(body.get("source", "manual")).strip() or "manual",
+    )
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/watch/positions/<int:pid>", methods=["PATCH"])
+def api_watch_update(pid: int):
+    """手动修改持仓点位。"""
+    body = request.get_json(silent=True) or {}
+    result = position_watcher.update_stops(
+        pid,
+        take_profit_pct=(float(body["take_profit_pct"])
+                         if body.get("take_profit_pct") not in (None, "") else None),
+        stop_loss_pct=(float(body["stop_loss_pct"])
+                       if body.get("stop_loss_pct") not in (None, "") else None),
+    )
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/watch/positions/<int:pid>", methods=["DELETE"])
+def api_watch_remove(pid: int):
+    """移除盯盘持仓。"""
+    return jsonify(position_watcher.remove_position(pid))
 
 def _auto_run_daily_scorer():
     """交易日上午 9:25 后启动时，自动执行日评分扫描。"""

@@ -71,6 +71,12 @@ SECTOR_MELTDOWN_PENALTY = 0.5  # 熔断板块成分股得分乘以此系数
 FLASH_CRASH_PCT = -5.0         # 个股盘中急跌超此值(%)直接剔除
 FLASH_CRASH_OPEN_GAP = -4.0    # 开盘后跌幅超此值(%)判定急跌
 
+# ── v4.6: 板块退潮柔性降权（治追高，填补硬熔断之前的中间地带）───
+# 硬熔断阈值(-20亿)较极端，此处补一档：资金动能衰减/退潮时平滑降权，
+# 而非等到崩盘才砍。数据来自 collector 板块资金流时间序列 trend。
+SECTOR_FADE_PENALTY = 0.85     # 板块退潮（加速/温和流出）成分股得分乘以此系数
+SECTOR_FADE_TRENDS = ("加速流出", "温和流出")  # collector trend 中判定为退潮的取值
+
 # ── B 池（回调低吸）参数 ────────────────────────────────────
 
 HOT_PULLBACK_RATIO_A = 25      # A 池名额
@@ -902,6 +908,48 @@ def _apply_sector_meltdown_penalty(stocks: list, meltdown_sectors: set) -> None:
                      SECTOR_MELTDOWN_PENALTY)
 
 
+def _get_fading_sectors(hot_sectors: list, collector=None) -> set:
+    """v4.6: 识别「退潮中」的板块（治追高的柔性增强 ①②）。
+
+    数据来自 collector 板块资金流近 30 分钟时间序列的 trend：
+    资金「加速流出 / 温和流出」= 动能衰减 = 退潮，其成分股应柔性降权。
+    与硬熔断互补——硬熔断看极端瞬时值，此处看动能趋势方向。
+    """
+    if collector is None:
+        return set()
+    fading = set()
+    for s in hot_sectors:
+        name = s.get("name", "")
+        if not name:
+            continue
+        try:
+            ts = collector.get_sector_timeseries(name, recent_minutes=30)
+            if ts.get("trend", "") in SECTOR_FADE_TRENDS:
+                fading.add(name)
+        except Exception:
+            continue
+    if fading:
+        logger.info("板块退潮柔性降权候选: %s", ", ".join(fading))
+    return fading
+
+
+def _apply_sector_fade_penalty(stocks: list, fading_sectors: set,
+                               meltdown_sectors: set) -> None:
+    """对退潮板块成分股施加柔性降权（已被硬熔断处理的板块不重复降权）。"""
+    if not fading_sectors:
+        return
+    count = 0
+    for s in stocks:
+        sector = s.get("sector", "")
+        if sector in fading_sectors and sector not in meltdown_sectors:
+            s["score"] = round(s["score"] * SECTOR_FADE_PENALTY, 4)
+            s["fade_penalty"] = True
+            count += 1
+    if count:
+        logger.info("板块退潮柔性降权: %d 只成分股得分 ×%.2f", count,
+                     SECTOR_FADE_PENALTY)
+
+
 # ── 大盘环境评估 ──────────────────────────────────────────
 
 def _get_market_breadth() -> float:
@@ -1218,6 +1266,8 @@ def _select_stocks_real(collector=None):
 
     # v4.0: 识别熔断板块
     meltdown_sectors = _get_meltdown_sectors(hot_sectors)
+    # v4.6: 识别退潮板块（动能趋势，治追高的柔性增强）
+    fading_sectors = _get_fading_sectors(hot_sectors, collector)
 
     # Step 6: 日评分先合并，再评分排序（日评分参与盘中排名 25%）
     a_stocks = _merge_daily_scores(a_stocks, _DAILY_SCORES)
@@ -1234,6 +1284,10 @@ def _select_stocks_real(collector=None):
     # v4.0: 板块熔断惩罚（在评分之后、集中度管控之前）
     _apply_sector_meltdown_penalty(a_ranked, meltdown_sectors)
     _apply_sector_meltdown_penalty(b_ranked, meltdown_sectors)
+
+    # v4.6: 板块退潮柔性降权（硬熔断之前的中间地带，治追高）
+    _apply_sector_fade_penalty(a_ranked, fading_sectors, meltdown_sectors)
+    _apply_sector_fade_penalty(b_ranked, fading_sectors, meltdown_sectors)
 
     # Step 7: 板块集中度管控（根据情绪面动态分配 A/B 池名额）
     try:
