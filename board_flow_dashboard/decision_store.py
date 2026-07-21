@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """决策日志存储 — Loop Engineering + 影子模式 + 基准对照"""
 from __future__ import annotations
-import json, logging, os, sqlite3, threading
+import json, logging, os, sqlite3, threading, time
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
@@ -136,6 +136,24 @@ class DecisionStore:
                     n += 1
         return n
 
+    def record_shadow_batch_daily(self, picks):
+        """当日去重版影子记录：同一交易日同一 code 只记一次。
+
+        供选股 Agent 推荐时调用——每次推荐可能重复，靠 (code, entry_date)
+        去重避免刷量，让影子样本干净可用于「选择偏差」度量。
+        """
+        today = date.today().strftime("%Y-%m-%d")
+        fresh = []
+        with self._lock:
+            with self._get_conn() as conn:
+                exist = {r["stock_code"] for r in conn.execute(
+                    "SELECT stock_code FROM shadow_decisions WHERE entry_date=?",
+                    (today,)).fetchall()}
+        for p in picks:
+            if p.get("code") and p["code"] not in exist:
+                fresh.append(p)
+        return self.record_shadow_batch(fresh) if fresh else 0
+
     def auto_resolve_shadows(self, days_threshold=3):
         cutoff = (date.today()-timedelta(days=days_threshold)).strftime("%Y-%m-%d")
         r = 0
@@ -209,7 +227,65 @@ class DecisionStore:
         with self._lock:
             with self._get_conn() as conn:
                 conn.execute("DELETE FROM signal_combo_stats")
-                conn.execute("INSERT INTO signal_combo_stats (signal_combo,total_trades,win_trades,avg_return) SELECT signal_combo,COUNT(*) as t,SUM(CASE WHEN return_pct>0 THEN 1 ELSE 0) as w,AVG(return_pct) as a FROM decisions WHERE status='closed' AND signal_combo!='' GROUP BY signal_combo HAVING t>=2")
+                conn.execute("INSERT INTO signal_combo_stats (signal_combo,total_trades,win_trades,avg_return) SELECT signal_combo,COUNT(*) as t,SUM(CASE WHEN return_pct>0 THEN 1 ELSE 0 END) as w,AVG(return_pct) as a FROM decisions WHERE status='closed' AND signal_combo!='' GROUP BY signal_combo HAVING t>=2")
+
+    # ── P1-1: 自动结算调度（让决策飞轮自动运转）─────────────
+    def start_auto_resolve(self, check_interval: float = 3600.0):
+        """启动后台线程，每 check_interval 秒尝试自动结算到期的决策与影子决策。
+
+        不依赖用户手动点按钮。auto_resolve 内部按持有天数阈值筛选，
+        未到期的记录不受影响。收盘后与开盘前都会跑，保证每交易日至少结算一次。
+        """
+        import threading as _th
+        if getattr(self, "_auto_thread", None) and self._auto_thread.is_alive():
+            return
+
+        def _loop():
+            while getattr(self, "_auto_running", True):
+                try:
+                    n = self.auto_resolve()
+                    m = self.auto_resolve_shadows()
+                    if n or m:
+                        logger.info("自动结算: 决策 %d 笔, 影子 %d 笔", n, m)
+                    self._record_today_benchmark()
+                except Exception as e:
+                    logger.warning("自动结算异常: %s", e)
+                time.sleep(check_interval)
+
+        self._auto_running = True
+        self._auto_thread = _th.Thread(target=_loop, daemon=True,
+                                       name="decision-auto-resolve")
+        self._auto_thread.start()
+        logger.info("决策自动结算调度已启动 (间隔 %.0fs)", check_interval)
+
+    def stop_auto_resolve(self):
+        self._auto_running = False
+
+    def _record_today_benchmark(self):
+        """记录当日沪深300涨跌幅（供 get_excess_return 计算超额收益）。
+
+        当日已记录则跳过；akshare 不可用/失败静默跳过，不影响结算主流程。
+        存储量纲：小数（如 +1.5% 存 0.015），与 get_excess_return 的 *100 匹配。
+        """
+        today = date.today().strftime("%Y-%m-%d")
+        with self._lock:
+            with self._get_conn() as conn:
+                exist = conn.execute(
+                    "SELECT 1 FROM benchmark_index WHERE trade_date=?",
+                    (today,)).fetchone()
+        if exist:
+            return
+        try:
+            import akshare as ak
+            df = ak.stock_zh_index_spot_em(symbol="沪深重要指数")
+            row = df[df["代码"] == "000300"]
+            if row is not None and not row.empty:
+                pct = float(row.iloc[0]["涨跌幅"]) / 100.0  # 转小数
+                self.record_benchmark(today, pct)
+                logger.info("记录基准: 沪深300 %s %+.2f%%", today, pct * 100)
+        except Exception as e:
+            logger.debug("基准记录跳过: %s", e)
+
 
 _store: Optional[DecisionStore] = None
 def get_decision_store() -> DecisionStore:

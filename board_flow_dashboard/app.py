@@ -128,6 +128,21 @@ except ImportError:
 start_stock_warmup()
 logger.info("选股预热线程已启动")
 
+# 持仓盯盘助手（交易时段轮询持仓价格，触及点位主动推送）
+try:
+    from .position_watcher import get_position_watcher
+except ImportError:
+    from position_watcher import get_position_watcher  # type: ignore[no-redef]
+position_watcher = get_position_watcher()
+position_watcher.start()
+logger.info("持仓盯盘助手已启动")
+
+# P1-1: 决策自动结算调度（让胜率飞轮自动运转，不依赖手动点按钮）
+try:
+    get_decision_store().start_auto_resolve(check_interval=3600.0)
+except Exception as _e:
+    logger.warning("自动结算调度启动失败: %s", _e)
+
 
 def _cleanup():
     if collector:
@@ -147,6 +162,11 @@ def _cleanup():
     except ImportError:
         from stock_selector import stop_stock_warmup  # type: ignore[no-redef]
     stop_stock_warmup()
+    # 停止持仓盯盘
+    try:
+        position_watcher.stop()
+    except Exception:
+        pass
     _save_market_daily_cache()
 
 atexit.register(_cleanup)
@@ -992,12 +1012,40 @@ def api_agent_intraday():
     hot_sectors = data.get("hot_sectors", [])
 
     agent = get_agent()
+    # P0-3: 注入历史决策反馈上下文，让选股 Agent 参考历史胜率（闭环飞轮）
+    loop_context = ""
+    try:
+        loop_context = get_decision_store().get_loop_context()
+    except Exception as e:
+        logger.debug("loop_context 获取失败(不阻断选股): %s", e)
     result = agent.generate_intraday_picks(
         all_candidates, hot_sectors, signals, breadth,
+        loop_context=loop_context,
     )
     if result:
         result["mode"] = data.get("mode", "live")
         result["risk_level"] = data.get("risk_level", "low")
+        # P1-5: 把 Agent 推荐写入影子模式（当日去重），供后续度量选择价值/超额收益
+        try:
+            picks = result.get("top_picks", []) or []
+            cand_by_code = {c.get("code", ""): c for c in all_candidates}
+            shadow = []
+            for p in picks:
+                c = cand_by_code.get(p.get("code", ""), {})
+                shadow.append({
+                    "code": p.get("code", ""),
+                    "name": p.get("name", "") or c.get("name", ""),
+                    "sector": c.get("sector", ""),
+                    "pool": c.get("pool", ""),
+                    "signal": c.get("signal", ""),
+                    "price": c.get("price", 0) or 0,
+                    "confidence": p.get("confidence", 3),
+                    "score": c.get("score", 0) or 0,
+                })
+            if shadow:
+                get_decision_store().record_shadow_batch_daily(shadow)
+        except Exception as e:
+            logger.debug("影子记录跳过(不阻断选股): %s", e)
         return jsonify(result)
     return jsonify({
         "error": "Agent 不可用",
@@ -1024,6 +1072,7 @@ def api_agent_chat():
     store = get_signal_store()
     signals = store.get_all()
     hot_sectors = data.get("hot_sectors", [])
+    market_breadth = data.get("market_breadth", 0.5)  # P1-2: 真实市场广度
 
     agent = get_agent()
     # 检测用户消息中的股票（代码或名称）并获取实时数据
@@ -1061,6 +1110,7 @@ def api_agent_chat():
         stock_context=stock_data_context,
         sector_timeseries=sector_ts_context,
         resolved_code=resolved_code,
+        breadth=market_breadth,
     )
     qt = agent._classify_question(user_message, resolved_code)
     _card_map = {"stock_analysis":"stock","sector_analysis":"sector","market_analysis":"market","external_info":"market","holding_decision":"holding"}
@@ -1100,6 +1150,7 @@ def api_agent_chat_stream():
     store = get_signal_store()
     signals = store.get_all()
     hot_sectors = data.get("hot_sectors", [])
+    market_breadth = data.get("market_breadth", 0.5)  # P1-2: 真实市场广度
 
     agent = get_agent()
     # 检测用户消息中的股票（代码或名称）
@@ -1152,6 +1203,7 @@ def api_agent_chat_stream():
                 user_message, all_candidates, hot_sectors, signals,
                 chat_history, stock_data_context, sector_ts_context,
                 resolved_code=resolved_code,
+                breadth=market_breadth,
             ):
                 if chunk is None:
                     agent_error = True
@@ -2271,6 +2323,53 @@ def api_loop_auto_resolve():
     ds = get_decision_store()
     n = ds.auto_resolve()
     return jsonify({"resolved": n})
+
+
+# ── 持仓盯盘助手 ──────────────────────────────────────────────
+
+@app.route("/api/watch/positions", methods=["GET"])
+def api_watch_list():
+    """查询当前盯盘持仓列表（含实时价与浮盈）。"""
+    return jsonify({"positions": position_watcher.get_positions_enriched()})
+
+
+@app.route("/api/watch/positions", methods=["POST"])
+def api_watch_add():
+    """新增盯盘持仓。支持手动添加任意股票；点位按信号自动、可手动覆盖。"""
+    body = request.get_json(silent=True) or {}
+    result = position_watcher.add_position(
+        code=str(body.get("code", "")).strip(),
+        name=str(body.get("name", "")).strip(),
+        cost=float(body.get("cost", 0) or 0),
+        signal=str(body.get("signal", "")).strip(),
+        sector=str(body.get("sector", "")).strip(),
+        take_profit_pct=(float(body["take_profit_pct"])
+                         if body.get("take_profit_pct") not in (None, "") else None),
+        stop_loss_pct=(float(body["stop_loss_pct"])
+                       if body.get("stop_loss_pct") not in (None, "") else None),
+        source=str(body.get("source", "manual")).strip() or "manual",
+    )
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/watch/positions/<int:pid>", methods=["PATCH"])
+def api_watch_update(pid: int):
+    """手动修改持仓点位。"""
+    body = request.get_json(silent=True) or {}
+    result = position_watcher.update_stops(
+        pid,
+        take_profit_pct=(float(body["take_profit_pct"])
+                         if body.get("take_profit_pct") not in (None, "") else None),
+        stop_loss_pct=(float(body["stop_loss_pct"])
+                       if body.get("stop_loss_pct") not in (None, "") else None),
+    )
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/watch/positions/<int:pid>", methods=["DELETE"])
+def api_watch_remove(pid: int):
+    """移除盯盘持仓。"""
+    return jsonify(position_watcher.remove_position(pid))
 
 def _auto_run_daily_scorer():
     """交易日上午 9:25 后启动时，自动执行日评分扫描。"""

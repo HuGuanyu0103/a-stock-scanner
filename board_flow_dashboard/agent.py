@@ -373,6 +373,7 @@ class DecisionAgent:
         stock_context: str = "",
         sector_timeseries: str = "",
         resolved_code: str = "",
+        breadth: float = 0.5,
     ) -> Optional[str]:
         """多轮对话——智能体核心入口。
 
@@ -390,7 +391,7 @@ class DecisionAgent:
 
         # 构建上下文
         intra_ctx = ContextBuilder.build_intraday_context(
-            candidates, hot_sectors, signals, 0.5
+            candidates, hot_sectors, signals, breadth
         )
 
         # 根据问题类型调整 system prompt
@@ -480,6 +481,7 @@ class DecisionAgent:
         stock_context: str = "",
         sector_timeseries: str = "",
         resolved_code: str = "",
+        breadth: float = 0.5,
     ):
         """流式多轮对话——逐 chunk 返回，消除首字等待时间。
 
@@ -495,7 +497,7 @@ class DecisionAgent:
 
         question_type = self._classify_question(user_message, resolved_code)
         intra_ctx = ContextBuilder.build_intraday_context(
-            candidates, hot_sectors, signals, 0.5
+            candidates, hot_sectors, signals, breadth
         )
         type_hints = {
             "stock_analysis": (

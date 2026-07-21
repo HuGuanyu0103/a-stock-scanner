@@ -298,7 +298,9 @@ class DebateOrchestrator:
             self._api_available = False
             return False
 
-        self._client = OpenAI(api_key=key, base_url="https://api.deepseek.com")
+        # P1-3: 显式 timeout，避免多次串行 LLM 调用时端点长时间挂起
+        self._client = OpenAI(api_key=key, base_url="https://api.deepseek.com",
+                              timeout=30.0)
         self._api_available = True
         return True
 
@@ -360,7 +362,7 @@ class DebateOrchestrator:
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": (
-                        f"请根据以下数据发表你的专业意见。\\n\\n{data}\\n\\n"
+                        f"请根据以下数据发表你的专业意见。\n\n{data}\n\n"
                         "严格按照 JSON 格式输出，不要添加其他内容。"
                     )},
                 ],
@@ -388,11 +390,11 @@ class DebateOrchestrator:
         news_str = json.dumps(news, ensure_ascii=False, indent=2) if news else "无数据"
 
         context = (
-            f"=== 技术分析师（观象）=== \\n{tech_str}\\n\\n"
-            f"=== 情绪分析师（观势）=== \\n{sent_str}\\n\\n"
-            f"=== 消息分析师（观闻）=== \\n{news_str}\\n\\n"
-            f"=== 完整候选池 === \\n{full_data}\\n\\n"
-            f"=== 当前热板块 === \\n{hot_sectors[:8]}"
+            f"=== 技术分析师（观象）=== \n{tech_str}\n\n"
+            f"=== 情绪分析师（观势）=== \n{sent_str}\n\n"
+            f"=== 消息分析师（观闻）=== \n{news_str}\n\n"
+            f"=== 完整候选池 === \n{full_data}\n\n"
+            f"=== 当前热板块 === \n{hot_sectors[:8]}"
         )
 
         try:
@@ -401,7 +403,7 @@ class DebateOrchestrator:
                 messages=[
                     {"role": "system", "content": MODERATOR_SYSTEM_PROMPT},
                     {"role": "user", "content": (
-                        f"请综合三位分析师的意见和完整候选池数据，给出最终决策建议。\\n\\n{context}\\n\\n"
+                        f"请综合三位分析师的意见和完整候选池数据，给出最终决策建议。\n\n{context}\n\n"
                         "严格按照 JSON 格式输出。"
                     )},
                 ],
