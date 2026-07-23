@@ -371,12 +371,31 @@ def _smart_deviation_score_pullback(net_ratio: float, deviation: float) -> float
 
 # ── 多因子评分 ──────────────────────────────────────────────
 
-def _score_and_rank(stocks, pool_type: str = "A"):
+def _get_feedback_multipliers() -> dict:
+    """取信号反馈乘数（C: 自进化）。任何失败都返回 {} = 不调节，绝不影响选股主流程。"""
+    try:
+        try:
+            from .weight_tuner import get_multipliers
+            from .decision_store import get_decision_store
+        except ImportError:
+            from weight_tuner import get_multipliers  # type: ignore[no-redef]
+            from decision_store import get_decision_store  # type: ignore[no-redef]
+        return get_multipliers(store=get_decision_store())
+    except Exception as e:
+        logger.debug("反馈乘数获取跳过: %s", e)
+        return {}
+
+
+def _score_and_rank(stocks, pool_type: str = "A", signal_mults: dict = None):
     """多因子归一化 + 智能偏离 + 加权评分。
 
     pool_type:
       "A" — 热力追涨池（原有逻辑）
       "B" — 回调低吸池（修正逻辑：取消低开惩罚、弱化低位惩罚、独立偏离评分）
+    signal_mults:
+      反馈闭环乘数 {signal_combo: multiplier}（来自 weight_tuner）。
+      个股拿到信号后，按 pool-signal 组合微调 score，实现「历史表现好的信号加权」。
+      None 或空 = 不调节（等价于旧行为）。
     """
     if not stocks:
         return stocks
@@ -497,6 +516,14 @@ def _score_and_rank(stocks, pool_type: str = "A"):
             s["signal"] = _infer_signal_pullback(s)
         else:
             s["signal"] = _infer_signal(s)
+
+        # ── 反馈闭环：按信号历史表现微调 score（自进化）──────
+        if signal_mults:
+            combo = f"{pool_type}-{s['signal']}"
+            mult = signal_mults.get(combo)
+            if mult and mult != 1.0:
+                s["score"] = round(s["score"] * mult, 4)
+                s["feedback_mult"] = mult  # 供前端审计：该票因信号历史表现被调节
 
     stocks.sort(key=lambda x: x.get("score", 0), reverse=True)
     return stocks
@@ -1213,15 +1240,18 @@ def _select_stocks_real(collector=None):
     # v4.6: 识别退潮板块（动能趋势，治追高的柔性增强）
     fading_sectors = _get_fading_sectors(hot_sectors, collector)
 
+    # C: 反馈闭环 — 预取信号历史表现乘数（一次查库，A/B 池共用）
+    signal_mults = _get_feedback_multipliers()
+
     # Step 6: 日评分先合并，再评分排序（日评分参与盘中排名 25%）
     a_stocks = _merge_daily_scores(a_stocks, _DAILY_SCORES)
-    a_ranked = _score_and_rank(a_stocks, pool_type="A")
+    a_ranked = _score_and_rank(a_stocks, pool_type="A", signal_mults=signal_mults)
     # v4.0: 急跌过滤 + 板块熔断惩罚
     a_ranked, _a_crash_removed = _apply_flash_crash_filter(a_ranked)
     a_ranked, _a_fraud_removed = _apply_fraud_filter(a_ranked)
 
     b_unique = _merge_daily_scores(b_unique, _DAILY_SCORES)
-    b_ranked = _score_and_rank(b_unique, pool_type="B")
+    b_ranked = _score_and_rank(b_unique, pool_type="B", signal_mults=signal_mults)
     b_ranked, _b_crash_removed = _apply_flash_crash_filter(b_ranked)
     b_ranked, _b_fraud_removed = _apply_fraud_filter(b_ranked)
 

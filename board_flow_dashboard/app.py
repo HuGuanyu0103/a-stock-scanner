@@ -2502,6 +2502,19 @@ def api_loop_status():
     })
 
 
+@app.route("/api/loop/tuning")
+def api_loop_tuning():
+    """反馈闭环调节报告 — 展示规则引擎因实盘表现「自调」了哪些信号权重。
+
+    可解释性出口：每个信号的历史样本数/胜率/均收益 → 生成的评分乘数。
+    """
+    try:
+        from .weight_tuner import get_tuning_report
+    except ImportError:
+        from weight_tuner import get_tuning_report  # type: ignore
+    return jsonify(get_tuning_report(store=get_decision_store()))
+
+
 @app.route("/api/loop/exit", methods=["POST"])
 def api_loop_exit():
     """手动标记退出。"""
