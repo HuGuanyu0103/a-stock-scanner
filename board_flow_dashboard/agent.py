@@ -763,10 +763,126 @@ class DecisionAgent:
             validated.append(p)
         return validated
 
+    # ── Agent 模式：Function Calling + ReAct 循环 ──────────────
+    def chat_agent(
+        self,
+        user_message: str,
+        tool_ctx,
+        chat_history: list[dict] = None,
+        base_context: str = "",
+        max_iterations: int = 4,
+    ) -> Optional[dict]:
+        """具备工具调用能力的 Agent 对话（ReAct 循环）。
 
-# ═══════════════════════════════════════════════════════════════
-# 公开 API
-# ═══════════════════════════════════════════════════════════════
+        与 chat() 的关键区别：不再把所有数据预先塞进上下文，而是让 LLM
+        自主判断需要哪些数据、调用对应工具、拿到结果后决定是否继续调用或出结论。
+        这是从「上下文增强问答」到「真正 Agent」的核心升级。
+
+        Returns:
+            {"reply": str, "tool_trace": [{"tool","args"}...], "iterations": int}
+            失败返回 None（调用方可回退到 chat()）。
+        """
+        if not self._init_client():
+            return None
+        try:
+            from .agent_tools import TOOL_SCHEMAS, execute_tool
+        except ImportError:
+            from agent_tools import TOOL_SCHEMAS, execute_tool  # type: ignore
+
+        system_msg = (
+            SYSTEM_PROMPT
+            + "\n\n## 你现在具备工具调用能力\n"
+            "你可以调用工具按需获取实时数据，而不是凭空回答。原则：\n"
+            "- 需要具体股票数据时调用 get_stock_diagnosis；需要板块动能时调用 get_sector_trend；\n"
+            "  需要推荐个股时调用 get_candidate_pool；需要大盘研判时调用 get_market_signals。\n"
+            "- 可多次调用工具直到信息足够，再给出最终结论。\n"
+            "- 禁止编造数据；工具返回失败时如实说明，不要虚构点位。\n"
+            + (f"\n\n=== 背景数据 ===\n{base_context}" if base_context else "")
+        )
+        messages = [{"role": "system", "content": system_msg}]
+        if chat_history:
+            messages.extend(chat_history[-10:])
+        messages.append({"role": "user", "content": user_message})
+
+        tool_trace = []
+        for iteration in range(max_iterations):
+            try:
+                resp = self._client.chat.completions.create(
+                    model=self._model,
+                    messages=messages,
+                    tools=TOOL_SCHEMAS,
+                    tool_choice="auto",
+                    temperature=0.5,
+                    max_tokens=3000,
+                )
+            except Exception as e:
+                logger.warning("chat_agent LLM 调用失败: %s", e)
+                return None
+            msg = resp.choices[0].message
+            tool_calls = getattr(msg, "tool_calls", None)
+            if not tool_calls:
+                # 无工具调用 = 出最终结论
+                reply = msg.content or ""
+                return {"reply": reply, "tool_trace": tool_trace, "iterations": iteration + 1}
+            # 执行工具，把结果喂回
+            messages.append({
+                "role": "assistant", "content": msg.content or "",
+                "tool_calls": [
+                    {"id": tc.id, "type": "function",
+                     "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in tool_calls
+                ],
+            })
+            for tc in tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except Exception:
+                    args = {}
+                result = execute_tool(tc.function.name, args, tool_ctx)
+                tool_trace.append({"tool": tc.function.name, "args": args})
+                messages.append({
+                    "role": "tool", "tool_call_id": tc.id,
+                    "content": result[:3000],
+                })
+        # 达到最大轮次仍未收敛 → 让模型基于已有信息强制出结论
+        try:
+            messages.append({"role": "user", "content": "请基于以上已获取的信息给出最终结论，不要再调用工具。"})
+            resp = self._client.chat.completions.create(
+                model=self._model, messages=messages,
+                temperature=0.5, max_tokens=3000,
+            )
+            return {"reply": resp.choices[0].message.content or "",
+                    "tool_trace": tool_trace, "iterations": max_iterations}
+        except Exception as e:
+            logger.warning("chat_agent 收敛失败: %s", e)
+            return None
+
+    # ── 输出质量硬校验（让「自检」从 prompt 承诺变成代码强制）──
+    def validate_output(self, text: str, question_type: str = "") -> dict:
+        """规则层检查 LLM 输出质量。返回 {"ok": bool, "issues": [...]}。
+
+        与 _hard_validate（作用于选股 JSON）不同，这里作用于自然语言诊断输出，
+        检查「是否含具体数字、是否有违禁模糊词、是否残留模板占位符」。
+        """
+        issues = []
+        if not text or len(text.strip()) < 10:
+            issues.append("输出过短或为空")
+            return {"ok": False, "issues": issues}
+        # 违禁模糊词（SYSTEM_PROMPT 已禁止，此处代码强制核查）
+        for banned in ("数据不足", "无法获取", "无法判断", "仅供参考，不构成"):
+            if banned in text:
+                issues.append(f"含违禁模糊词: {banned}")
+        # 残留模板占位符
+        if "X.XX" in text or "XX.XX" in text:
+            issues.append("残留未填充的模板占位符 X.XX")
+        # 个股/持仓类应含具体数字（价格/百分比）
+        import re
+        if question_type in ("stock_analysis", "holding_decision"):
+            if not re.search(r"\d+\.?\d*\s*[%元]", text) and not re.search(r"\d+\.\d{2}", text):
+                issues.append("个股/持仓分析缺少具体价格或百分比数字")
+        return {"ok": len(issues) == 0, "issues": issues}
+
+
 
 _agent: Optional[DecisionAgent] = None
 

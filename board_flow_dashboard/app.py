@@ -2266,6 +2266,83 @@ def api_agent_debate():
         return jsonify(report)
     return jsonify({"error": "辩论系统不可用", "hint": "请查看 AI 观澜标签页"})
 
+
+# ── Agent 模式端点（Function Calling + 记忆 + 输出校验）──────
+
+@app.route("/api/agent/chat/agent", methods=["POST"])
+def api_agent_chat_agent():
+    """具备工具调用能力的 Agent 对话（ReAct 循环 + 服务端记忆 + 输出校验）。
+
+    与 /api/agent/chat 的区别：LLM 自主决定调用哪些工具获取实时数据，
+    而非后端预先塞满上下文；对话记忆服务端持久化；输出经规则校验。
+    """
+    body = request.get_json(silent=True) or {}
+    user_message = (body.get("message") or "").strip()
+    session_id = (body.get("session_id") or "default").strip()
+    if not user_message:
+        return jsonify({"error": "消息不能为空"}), 400
+
+    try:
+        from .agent_tools import ToolContext
+        from .agent_memory import get_agent_memory
+    except ImportError:
+        from agent_tools import ToolContext  # type: ignore
+        from agent_memory import get_agent_memory  # type: ignore
+
+    mem = get_agent_memory()
+    agent = get_agent()
+
+    # 工具上下文：注入真实数据能力
+    tool_ctx = ToolContext(
+        collector=collector,
+        extract_stock_context=_extract_stock_context,
+        select_stocks=select_stocks,
+        get_signal_store=get_signal_store,
+    )
+
+    # 服务端会话记忆 + 用户画像
+    history = mem.get_history(session_id)
+    profile_ctx = mem.get_profile_context()
+
+    # 记录用户问的股票（画像）
+    resolved = _resolve_stock_code(user_message)
+    if resolved:
+        mem.note_asked_stock(resolved[0], resolved[1])
+
+    result = agent.chat_agent(
+        user_message, tool_ctx,
+        chat_history=history,
+        base_context=profile_ctx,
+    )
+    if not result:
+        # 降级：回退到普通 chat（保证可用性）
+        data = select_stocks(collector=collector)
+        all_c = data.get("pool_a", []) + data.get("pool_b", [])
+        reply = agent.chat(
+            user_message, all_c, data.get("hot_sectors", []),
+            get_signal_store().get_all(), chat_history=history,
+            breadth=data.get("market_breadth", 0.5),
+        )
+        if not reply:
+            return jsonify({"error": "Agent 不可用", "fallback": True}), 200
+        result = {"reply": reply, "tool_trace": [], "iterations": 0, "fallback": True}
+
+    # 输出质量校验（不通过仅标记，不阻断返回）
+    qt = agent._classify_question(user_message, resolved[0] if resolved else "")
+    validation = agent.validate_output(result.get("reply", ""), qt)
+
+    # 持久化本轮对话
+    mem.append_message(session_id, "user", user_message)
+    mem.append_message(session_id, "assistant", result.get("reply", ""))
+
+    return jsonify({
+        "reply": result.get("reply", ""),
+        "tool_trace": result.get("tool_trace", []),
+        "iterations": result.get("iterations", 0),
+        "validation": validation,
+        "fallback": result.get("fallback", False),
+    })
+
 # ── Loop Engineering 端点 ───────────────────────────────
 
 @app.route("/api/loop/adopt", methods=["POST"])
