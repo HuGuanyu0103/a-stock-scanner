@@ -686,6 +686,34 @@ body {
 .chat-input-tools .material-symbols-outlined { font-size: 18px; color: var(--text-tertiary); cursor: pointer; transition: color 0.15s; }
 .chat-input-tools .material-symbols-outlined:hover { color: var(--accent); }
 
+/* Agent 模式开关 */
+.agent-mode-switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; margin-right: auto; user-select: none; }
+.agent-mode-switch input { display: none; }
+.agent-mode-track { position: relative; width: 32px; height: 18px; background: var(--border); border-radius: 9px; transition: background 0.2s; }
+.agent-mode-thumb { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: #fff; border-radius: 50%; transition: transform 0.2s; box-shadow: 0 1px 2px rgba(0,0,0,0.2); }
+.agent-mode-switch input:checked + .agent-mode-track { background: var(--accent); }
+.agent-mode-switch input:checked + .agent-mode-track .agent-mode-thumb { transform: translateX(14px); }
+.agent-mode-label { font-size: 12px; color: var(--text-tertiary); font-weight: 500; }
+.agent-mode-switch input:checked ~ .agent-mode-label { color: var(--accent); font-weight: 600; }
+
+/* Agent 思考过程条 */
+.agent-steps { margin: 0 0 8px 0; display: flex; flex-direction: column; gap: 4px; }
+.agent-step { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-secondary);
+  background: var(--accent-light); border-radius: 8px; padding: 5px 10px; animation: agentStepIn 0.25s ease; }
+.agent-step .agent-step-ic { font-size: 15px; color: var(--accent); flex-shrink: 0; }
+.agent-step.done .agent-step-ic { color: #34a853; }
+.agent-step .agent-step-spin { width: 11px; height: 11px; border: 2px solid var(--accent); border-top-color: transparent;
+  border-radius: 50%; animation: agentSpin 0.7s linear infinite; flex-shrink: 0; }
+@keyframes agentSpin { to { transform: rotate(360deg); } }
+@keyframes agentStepIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+/* Agent 元信息徽章（成本/工具数/校验/纠错）*/
+.agent-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border-light); }
+.agent-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  background: var(--surface-low); color: var(--text-secondary); }
+.agent-badge.ok { background: rgba(52,168,83,0.1); color: #2a8544; }
+.agent-badge.warn { background: rgba(234,134,0,0.12); color: #b26a00; }
+.agent-badge .material-symbols-outlined { font-size: 13px; }
+
 /* Risk disclaimer */
 .risk-disclaimer {
   font-size: 10px; color: var(--text-tertiary); padding: 10px 24px;
@@ -1093,6 +1121,12 @@ document.addEventListener('DOMContentLoaded', function() {
       el.style.justifyContent = 'center';
     }
   });
+  // 恢复 Agent 模式开关状态
+  const am = document.getElementById('agentModeToggle');
+  if (am && localStorage.getItem('guanlan_agent_mode') === '1') {
+    am.checked = true;
+    if (typeof onAgentModeToggle === 'function') onAgentModeToggle();
+  }
 });
 </script>
 </head>
@@ -1342,6 +1376,11 @@ document.addEventListener('DOMContentLoaded', function() {
           </button>
         </div>
         <div class="chat-input-tools">
+          <label class="agent-mode-switch" title="Agent 模式：让观澜自主调用诊断/板块/选股/大盘工具，实时展示思考过程、自我纠错与本次成本">
+            <input type="checkbox" id="agentModeToggle" onchange="onAgentModeToggle()">
+            <span class="agent-mode-track"><span class="agent-mode-thumb"></span></span>
+            <span class="agent-mode-label">Agent 模式</span>
+          </label>
           <span class="material-symbols-outlined">mic</span>
           <span class="material-symbols-outlined">image</span>
           <span class="material-symbols-outlined">attach_file</span>
@@ -2934,6 +2973,15 @@ async function sendChat() {
   const input = document.getElementById('chatInput');
   const msg = input.value.trim();
   if (!msg) return;
+
+  // Agent 模式：走新的 Function-Calling 流式端点
+  const agentMode = document.getElementById('agentModeToggle');
+  if (agentMode && agentMode.checked) {
+    input.value = '';
+    appendChat('user', msg);
+    return sendChatAgent(msg);
+  }
+
   input.value = '';
   appendChat('user', msg);
 
@@ -3121,6 +3169,141 @@ async function sendChat() {
   } finally {
     sendBtn.disabled = false;
   }
+}
+
+// ── Agent 模式（Function Calling 流式）──────────────────────────
+// 会话 ID：用于服务端持久化记忆（刷新不失忆、跨会话画像）
+function getAgentSessionId() {
+  let sid = localStorage.getItem('guanlan_agent_sid');
+  if (!sid) {
+    sid = 'web-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    localStorage.setItem('guanlan_agent_sid', sid);
+  }
+  return sid;
+}
+
+function onAgentModeToggle() {
+  const on = document.getElementById('agentModeToggle').checked;
+  localStorage.setItem('guanlan_agent_mode', on ? '1' : '0');
+  const tip = document.getElementById('welcomeTip');
+  if (tip && on) tip.textContent = '⚡ Agent 模式已开启：观澜将自主调用工具、展示思考过程与本次成本';
+}
+
+const AGENT_TOOL_ICONS = {
+  '正在获取个股诊断数据': 'monitoring',
+  '正在分析板块资金流动能': 'trending_up',
+  '正在扫描选股候选池': 'search',
+  '正在研判大盘环境': 'public',
+  '正在自检并补全回答': 'fact_check',
+};
+
+async function sendChatAgent(msg) {
+  const sendBtn = document.getElementById('chatSendBtn');
+  sendBtn.disabled = true;
+
+  // 创建 Agent 消息容器：过程条 + 正文 + 元信息
+  const msgs = document.getElementById('chatMessages');
+  const wc = msgs.querySelector('.welcome-card'); if (wc) wc.remove();
+  const chips = msgs.querySelector('.chip-group'); if (chips) chips.remove();
+
+  const wrap = document.createElement('div');
+  wrap.className = 'chat-msg assistant';
+  wrap.innerHTML = `<div class="msg-avatar">${iconSVG('smart_toy',20)}</div>
+    <div class="msg-bubble stream-bubble">
+      <div class="msg-label">观澜 · Agent</div>
+      <div class="agent-steps"></div>
+      <div class="stream-text agent-body"></div>
+      <div class="agent-meta" style="display:none"></div>
+    </div>`;
+  msgs.appendChild(wrap);
+  const stepsEl = wrap.querySelector('.agent-steps');
+  const bodyEl = wrap.querySelector('.agent-body');
+  const metaEl = wrap.querySelector('.agent-meta');
+  msgs.scrollTop = msgs.scrollHeight;
+
+  let fullReply = '';
+  let ok = true;
+  try {
+    const r = await fetch('/api/agent/chat/agent/stream', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ message: msg, session_id: getAgentSessionId() })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        let evt;
+        try { evt = JSON.parse(line.slice(6)); } catch(e) { continue; }
+
+        if (evt.type === 'tool') {
+          // 上一条过程标记为完成
+          const prev = stepsEl.querySelector('.agent-step:not(.done)');
+          if (prev) {
+            prev.classList.add('done');
+            const sp = prev.querySelector('.agent-step-spin');
+            if (sp) sp.outerHTML = `<span class="material-symbols-outlined agent-step-ic">check_circle</span>`;
+          }
+          const ic = AGENT_TOOL_ICONS[evt.label] || 'bolt';
+          const step = document.createElement('div');
+          step.className = 'agent-step';
+          step.innerHTML = `<span class="agent-step-spin"></span><span>${evt.label}</span>`;
+          step.dataset.ic = ic;
+          stepsEl.appendChild(step);
+          msgs.scrollTop = msgs.scrollHeight;
+        } else if (evt.type === 'chunk') {
+          // 首个正文块到达时，把所有过程条收敛为完成态
+          stepsEl.querySelectorAll('.agent-step:not(.done)').forEach(s => {
+            s.classList.add('done');
+            const sp = s.querySelector('.agent-step-spin');
+            if (sp) sp.outerHTML = `<span class="material-symbols-outlined agent-step-ic">check_circle</span>`;
+          });
+          fullReply += evt.data;
+          bodyEl.innerHTML = renderRichText(fullReply);
+          msgs.scrollTop = msgs.scrollHeight;
+        } else if (evt.type === 'done') {
+          renderAgentMeta(metaEl, evt);
+        }
+      }
+    }
+    if (!fullReply) { ok = false; bodyEl.textContent = '（未获取到有效回复）'; }
+    else { bodyEl.querySelector && bodyEl.setAttribute('data-raw', fullReply); }
+  } catch(e) {
+    console.error('Agent stream error:', e);
+    ok = false;
+    stepsEl.innerHTML = '';
+    bodyEl.innerHTML = renderRichText('连接失败或服务不可用，请稍后重试，或关闭 Agent 模式使用基础问答。');
+  } finally {
+    sendBtn.disabled = false;
+    msgs.scrollTop = msgs.scrollHeight;
+    saveChatHistory();
+  }
+}
+
+function renderAgentMeta(metaEl, evt) {
+  const badges = [];
+  const it = evt.iterations || 0;
+  const nTools = (evt.tool_trace || []).length;
+  if (nTools > 0) badges.push(`<span class="agent-badge"><span class="material-symbols-outlined">build</span>${nTools} 次工具调用 · ${it} 轮</span>`);
+  const u = evt.usage || {};
+  if (u.cost_cny != null) {
+    const tok = (u.prompt_tokens || 0) + (u.completion_tokens || 0);
+    badges.push(`<span class="agent-badge"><span class="material-symbols-outlined">paid</span>本次 ¥${Number(u.cost_cny).toFixed(4)} · ${tok} tokens</span>`);
+  }
+  if (evt.corrected) badges.push(`<span class="agent-badge warn"><span class="material-symbols-outlined">autorenew</span>已自我纠错</span>`);
+  const v = evt.validation || {};
+  if (v.ok) badges.push(`<span class="agent-badge ok"><span class="material-symbols-outlined">verified</span>质量校验通过</span>`);
+  else if (v.issues && v.issues.length) badges.push(`<span class="agent-badge warn"><span class="material-symbols-outlined">warning</span>${v.issues.length} 项待改进</span>`);
+  if (evt.fallback) badges.push(`<span class="agent-badge">降级基础问答</span>`);
+  if (badges.length) { metaEl.innerHTML = badges.join(''); metaEl.style.display = 'flex'; }
 }
 
 // 流式诊断卡片壳子——立即显示结构，内容渐进填充
