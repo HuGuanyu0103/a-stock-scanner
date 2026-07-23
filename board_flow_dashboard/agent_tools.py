@@ -22,9 +22,33 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+# ── 工具结果短 TTL 缓存 ────────────────────────────────────────
+# 盘中数据分钟级刷新即可，同一 (工具,参数) 在 TTL 内重复调用直接命中，
+# 避免一次对话里多次问同一只票 / 候选池被反复重算（get_candidate_pool 尤重）。
+_CACHE_TTL = 60.0  # 秒
+_cache: dict[str, tuple[float, str]] = {}
+_cache_lock = threading.Lock()
+
+
+def _cache_get(key: str) -> Optional[str]:
+    with _cache_lock:
+        item = _cache.get(key)
+        if item and (time.time() - item[0]) < _CACHE_TTL:
+            return item[1]
+        if item:
+            _cache.pop(key, None)  # 过期清理
+    return None
+
+
+def _cache_set(key: str, value: str):
+    with _cache_lock:
+        _cache[key] = (time.time(), value)
 
 
 # ── 工具定义（OpenAI function-calling schema）──────────────────
@@ -89,20 +113,33 @@ class ToolContext:
 
 # ── 工具执行器 ────────────────────────────────────────────────
 def execute_tool(name: str, args: dict, ctx: ToolContext) -> str:
-    """执行工具调用，返回给 LLM 的文本结果（失败也返回可读文本，不抛异常）。"""
+    """执行工具调用，返回给 LLM 的文本结果（失败也返回可读文本，不抛异常）。
+
+    带 60s TTL 缓存：同一 (工具,参数) 短时间内重复调用直接命中缓存。
+    """
+    cache_key = f"{name}:{json.dumps(args, ensure_ascii=False, sort_keys=True)}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        logger.debug("工具缓存命中: %s", cache_key)
+        return cached
     try:
         if name == "get_stock_diagnosis":
-            return _tool_stock_diagnosis(args.get("code", ""), ctx)
-        if name == "get_sector_trend":
-            return _tool_sector_trend(args.get("name", ""), ctx)
-        if name == "get_candidate_pool":
-            return _tool_candidate_pool(ctx)
-        if name == "get_market_signals":
-            return _tool_market_signals(ctx)
-        return f"未知工具: {name}"
+            result = _tool_stock_diagnosis(args.get("code", ""), ctx)
+        elif name == "get_sector_trend":
+            result = _tool_sector_trend(args.get("name", ""), ctx)
+        elif name == "get_candidate_pool":
+            result = _tool_candidate_pool(ctx)
+        elif name == "get_market_signals":
+            result = _tool_market_signals(ctx)
+        else:
+            return f"未知工具: {name}"
     except Exception as e:
         logger.warning("工具 %s 执行失败: %s", name, e)
         return f"工具 {name} 执行失败: {e}（可基于其他信息回答，或提示数据暂不可用）"
+    # 失败/空数据文本不缓存，避免掩盖数据源恢复
+    if result and not any(k in result[:20] for k in ("未能获取", "未找到", "执行失败", "未接入", "格式错误")):
+        _cache_set(cache_key, result)
+    return result
 
 
 def _tool_stock_diagnosis(code: str, ctx: ToolContext) -> str:
