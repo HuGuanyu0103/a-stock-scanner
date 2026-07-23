@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from collections import Counter
@@ -28,6 +29,12 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).parent / "data"
+
+# DeepSeek 定价（¥/百万 token，deepseek-chat 标准价，用于成本埋点估算）
+# 参考官方定价：输入 2元/M（缓存未命中），输出 8元/M。此处取标准价做量级估算。
+DEEPSEEK_PRICE_IN = 2.0 / 1_000_000
+DEEPSEEK_PRICE_OUT = 8.0 / 1_000_000
+
 
 # ═══════════════════════════════════════════════════════════════
 # 统一 System Prompt — 观澜的决策框架
@@ -763,10 +770,397 @@ class DecisionAgent:
             validated.append(p)
         return validated
 
+    # ── Agent 模式：Function Calling + ReAct 循环 ──────────────
+    def chat_agent(
+        self,
+        user_message: str,
+        tool_ctx,
+        chat_history: list[dict] = None,
+        base_context: str = "",
+        max_iterations: int = 4,
+        question_type: str = "",
+    ) -> Optional[dict]:
+        """具备工具调用能力的 Agent 对话（ReAct 循环 + 自我纠错 + 成本埋点）。
 
-# ═══════════════════════════════════════════════════════════════
-# 公开 API
-# ═══════════════════════════════════════════════════════════════
+        与 chat() 的关键区别：不再把所有数据预先塞进上下文，而是让 LLM
+        自主判断需要哪些数据、调用对应工具、拿到结果后决定是否继续调用或出结论。
+        这是从「上下文增强问答」到「真正 Agent」的核心升级。
+
+        升级点：
+          - 一轮内多个工具调用并发执行（ThreadPoolExecutor）
+          - 出结论后经 validate_output 校验，不通过则带着问题反馈让 LLM 重答一次（自我纠错）
+          - 累计 token / 成本埋点
+
+        Returns:
+            {"reply", "tool_trace", "iterations", "usage", "corrected"}
+            失败返回 None（调用方可回退到 chat()）。
+        """
+        if not self._init_client():
+            return None
+        try:
+            from .agent_tools import TOOL_SCHEMAS, execute_tool
+        except ImportError:
+            from agent_tools import TOOL_SCHEMAS, execute_tool  # type: ignore
+
+        system_msg = (
+            SYSTEM_PROMPT
+            + "\n\n## 你现在具备工具调用能力\n"
+            "你可以调用工具按需获取实时数据，而不是凭空回答。原则：\n"
+            "- 需要具体股票数据时调用 get_stock_diagnosis；需要板块动能时调用 get_sector_trend；\n"
+            "  需要推荐个股时调用 get_candidate_pool；需要大盘研判时调用 get_market_signals。\n"
+            "- 可多次调用工具直到信息足够，再给出最终结论。\n"
+            "- 禁止编造数据；工具返回失败时如实说明，不要虚构点位。\n"
+            + (f"\n\n=== 背景数据 ===\n{base_context}" if base_context else "")
+        )
+        messages = [{"role": "system", "content": system_msg}]
+        if chat_history:
+            messages.extend(chat_history[-10:])
+        messages.append({"role": "user", "content": user_message})
+
+        tool_trace = []
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "cost_cny": 0.0}
+
+        def _accumulate(resp):
+            u = getattr(resp, "usage", None)
+            if not u:
+                return
+            pt = getattr(u, "prompt_tokens", 0) or 0
+            ct = getattr(u, "completion_tokens", 0) or 0
+            usage["prompt_tokens"] += pt
+            usage["completion_tokens"] += ct
+            usage["cost_cny"] += pt * DEEPSEEK_PRICE_IN + ct * DEEPSEEK_PRICE_OUT
+
+        reply, iterations = None, max_iterations
+        for iteration in range(max_iterations):
+            try:
+                resp = self._client.chat.completions.create(
+                    model=self._model,
+                    messages=messages,
+                    tools=TOOL_SCHEMAS,
+                    tool_choice="auto",
+                    temperature=0.5,
+                    max_tokens=3000,
+                )
+            except Exception as e:
+                logger.warning("chat_agent LLM 调用失败: %s", e)
+                return None
+            _accumulate(resp)
+            msg = resp.choices[0].message
+            tool_calls = getattr(msg, "tool_calls", None)
+            if not tool_calls:
+                # 无工具调用 = 出最终结论
+                reply = msg.content or ""
+                iterations = iteration + 1
+                break
+            # 执行工具，把结果喂回
+            messages.append({
+                "role": "assistant", "content": msg.content or "",
+                "tool_calls": [
+                    {"id": tc.id, "type": "function",
+                     "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in tool_calls
+                ],
+            })
+            # 一轮内多个工具调用并发执行（缩短串行等待）
+            results = self._exec_tools_concurrent(tool_calls, tool_ctx, execute_tool, tool_trace)
+            for tc, result in zip(tool_calls, results):
+                messages.append({
+                    "role": "tool", "tool_call_id": tc.id,
+                    "content": result[:3000],
+                })
+        else:
+            # 达到最大轮次仍未收敛 → 强制出结论
+            try:
+                messages.append({"role": "user", "content": "请基于以上已获取的信息给出最终结论，不要再调用工具。"})
+                resp = self._client.chat.completions.create(
+                    model=self._model, messages=messages,
+                    temperature=0.5, max_tokens=3000,
+                )
+                _accumulate(resp)
+                reply = resp.choices[0].message.content or ""
+            except Exception as e:
+                logger.warning("chat_agent 收敛失败: %s", e)
+                return None
+
+        # ── 自我纠错：出结论后跑质量校验，不过则带问题反馈让 LLM 重答一次 ──
+        corrected = False
+        check = self.validate_output(reply, question_type)
+        if not check["ok"]:
+            logger.info("chat_agent 输出未过校验，触发自我纠错: %s", check["issues"])
+            messages.append({"role": "assistant", "content": reply})
+            messages.append({"role": "user", "content": (
+                "你上一条回答存在以下问题：" + "；".join(check["issues"]) +
+                "。请修正后重新给出完整回答：必须包含具体数字（价格/百分比），"
+                "不要出现「数据不足/无法判断」等模糊词，不要残留 X.XX 占位符。"
+                "如确实缺少某项数据，用已获取的其他数据给出可执行结论，不要回避。"
+            )})
+            try:
+                resp = self._client.chat.completions.create(
+                    model=self._model, messages=messages,
+                    temperature=0.4, max_tokens=3000,
+                )
+                _accumulate(resp)
+                new_reply = resp.choices[0].message.content or ""
+                if new_reply and self.validate_output(new_reply, question_type)["ok"]:
+                    reply = new_reply
+                    corrected = True
+                elif new_reply:
+                    reply = new_reply  # 二次仍不完美也用重答结果（通常更好）
+                    corrected = True
+            except Exception as e:
+                logger.warning("chat_agent 自我纠错重答失败: %s", e)
+
+        usage["cost_cny"] = round(usage["cost_cny"], 6)
+        return {"reply": reply or "", "tool_trace": tool_trace,
+                "iterations": iterations, "usage": usage, "corrected": corrected}
+
+    @staticmethod
+    def _exec_tools_concurrent(tool_calls, tool_ctx, execute_tool, tool_trace) -> list:
+        """并发执行一轮内的多个工具调用，返回与 tool_calls 顺序一致的结果列表。
+
+        单个工具调用直接同步跑（省线程池开销）；多个才并发。
+        """
+        def _one(tc):
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except Exception:
+                args = {}
+            result = execute_tool(tc.function.name, args, tool_ctx)
+            return tc.function.name, args, result
+
+        if len(tool_calls) == 1:
+            name, args, result = _one(tool_calls[0])
+            tool_trace.append({"tool": name, "args": args})
+            return [result]
+
+        with ThreadPoolExecutor(max_workers=min(4, len(tool_calls))) as ex:
+            triples = list(ex.map(_one, tool_calls))
+        for name, args, _ in triples:
+            tool_trace.append({"tool": name, "args": args})
+        return [r for _, _, r in triples]
+
+    # 工具名 → 给用户看的中文动作描述（流式过程提示）
+    _TOOL_LABELS = {
+        "get_stock_diagnosis": "正在获取个股诊断数据",
+        "get_sector_trend": "正在分析板块资金流动能",
+        "get_candidate_pool": "正在扫描选股候选池",
+        "get_market_signals": "正在研判大盘环境",
+    }
+
+    def chat_agent_stream(
+        self,
+        user_message: str,
+        tool_ctx,
+        chat_history: list[dict] = None,
+        base_context: str = "",
+        max_iterations: int = 4,
+        question_type: str = "",
+    ):
+        """chat_agent 的流式版本：以事件字典 yield 出 Agent 的思考/工具/回答过程。
+
+        yield 的事件类型：
+          {"type": "tool_start", "tool", "label"}   — 开始调用某工具
+          {"type": "chunk", "data"}                  — 最终回答的增量文本
+          {"type": "done", "tool_trace", "iterations", "usage", "corrected"}
+          {"type": "error"}                          — LLM 调用失败（调用方可降级）
+
+        与 chat_agent 逻辑一致，但最终结论用 stream=True 逐字推送，且工具调用
+        前推送过程提示，让用户看到"Agent 正在做什么"。
+        """
+        if not self._init_client():
+            yield {"type": "error"}
+            return
+        try:
+            from .agent_tools import TOOL_SCHEMAS, execute_tool
+        except ImportError:
+            from agent_tools import TOOL_SCHEMAS, execute_tool  # type: ignore
+
+        system_msg = (
+            SYSTEM_PROMPT
+            + "\n\n## 你现在具备工具调用能力\n"
+            "你可以调用工具按需获取实时数据，而不是凭空回答。原则：\n"
+            "- 需要具体股票数据时调用 get_stock_diagnosis；需要板块动能时调用 get_sector_trend；\n"
+            "  需要推荐个股时调用 get_candidate_pool；需要大盘研判时调用 get_market_signals。\n"
+            "- 可多次调用工具直到信息足够，再给出最终结论。\n"
+            "- 禁止编造数据；工具返回失败时如实说明，不要虚构点位。\n"
+            + (f"\n\n=== 背景数据 ===\n{base_context}" if base_context else "")
+        )
+        messages = [{"role": "system", "content": system_msg}]
+        if chat_history:
+            messages.extend(chat_history[-10:])
+        messages.append({"role": "user", "content": user_message})
+
+        tool_trace = []
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "cost_cny": 0.0}
+
+        def _accumulate(resp):
+            u = getattr(resp, "usage", None)
+            if not u:
+                return
+            pt = getattr(u, "prompt_tokens", 0) or 0
+            ct = getattr(u, "completion_tokens", 0) or 0
+            usage["prompt_tokens"] += pt
+            usage["completion_tokens"] += ct
+            usage["cost_cny"] += pt * DEEPSEEK_PRICE_IN + ct * DEEPSEEK_PRICE_OUT
+
+        # ── 阶段一：非流式的 ReAct 决策循环（决定要不要调工具）──
+        decided_final = False
+        for iteration in range(max_iterations):
+            try:
+                resp = self._client.chat.completions.create(
+                    model=self._model, messages=messages,
+                    tools=TOOL_SCHEMAS, tool_choice="auto",
+                    temperature=0.5, max_tokens=3000,
+                )
+            except Exception as e:
+                logger.warning("chat_agent_stream 决策失败: %s", e)
+                yield {"type": "error"}
+                return
+            _accumulate(resp)
+            msg = resp.choices[0].message
+            tool_calls = getattr(msg, "tool_calls", None)
+            if not tool_calls:
+                # 不再需要工具，进入流式出结论阶段
+                decided_final = True
+                break
+            messages.append({
+                "role": "assistant", "content": msg.content or "",
+                "tool_calls": [
+                    {"id": tc.id, "type": "function",
+                     "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in tool_calls
+                ],
+            })
+            # 推送过程提示（去重）
+            seen = set()
+            for tc in tool_calls:
+                name = tc.function.name
+                if name in seen:
+                    continue
+                seen.add(name)
+                yield {"type": "tool_start", "tool": name,
+                       "label": self._TOOL_LABELS.get(name, f"正在调用 {name}")}
+            results = self._exec_tools_concurrent(tool_calls, tool_ctx, execute_tool, tool_trace)
+            for tc, result in zip(tool_calls, results):
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result[:3000]})
+
+        if not decided_final:
+            messages.append({"role": "user", "content": "请基于以上已获取的信息给出最终结论，不要再调用工具。"})
+
+        # ── 阶段二：流式推送最终回答 ──
+        full_reply = ""
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._model, messages=messages,
+                temperature=0.5, max_tokens=3000, stream=True,
+                stream_options={"include_usage": True},
+            )
+            for chunk in resp:
+                if getattr(chunk, "usage", None):
+                    _accumulate(chunk)
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta and delta.content:
+                    full_reply += delta.content
+                    yield {"type": "chunk", "data": delta.content}
+        except Exception as e:
+            logger.warning("chat_agent_stream 出结论失败: %s", e)
+            yield {"type": "error"}
+            return
+
+        # ── 阶段三：自我纠错（流式场景下，若不过则追加一段修正说明+重答，不重置已展示内容）──
+        corrected = False
+        check = self.validate_output(full_reply, question_type)
+        if not check["ok"]:
+            logger.info("chat_agent_stream 输出未过校验，触发自我纠错: %s", check["issues"])
+            yield {"type": "tool_start", "tool": "_self_check", "label": "正在自检并补全回答"}
+            messages.append({"role": "assistant", "content": full_reply})
+            messages.append({"role": "user", "content": (
+                "你上一条回答存在以下问题：" + "；".join(check["issues"]) +
+                "。请直接补充修正内容：给出具体数字（价格/百分比），不要模糊词，不要占位符。"
+            )})
+            try:
+                resp = self._client.chat.completions.create(
+                    model=self._model, messages=messages,
+                    temperature=0.4, max_tokens=2000, stream=True,
+                    stream_options={"include_usage": True},
+                )
+                yield {"type": "chunk", "data": "\n\n---\n**补充修正：**\n"}
+                for chunk in resp:
+                    if getattr(chunk, "usage", None):
+                        _accumulate(chunk)
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    if delta and delta.content:
+                        full_reply += delta.content
+                        yield {"type": "chunk", "data": delta.content}
+                corrected = True
+            except Exception as e:
+                logger.warning("chat_agent_stream 纠错重答失败: %s", e)
+
+        usage["cost_cny"] = round(usage["cost_cny"], 6)
+        yield {"type": "done", "reply": full_reply, "tool_trace": tool_trace,
+               "iterations": min(iteration + 1, max_iterations),
+               "usage": usage, "corrected": corrected}
+
+
+
+    # ── 会话滚动摘要生成器（供 agent_memory.maybe_summarize 注入）──
+    def summarize_history(self, old_summary: str, new_text: str) -> str:
+        """把「已有摘要 + 新增对话」压成一段更新后的摘要，供长对话记忆保留。
+
+        失败或不可用时返回原摘要（不丢已有信息）。
+        """
+        if not self._init_client():
+            return old_summary
+        prompt = (
+            "你在维护一段股票投顾对话的滚动摘要。请把已有摘要与新增对话合并，"
+            "输出一段更新后的简短摘要（≤200字），只保留对后续对话有用的信息："
+            "用户关注的股票/板块、交易风格与仓位、已给出的关键结论与点位、未决问题。"
+            "不要逐句复述，抓要点。\n\n"
+            f"=== 已有摘要 ===\n{old_summary or '（无）'}\n\n"
+            f"=== 新增对话 ===\n{new_text}\n\n"
+            "直接输出更新后的摘要："
+        )
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3, max_tokens=400,
+            )
+            return (resp.choices[0].message.content or "").strip() or old_summary
+        except Exception as e:
+            logger.warning("summarize_history 失败: %s", e)
+            return old_summary
+
+    # ── 输出质量硬校验（让「自检」从 prompt 承诺变成代码强制）──
+    def validate_output(self, text: str, question_type: str = "") -> dict:
+        """规则层检查 LLM 输出质量。返回 {"ok": bool, "issues": [...]}。
+
+        与 _hard_validate（作用于选股 JSON）不同，这里作用于自然语言诊断输出，
+        检查「是否含具体数字、是否有违禁模糊词、是否残留模板占位符」。
+        """
+        issues = []
+        if not text or len(text.strip()) < 10:
+            issues.append("输出过短或为空")
+            return {"ok": False, "issues": issues}
+        # 违禁模糊词（SYSTEM_PROMPT 已禁止，此处代码强制核查）
+        for banned in ("数据不足", "无法获取", "无法判断", "仅供参考，不构成"):
+            if banned in text:
+                issues.append(f"含违禁模糊词: {banned}")
+        # 残留模板占位符
+        if "X.XX" in text or "XX.XX" in text:
+            issues.append("残留未填充的模板占位符 X.XX")
+        # 个股/持仓类应含具体数字（价格/百分比）
+        import re
+        if question_type in ("stock_analysis", "holding_decision"):
+            if not re.search(r"\d+\.?\d*\s*[%元]", text) and not re.search(r"\d+\.\d{2}", text):
+                issues.append("个股/持仓分析缺少具体价格或百分比数字")
+        return {"ok": len(issues) == 0, "issues": issues}
+
+
 
 _agent: Optional[DecisionAgent] = None
 

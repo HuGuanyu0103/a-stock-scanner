@@ -2266,6 +2266,203 @@ def api_agent_debate():
         return jsonify(report)
     return jsonify({"error": "辩论系统不可用", "hint": "请查看 AI 观澜标签页"})
 
+
+# ── Agent 模式端点（Function Calling + 记忆 + 输出校验）──────
+
+@app.route("/api/agent/chat/agent", methods=["POST"])
+def api_agent_chat_agent():
+    """具备工具调用能力的 Agent 对话（ReAct 循环 + 服务端记忆 + 输出校验）。
+
+    与 /api/agent/chat 的区别：LLM 自主决定调用哪些工具获取实时数据，
+    而非后端预先塞满上下文；对话记忆服务端持久化；输出经规则校验。
+    """
+    body = request.get_json(silent=True) or {}
+    user_message = (body.get("message") or "").strip()
+    session_id = (body.get("session_id") or "default").strip()
+    if not user_message:
+        return jsonify({"error": "消息不能为空"}), 400
+
+    try:
+        from .agent_tools import ToolContext
+        from .agent_memory import get_agent_memory
+    except ImportError:
+        from agent_tools import ToolContext  # type: ignore
+        from agent_memory import get_agent_memory  # type: ignore
+
+    mem = get_agent_memory()
+    agent = get_agent()
+
+    # 工具上下文：注入真实数据能力
+    tool_ctx = ToolContext(
+        collector=collector,
+        extract_stock_context=_extract_stock_context,
+        select_stocks=select_stocks,
+        get_signal_store=get_signal_store,
+    )
+
+    # 服务端会话记忆 + 用户画像
+    history = mem.get_history(session_id)
+    # 长对话滚动摘要：把更早的历史压缩成摘要，避免 recent window 截断失忆
+    mem.maybe_summarize(session_id, agent.summarize_history)
+    summary = mem.get_summary(session_id)
+
+    # 记录用户问的股票 + 交易风格（画像）
+    resolved = _resolve_stock_code(user_message)
+    if resolved:
+        mem.note_asked_stock(resolved[0], resolved[1])
+    mem.infer_and_note_style(user_message)
+    profile_ctx = mem.get_profile_context()
+    base_ctx = profile_ctx
+    if summary:
+        base_ctx = (f"【历史对话摘要】{summary}\n" + profile_ctx).strip()
+
+    qt = agent._classify_question(user_message, resolved[0] if resolved else "")
+    result = agent.chat_agent(
+        user_message, tool_ctx,
+        chat_history=history,
+        base_context=base_ctx,
+        question_type=qt,
+    )
+    if not result:
+        # 降级：回退到普通 chat（保证可用性）
+        data = select_stocks(collector=collector)
+        all_c = data.get("pool_a", []) + data.get("pool_b", [])
+        reply = agent.chat(
+            user_message, all_c, data.get("hot_sectors", []),
+            get_signal_store().get_all(), chat_history=history,
+            breadth=data.get("market_breadth", 0.5),
+        )
+        if not reply:
+            return jsonify({"error": "Agent 不可用", "fallback": True}), 200
+        result = {"reply": reply, "tool_trace": [], "iterations": 0,
+                  "fallback": True, "usage": {}, "corrected": False}
+
+    # 输出质量校验（不通过仅标记，不阻断返回）
+    validation = agent.validate_output(result.get("reply", ""), qt)
+
+    # 持久化本轮对话
+    mem.append_message(session_id, "user", user_message)
+    mem.append_message(session_id, "assistant", result.get("reply", ""))
+
+    return jsonify({
+        "reply": result.get("reply", ""),
+        "tool_trace": result.get("tool_trace", []),
+        "iterations": result.get("iterations", 0),
+        "validation": validation,
+        "corrected": result.get("corrected", False),
+        "usage": result.get("usage", {}),
+        "fallback": result.get("fallback", False),
+    })
+
+
+@app.route("/api/agent/chat/agent/stream", methods=["POST"])
+def api_agent_chat_agent_stream():
+    """Agent 对话的 SSE 流式版本 — 推送工具调用过程 + 增量回答 + 成本。
+
+    事件类型（SSE data JSON 的 type 字段）：
+      tool   : {type:"tool", label}          Agent 正在调用某工具的过程提示
+      chunk  : {type:"chunk", data}           最终回答的增量文本
+      done   : {type:"done", tool_trace, iterations, usage, corrected, validation}
+      error  : {type:"error"}                 LLM 不可用（前端可提示重试或走非流式）
+    """
+    body = request.get_json(silent=True) or {}
+    user_message = (body.get("message") or "").strip()
+    session_id = (body.get("session_id") or "default").strip()
+    if not user_message:
+        return jsonify({"error": "消息不能为空"}), 400
+
+    try:
+        from .agent_tools import ToolContext
+        from .agent_memory import get_agent_memory
+    except ImportError:
+        from agent_tools import ToolContext  # type: ignore
+        from agent_memory import get_agent_memory  # type: ignore
+
+    mem = get_agent_memory()
+    agent = get_agent()
+    tool_ctx = ToolContext(
+        collector=collector,
+        extract_stock_context=_extract_stock_context,
+        select_stocks=select_stocks,
+        get_signal_store=get_signal_store,
+    )
+
+    history = mem.get_history(session_id)
+    mem.maybe_summarize(session_id, agent.summarize_history)
+    summary = mem.get_summary(session_id)
+    resolved = _resolve_stock_code(user_message)
+    if resolved:
+        mem.note_asked_stock(resolved[0], resolved[1])
+    mem.infer_and_note_style(user_message)
+    profile_ctx = mem.get_profile_context()
+    base_ctx = profile_ctx
+    if summary:
+        base_ctx = (f"【历史对话摘要】{summary}\n" + profile_ctx).strip()
+    qt = agent._classify_question(user_message, resolved[0] if resolved else "")
+
+    def generate():
+        full_reply = ""
+        meta = {"tool_trace": [], "iterations": 0, "usage": {}, "corrected": False}
+        errored = False
+        try:
+            for ev in agent.chat_agent_stream(
+                user_message, tool_ctx,
+                chat_history=history, base_context=base_ctx, question_type=qt,
+            ):
+                t = ev.get("type")
+                if t == "tool_start":
+                    yield f"data: {json.dumps({'type': 'tool', 'label': ev.get('label', '')}, ensure_ascii=False)}\n\n"
+                elif t == "chunk":
+                    full_reply += ev.get("data", "")
+                    yield f"data: {json.dumps({'type': 'chunk', 'data': ev.get('data', '')}, ensure_ascii=False)}\n\n"
+                elif t == "done":
+                    full_reply = ev.get("reply", full_reply)
+                    meta.update({
+                        "tool_trace": ev.get("tool_trace", []),
+                        "iterations": ev.get("iterations", 0),
+                        "usage": ev.get("usage", {}),
+                        "corrected": ev.get("corrected", False),
+                    })
+                elif t == "error":
+                    errored = True
+        except Exception as e:
+            logger.error("Agent stream 异常: %s", e)
+            errored = True
+
+        # LLM 不可用 → 降级到非流式 chat，一次性推回
+        if errored and not full_reply:
+            try:
+                data = select_stocks(collector=collector)
+                all_c = data.get("pool_a", []) + data.get("pool_b", [])
+                reply = agent.chat(
+                    user_message, all_c, data.get("hot_sectors", []),
+                    get_signal_store().get_all(), chat_history=history,
+                    breadth=data.get("market_breadth", 0.5),
+                ) or "抱歉，暂时无法处理该请求，请稍后重试。"
+                full_reply = reply
+                yield f"data: {json.dumps({'type': 'chunk', 'data': reply}, ensure_ascii=False)}\n\n"
+                meta["fallback"] = True
+            except Exception:
+                yield f"data: {json.dumps({'type': 'chunk', 'data': '抱歉，服务暂时不可用。'}, ensure_ascii=False)}\n\n"
+
+        # 持久化 + 校验
+        if full_reply:
+            mem.append_message(session_id, "user", user_message)
+            mem.append_message(session_id, "assistant", full_reply)
+        validation = agent.validate_output(full_reply, qt)
+        done_payload = {"type": "done", "validation": validation, **meta}
+        yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
 # ── Loop Engineering 端点 ───────────────────────────────
 
 @app.route("/api/loop/adopt", methods=["POST"])
@@ -2303,6 +2500,19 @@ def api_loop_status():
         "signal_hotness": la.get_signal_hotness()[:10],
         "context": ds.get_loop_context(),
     })
+
+
+@app.route("/api/loop/tuning")
+def api_loop_tuning():
+    """反馈闭环调节报告 — 展示规则引擎因实盘表现「自调」了哪些信号权重。
+
+    可解释性出口：每个信号的历史样本数/胜率/均收益 → 生成的评分乘数。
+    """
+    try:
+        from .weight_tuner import get_tuning_report
+    except ImportError:
+        from weight_tuner import get_tuning_report  # type: ignore
+    return jsonify(get_tuning_report(store=get_decision_store()))
 
 
 @app.route("/api/loop/exit", methods=["POST"])

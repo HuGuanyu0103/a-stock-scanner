@@ -48,71 +48,66 @@ except ImportError:
 
 # signals 模块的函数在 _select_stocks_real 内按需导入，避免循环依赖
 
+try:
+    from .engine_config import get_config, match_signal
+except ImportError:
+    from engine_config import get_config, match_signal  # type: ignore[no-redef]
+
 logger = logging.getLogger(__name__)
 
-# ── 策略参数 ────────────────────────────────────────────────
+# ── 策略参数（唯一真源在 engine_config.py，此处派生同名变量保持向后兼容）──
+# 说明：所有默认值与历史一致；调参改 engine_config.py 或 data/engine_config.json。
+_CFG = get_config()
+_POOL = _CFG["pool"]
+_MKT = _CFG["market"]
+_RISK = _CFG["risk"]
+_LIQ = _CFG["liquidity"]
 
-HOT_SECTOR_COUNT = 5           # 资金流维度：每种板块类型取前 N 个
-HOT_SECTOR_COUNT_PCT = 3       # 价格动量维度：每种板块额外取前 N 个（涨幅最大）
-STOCKS_PER_SECTOR = 50         # 每个板块取前 N 只成分股（v4.0 放宽至 50）
-CANDIDATE_POOL_SIZE = 50       # 候选池总容量（= A + B）
-DAILY_SCORE_WEIGHT = 0.25      # 日评分在最终排名中的权重
-MAX_PER_SECTOR = 8             # 同一板块最多入选数（纯主板放宽）
-MAX_PER_SECTOR_B = 8           # B 池同一板块最多入选数（纯主板放宽）
-MAX_STOCKS_PER_MEGA_SECTOR = 10  # 同一大赛道总上限（TODO Phase 2: 需先建 sector→mega_sector 映射表才能生效）
-BEAR_MARKET_POOL_SIZE = 10     # 普跌日候选池缩减至（已废弃，保留兼容）
-BEAR_MARKET_THRESHOLD = 0.16   # 上涨板块占比低于此值视为普跌
-EXTREME_BEAR_THRESHOLD = 0.08  # v4.0: 极端熊市阈值，A池彻底禁用
+HOT_SECTOR_COUNT = _POOL["hot_sector_count"]          # 资金流维度：每种板块类型取前 N 个
+HOT_SECTOR_COUNT_PCT = _POOL["hot_sector_count_pct"]  # 价格动量维度：每种板块额外取前 N 个（涨幅最大）
+STOCKS_PER_SECTOR = _POOL["stocks_per_sector"]        # 每个板块取前 N 只成分股（v4.0 放宽至 50）
+CANDIDATE_POOL_SIZE = _POOL["candidate_pool_size"]    # 候选池总容量（= A + B）
+DAILY_SCORE_WEIGHT = _POOL["daily_score_weight"]      # 日评分在最终排名中的权重
+MAX_PER_SECTOR = _POOL["max_per_sector"]              # 同一板块最多入选数（纯主板放宽）
+MAX_PER_SECTOR_B = _POOL["max_per_sector_b"]          # B 池同一板块最多入选数（纯主板放宽）
+MAX_STOCKS_PER_MEGA_SECTOR = _POOL["max_stocks_per_mega_sector"]  # 同一大赛道总上限
+BEAR_MARKET_POOL_SIZE = _MKT["bear_market_pool_size"]  # 普跌日候选池缩减至（已废弃，保留兼容）
+BEAR_MARKET_THRESHOLD = _MKT["bear_market_threshold"]  # 上涨板块占比低于此值视为普跌
+EXTREME_BEAR_THRESHOLD = _MKT["extreme_bear_threshold"]  # v4.0: 极端熊市阈值，A池彻底禁用
 
 # ── v4.0: 三级系统性风控熔断参数 ─────────────────────────
-SECTOR_MELTDOWN_FLOW = -20     # 板块主力净流出超此值(亿)触发熔断
-SECTOR_MELTDOWN_PCT = -3.0     # 板块跌幅超此值(%)触发熔断
-SECTOR_MELTDOWN_PENALTY = 0.5  # 熔断板块成分股得分乘以此系数
-FLASH_CRASH_PCT = -5.0         # 个股盘中急跌超此值(%)直接剔除
-FLASH_CRASH_OPEN_GAP = -4.0    # 开盘后跌幅超此值(%)判定急跌
+SECTOR_MELTDOWN_FLOW = _RISK["sector_meltdown_flow"]      # 板块主力净流出超此值(亿)触发熔断
+SECTOR_MELTDOWN_PCT = _RISK["sector_meltdown_pct"]        # 板块跌幅超此值(%)触发熔断
+SECTOR_MELTDOWN_PENALTY = _RISK["sector_meltdown_penalty"]  # 熔断板块成分股得分乘以此系数
+FLASH_CRASH_PCT = _RISK["flash_crash_pct"]               # 个股盘中急跌超此值(%)直接剔除
+FLASH_CRASH_OPEN_GAP = _RISK["flash_crash_open_gap"]     # 开盘后跌幅超此值(%)判定急跌
 
 # ── v4.6: 板块退潮柔性降权（治追高，填补硬熔断之前的中间地带）───
 # 硬熔断阈值(-20亿)较极端，此处补一档：资金动能衰减/退潮时平滑降权，
 # 而非等到崩盘才砍。数据来自 collector 板块资金流时间序列 trend。
-SECTOR_FADE_PENALTY = 0.85     # 板块退潮（加速/温和流出）成分股得分乘以此系数
-SECTOR_FADE_TRENDS = ("加速流出", "温和流出")  # collector trend 中判定为退潮的取值
+SECTOR_FADE_PENALTY = _RISK["sector_fade_penalty"]        # 板块退潮（加速/温和流出）成分股得分乘以此系数
+SECTOR_FADE_TRENDS = tuple(_RISK["sector_fade_trends"])   # collector trend 中判定为退潮的取值
 
 # ── B 池（回调低吸）参数 ────────────────────────────────────
 
-HOT_PULLBACK_RATIO_A = 25      # A 池名额
-HOT_PULLBACK_RATIO_B = 25      # B 池名额
+HOT_PULLBACK_RATIO_A = _POOL["ratio_a"]      # A 池名额
+HOT_PULLBACK_RATIO_B = _POOL["ratio_b"]      # B 池名额
 
 # B 池额外加成（系数，非绝对分）
-PULLBACK_BONUS_MULTIPLIER = 1.10  # B 池得分 ×1.10
+PULLBACK_BONUS_MULTIPLIER = _POOL["pullback_bonus_multiplier"]  # B 池得分 ×1.10
 
 # B 池大盘环境调节（已固定为 25，保留常量兼容）
-BEAR_PULLBACK_A = 25           # 普跌时 A 池名额
-BEAR_PULLBACK_B = 25           # 普跌时 B 池名额
+BEAR_PULLBACK_A = _MKT["bear_pullback_a"]    # 普跌时 A 池名额
+BEAR_PULLBACK_B = _MKT["bear_pullback_b"]    # 普跌时 B 池名额
 
 # 流动性硬过滤（已改用流通市值 f21 替代总市值 f20）
-MIN_MARKET_CAP_A = 30          # A 池最小流通市值（亿元）
-MIN_MARKET_CAP_B = 20          # B 池最小流通市值（亿元，低吸需更宽选股面）
-MIN_TURNOVER_RATE = 0.5        # 最低换手率（%，主板要求更高活跃度）
+MIN_MARKET_CAP_A = _LIQ["min_market_cap_a"]  # A 池最小流通市值（亿元）
+MIN_MARKET_CAP_B = _LIQ["min_market_cap_b"]  # B 池最小流通市值（亿元，低吸需更宽选股面）
+MIN_TURNOVER_RATE = _LIQ["min_turnover_rate"]  # 最低换手率（%，主板要求更高活跃度）
 
 # ── 信号操作指引 ────────────────────────────────────────────
 
-SIGNAL_GUIDE = {
-    # A 池信号 — 纯主板 10cm 环境，止盈下调 1-2%
-    "放量上攻":   {"holding": 2,   "take_profit": "4-6%",   "stop_loss": "-3%"},
-    "放量突破":   {"holding": 2,   "take_profit": "4-6%",   "stop_loss": "-3%"},
-    "补涨潜力":   {"holding": "3-4", "take_profit": "6-8%", "stop_loss": "-4%"},
-    "资金驱动":   {"holding": 2,   "take_profit": "5%",     "stop_loss": "-3.5%"},
-    "量价齐升":   {"holding": "2-3", "take_profit": "5%",   "stop_loss": "-3.5%"},
-    "温和吸筹":   {"holding": "3-4", "take_profit": "6-8%", "stop_loss": "-4%"},
-    "滞涨关注":   {"holding": 3,   "take_profit": "4%",     "stop_loss": "-3%"},
-    "弱势回避":   {"holding": 0,   "take_profit": "-",      "stop_loss": "-"},
-    "高位风险":   {"holding": 0,   "take_profit": "-",      "stop_loss": "-"},
-    "盘中观察":   {"holding": "2-3", "take_profit": "4%",   "stop_loss": "-3%"},
-    # B 池专属信号 — 纯主板无 20cm，暴利机会减少，止盈下调 3%
-    "主线分歧低吸": {"holding": "3-4", "take_profit": "7-9%", "stop_loss": "-4.5%"},
-    "板块洗盘承接": {"holding": 3,   "take_profit": "6%",    "stop_loss": "-3.5%"},
-    "缩量止跌企稳": {"holding": "3-4", "take_profit": "6-8%", "stop_loss": "-4%"},
-}
+SIGNAL_GUIDE = _CFG["signal_guide"]
 
 # ── v4.0: ATR 动态止盈止损 ────────────────────────────────────
 
@@ -142,17 +137,8 @@ def _estimate_atr_stops(stock: dict) -> dict:
     }
 
 # v3.5 权重：量价为主(60%)，资金确认为辅(16%)，日评融合(25%，见 DAILY_SCORE_WEIGHT)
-WEIGHTS = {
-    "volume_ratio": 0.20,       # 量比 — 超短线量是王
-    "price_deviation": 0.16,    # 智能偏离 — 相对板块强弱
-    "net_main_ratio": 0.16,    # 主力净占比 — 确认信号（含流置信动态降权）
-    "intraday_position": 0.12, # 日内相对位置 — 入场时机
-    "open_return": 0.10,       # 开盘涨幅 — 开盘定多空
-    "turnover_rate": 0.10,     # 换手率 — 流动性
-    "amp_ratio": 0.08,         # 振幅 — 盈利空间
-    "short_momentum": 0.06,    # 短期动量（近5日涨幅）— 趋势延续性
-    "breakout_dist": 0.04,     # 突破距离（距20日高点）— 空间判断
-}
+# 唯一真源在 engine_config.py，此处派生同名变量保持向后兼容
+WEIGHTS = dict(_CFG["weights"])
 
 HEADERS = {
     "User-Agent": (
@@ -336,61 +322,19 @@ def _flow_confidence(net_ratio: float, pct_chg: float,
             return 0.10  # 小资金背离，极不可信
 
 def _infer_signal(s):
-    net_ratio = s.get("net_main_ratio") or 0
-    vol_ratio = s.get("volume_ratio") or 0
-    pct = s.get("pct_chg") or 0
-    dev = s.get("price_deviation") or 0
-    intra_pos = s.get("intraday_position") or 0.5
-    open_ret = s.get("open_return") or 0
-
-    # 优先级从高到低：有意把"放量突破"提到"补涨潜力"前面
-    # — 同时满足两者条件的股票，放量突破比补涨更值得关注
-    if net_ratio > 15 and vol_ratio > 1.5 and pct > 3 and intra_pos > 0.6:
-        return "放量上攻"
-    if vol_ratio > 2 and pct > 2 and open_ret > 1:
-        return "放量突破"
-    if net_ratio > 10 and dev < -1 and intra_pos < 0.5:
-        return "补涨潜力"
-    if net_ratio > 8 and intra_pos > 0.7:
-        return "资金驱动"
-    if vol_ratio > 1.5 and net_ratio > 5:
-        return "量价齐升"
-    if dev < -2 and net_ratio < 0:
-        return "弱势回避"
-    if dev < -2 and net_ratio >= 0:
-        return "滞涨关注"
-    if net_ratio > 3:
-        return "温和吸筹"
-    if intra_pos > 0.85 and net_ratio < 0:
-        return "高位风险"
-    return "盘中观察"
+    # 信号判定阈值已外置到 engine_config（signal_rules_a）；规则表按顺序优先匹配。
+    return match_signal(s, _CFG["signal_rules_a"], _CFG["signal_default_a"])
 
 
 # ── B 池专属：回调板块信号推断 ─────────────────────────────
 
 def _infer_signal_pullback(s):
-    """B 池（回调低吸）信号推断 — 识别分歧低吸机会。"""
-    net_ratio = s.get("net_main_ratio") or 0
-    vol_ratio = s.get("volume_ratio") or 0
-    pct = s.get("pct_chg") or 0
-    dev = s.get("price_deviation") or 0
-    intra_pos = s.get("intraday_position") or 0.5
-    open_ret = s.get("open_return") or 0
+    """B 池（回调低吸）信号推断 — 识别分歧低吸机会。
 
-    # P0: 主线分歧低吸 — 回调板块 + 主力逆势承接 + 日内低位
-    if net_ratio > 10 and dev < 0 and intra_pos < 0.5 and pct < 2:
-        return "主线分歧低吸"
-
-    # P1: 板块洗盘承接 — 缩量分歧 + 主力持续流入
-    if net_ratio > 5 and vol_ratio > 1.2 and dev > -3 and pct < 3:
-        return "板块洗盘承接"
-
-    # P2: 缩量止跌企稳 — 缩量 + 止跌迹象
-    if vol_ratio < 1.2 and intra_pos > 0.3 and pct > -3 and open_ret < 1:
-        return "缩量止跌企稳"
-
-    # 无法明确判断时回退到通用信号
-    return _infer_signal(s)
+    判定阈值已外置到 engine_config（signal_rules_b）；匹配失败回退到 A 池通用信号。
+    """
+    hit = match_signal(s, _CFG["signal_rules_b"], "")
+    return hit or _infer_signal(s)
 
 
 # ── B 池专属：回调板块偏离评分 ─────────────────────────────
@@ -427,12 +371,31 @@ def _smart_deviation_score_pullback(net_ratio: float, deviation: float) -> float
 
 # ── 多因子评分 ──────────────────────────────────────────────
 
-def _score_and_rank(stocks, pool_type: str = "A"):
+def _get_feedback_multipliers() -> dict:
+    """取信号反馈乘数（C: 自进化）。任何失败都返回 {} = 不调节，绝不影响选股主流程。"""
+    try:
+        try:
+            from .weight_tuner import get_multipliers
+            from .decision_store import get_decision_store
+        except ImportError:
+            from weight_tuner import get_multipliers  # type: ignore[no-redef]
+            from decision_store import get_decision_store  # type: ignore[no-redef]
+        return get_multipliers(store=get_decision_store())
+    except Exception as e:
+        logger.debug("反馈乘数获取跳过: %s", e)
+        return {}
+
+
+def _score_and_rank(stocks, pool_type: str = "A", signal_mults: dict = None):
     """多因子归一化 + 智能偏离 + 加权评分。
 
     pool_type:
       "A" — 热力追涨池（原有逻辑）
       "B" — 回调低吸池（修正逻辑：取消低开惩罚、弱化低位惩罚、独立偏离评分）
+    signal_mults:
+      反馈闭环乘数 {signal_combo: multiplier}（来自 weight_tuner）。
+      个股拿到信号后，按 pool-signal 组合微调 score，实现「历史表现好的信号加权」。
+      None 或空 = 不调节（等价于旧行为）。
     """
     if not stocks:
         return stocks
@@ -553,6 +516,14 @@ def _score_and_rank(stocks, pool_type: str = "A"):
             s["signal"] = _infer_signal_pullback(s)
         else:
             s["signal"] = _infer_signal(s)
+
+        # ── 反馈闭环：按信号历史表现微调 score（自进化）──────
+        if signal_mults:
+            combo = f"{pool_type}-{s['signal']}"
+            mult = signal_mults.get(combo)
+            if mult and mult != 1.0:
+                s["score"] = round(s["score"] * mult, 4)
+                s["feedback_mult"] = mult  # 供前端审计：该票因信号历史表现被调节
 
     stocks.sort(key=lambda x: x.get("score", 0), reverse=True)
     return stocks
@@ -1269,15 +1240,18 @@ def _select_stocks_real(collector=None):
     # v4.6: 识别退潮板块（动能趋势，治追高的柔性增强）
     fading_sectors = _get_fading_sectors(hot_sectors, collector)
 
+    # C: 反馈闭环 — 预取信号历史表现乘数（一次查库，A/B 池共用）
+    signal_mults = _get_feedback_multipliers()
+
     # Step 6: 日评分先合并，再评分排序（日评分参与盘中排名 25%）
     a_stocks = _merge_daily_scores(a_stocks, _DAILY_SCORES)
-    a_ranked = _score_and_rank(a_stocks, pool_type="A")
+    a_ranked = _score_and_rank(a_stocks, pool_type="A", signal_mults=signal_mults)
     # v4.0: 急跌过滤 + 板块熔断惩罚
     a_ranked, _a_crash_removed = _apply_flash_crash_filter(a_ranked)
     a_ranked, _a_fraud_removed = _apply_fraud_filter(a_ranked)
 
     b_unique = _merge_daily_scores(b_unique, _DAILY_SCORES)
-    b_ranked = _score_and_rank(b_unique, pool_type="B")
+    b_ranked = _score_and_rank(b_unique, pool_type="B", signal_mults=signal_mults)
     b_ranked, _b_crash_removed = _apply_flash_crash_filter(b_ranked)
     b_ranked, _b_fraud_removed = _apply_fraud_filter(b_ranked)
 
