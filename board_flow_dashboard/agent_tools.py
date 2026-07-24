@@ -100,15 +100,100 @@ TOOL_SCHEMAS = [
 ]
 
 
+# ── 写类工具定义（Agent「长出手」：能执行动作，非只读）──────────
+# 这些工具是「提议式」的：Agent 调用它们不会立即改数据，而是登记一个
+# 「待确认动作」，由前端向用户展示确认卡片、用户点确认后才真正执行。
+# 这是人机协作的安全设计——Agent 能提议写操作，但执行权始终握在用户手里。
+WRITE_TOOL_SCHEMAS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_record_decision",
+            "description": "当用户明确表达『看好某只票、打算买入/建仓』时，提议把这笔决策记入决策飞轮（用于后续复盘与胜率统计）。这是提议，不会立即执行，需用户确认。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "6 位股票代码"},
+                    "name": {"type": "string", "description": "股票名称"},
+                    "entry_price": {"type": "number", "description": "计划买入价"},
+                    "signal": {"type": "string", "description": "对应信号，如 放量上攻（可选）"},
+                    "reason": {"type": "string", "description": "一句话记录看好理由"},
+                },
+                "required": ["code", "entry_price"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_add_watch",
+            "description": "当用户表达『帮我盯着某只票、加入盯盘、买了想被提醒』时，提议把该票加入持仓盯盘助手。这是提议，不会立即执行，需用户确认。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "6 位股票代码"},
+                    "name": {"type": "string", "description": "股票名称"},
+                    "cost": {"type": "number", "description": "持仓成本价"},
+                    "signal": {"type": "string", "description": "对应信号（可选，用于自动定止盈止损位）"},
+                },
+                "required": ["code", "cost"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_set_alert",
+            "description": "当用户想为某只持仓设置/调整止盈止损提醒点位时，提议设置提醒。这是提议，不会立即执行，需用户确认。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "6 位股票代码"},
+                    "take_profit_pct": {"type": "number", "description": "止盈百分比，如 6 表示 +6%（可选）"},
+                    "stop_loss_pct": {"type": "number", "description": "止损百分比，如 -4 表示 -4%（可选）"},
+                },
+                "required": ["code"],
+            },
+        },
+    },
+]
+
+# 写工具名 → 给用户看的动作类型（前端据此渲染确认卡片）
+WRITE_TOOL_ACTIONS = {
+    "propose_record_decision": "record_decision",
+    "propose_add_watch": "add_watch",
+    "propose_set_alert": "set_alert",
+}
+
+
+
 class ToolContext:
     """工具执行所需的运行时依赖（避免循环 import，由调用方注入）。"""
 
     def __init__(self, collector=None, extract_stock_context: Optional[Callable] = None,
-                 select_stocks: Optional[Callable] = None, get_signal_store: Optional[Callable] = None):
+                 select_stocks: Optional[Callable] = None, get_signal_store: Optional[Callable] = None,
+                 enable_write: bool = False):
         self.collector = collector
         self.extract_stock_context = extract_stock_context   # app._extract_stock_context
         self.select_stocks = select_stocks                   # stock_selector.select_stocks
         self.get_signal_store = get_signal_store             # signals.get_signal_store
+        self.enable_write = enable_write                     # 是否放开写类工具
+        self.pending_actions = []                            # 收集 Agent 提议的待确认动作
+
+
+def _tool_propose(name: str, args: dict, ctx: ToolContext) -> str:
+    """写类工具的提议式执行：登记待确认动作，返回给 LLM 的确认提示（不落库）。"""
+    action_type = WRITE_TOOL_ACTIONS.get(name)
+    if not action_type:
+        return f"未知写工具: {name}"
+    import re
+    code = str(args.get("code", "")).strip()
+    if not re.match(r"^\d{6}$", code):
+        return f"股票代码 {code} 格式错误（需 6 位数字），未生成动作"
+    ctx.pending_actions.append({"type": action_type, "params": dict(args)})
+    labels = {"record_decision": "记入决策飞轮", "add_watch": "加入持仓盯盘", "set_alert": "设置止盈止损提醒"}
+    return (f"已为 {code} 生成「{labels.get(action_type, action_type)}」的待确认动作。"
+            f"请在回复中简要说明该动作，并提示用户需点击确认后才会执行。")
 
 
 # ── 工具执行器 ────────────────────────────────────────────────
@@ -117,6 +202,9 @@ def execute_tool(name: str, args: dict, ctx: ToolContext) -> str:
 
     带 60s TTL 缓存：同一 (工具,参数) 短时间内重复调用直接命中缓存。
     """
+    # 写类工具：提议式，不缓存、不直接落库
+    if name in WRITE_TOOL_ACTIONS:
+        return _tool_propose(name, args, ctx)
     cache_key = f"{name}:{json.dumps(args, ensure_ascii=False, sort_keys=True)}"
     cached = _cache_get(cache_key)
     if cached is not None:

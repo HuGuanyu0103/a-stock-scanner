@@ -798,9 +798,13 @@ class DecisionAgent:
         if not self._init_client():
             return None
         try:
-            from .agent_tools import TOOL_SCHEMAS, execute_tool
+            from .agent_tools import TOOL_SCHEMAS, WRITE_TOOL_SCHEMAS, execute_tool
         except ImportError:
-            from agent_tools import TOOL_SCHEMAS, execute_tool  # type: ignore
+            from agent_tools import TOOL_SCHEMAS, WRITE_TOOL_SCHEMAS, execute_tool  # type: ignore
+
+        # 是否放开写类工具（Agent 可提议记录决策/加盯盘/设提醒，需用户确认后执行）
+        write_on = getattr(tool_ctx, "enable_write", False)
+        active_tools = TOOL_SCHEMAS + WRITE_TOOL_SCHEMAS if write_on else TOOL_SCHEMAS
 
         system_msg = (
             SYSTEM_PROMPT
@@ -810,6 +814,9 @@ class DecisionAgent:
             "  需要推荐个股时调用 get_candidate_pool；需要大盘研判时调用 get_market_signals。\n"
             "- 可多次调用工具直到信息足够，再给出最终结论。\n"
             "- 禁止编造数据；工具返回失败时如实说明，不要虚构点位。\n"
+            + ("- 当用户明确表达『看好要买/帮我盯着/设提醒』等意图时，可调用 propose_* 工具生成"
+               "待确认动作（记录决策/加盯盘/设提醒）；这些动作不会立即执行，需用户确认。"
+               "不要在用户只是咨询、未表达执行意图时擅自调用写工具。\n" if write_on else "")
             + (f"\n\n=== 背景数据 ===\n{base_context}" if base_context else "")
         )
         messages = [{"role": "system", "content": system_msg}]
@@ -836,7 +843,7 @@ class DecisionAgent:
                 resp = self._client.chat.completions.create(
                     model=self._model,
                     messages=messages,
-                    tools=TOOL_SCHEMAS,
+                    tools=active_tools,
                     tool_choice="auto",
                     temperature=0.5,
                     max_tokens=3000,
@@ -912,7 +919,8 @@ class DecisionAgent:
 
         usage["cost_cny"] = round(usage["cost_cny"], 6)
         return {"reply": reply or "", "tool_trace": tool_trace,
-                "iterations": iterations, "usage": usage, "corrected": corrected}
+                "iterations": iterations, "usage": usage, "corrected": corrected,
+                "pending_actions": list(getattr(tool_ctx, "pending_actions", []))}
 
     @staticmethod
     def _exec_tools_concurrent(tool_calls, tool_ctx, execute_tool, tool_trace) -> list:
@@ -971,9 +979,12 @@ class DecisionAgent:
             yield {"type": "error"}
             return
         try:
-            from .agent_tools import TOOL_SCHEMAS, execute_tool
+            from .agent_tools import TOOL_SCHEMAS, WRITE_TOOL_SCHEMAS, execute_tool
         except ImportError:
-            from agent_tools import TOOL_SCHEMAS, execute_tool  # type: ignore
+            from agent_tools import TOOL_SCHEMAS, WRITE_TOOL_SCHEMAS, execute_tool  # type: ignore
+
+        write_on = getattr(tool_ctx, "enable_write", False)
+        active_tools = TOOL_SCHEMAS + WRITE_TOOL_SCHEMAS if write_on else TOOL_SCHEMAS
 
         system_msg = (
             SYSTEM_PROMPT
@@ -983,6 +994,8 @@ class DecisionAgent:
             "  需要推荐个股时调用 get_candidate_pool；需要大盘研判时调用 get_market_signals。\n"
             "- 可多次调用工具直到信息足够，再给出最终结论。\n"
             "- 禁止编造数据；工具返回失败时如实说明，不要虚构点位。\n"
+            + ("- 当用户明确表达『看好要买/帮我盯着/设提醒』等意图时，可调用 propose_* 工具生成"
+               "待确认动作；这些动作不会立即执行，需用户确认。用户仅咨询时不要擅自调用。\n" if write_on else "")
             + (f"\n\n=== 背景数据 ===\n{base_context}" if base_context else "")
         )
         messages = [{"role": "system", "content": system_msg}]
@@ -1009,7 +1022,7 @@ class DecisionAgent:
             try:
                 resp = self._client.chat.completions.create(
                     model=self._model, messages=messages,
-                    tools=TOOL_SCHEMAS, tool_choice="auto",
+                    tools=active_tools, tool_choice="auto",
                     temperature=0.5, max_tokens=3000,
                 )
             except Exception as e:
@@ -1103,7 +1116,8 @@ class DecisionAgent:
         usage["cost_cny"] = round(usage["cost_cny"], 6)
         yield {"type": "done", "reply": full_reply, "tool_trace": tool_trace,
                "iterations": min(iteration + 1, max_iterations),
-               "usage": usage, "corrected": corrected}
+               "usage": usage, "corrected": corrected,
+               "pending_actions": list(getattr(tool_ctx, "pending_actions", []))}
 
 
 

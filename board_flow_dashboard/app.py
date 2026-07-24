@@ -2298,6 +2298,7 @@ def api_agent_chat_agent():
         extract_stock_context=_extract_stock_context,
         select_stocks=select_stocks,
         get_signal_store=get_signal_store,
+        enable_write=True,
     )
 
     # 服务端会话记忆 + 用户画像
@@ -2352,6 +2353,7 @@ def api_agent_chat_agent():
         "corrected": result.get("corrected", False),
         "usage": result.get("usage", {}),
         "fallback": result.get("fallback", False),
+        "pending_actions": result.get("pending_actions", []),
     })
 
 
@@ -2385,6 +2387,7 @@ def api_agent_chat_agent_stream():
         extract_stock_context=_extract_stock_context,
         select_stocks=select_stocks,
         get_signal_store=get_signal_store,
+        enable_write=True,
     )
 
     history = mem.get_history(session_id)
@@ -2422,6 +2425,7 @@ def api_agent_chat_agent_stream():
                         "iterations": ev.get("iterations", 0),
                         "usage": ev.get("usage", {}),
                         "corrected": ev.get("corrected", False),
+                        "pending_actions": ev.get("pending_actions", []),
                     })
                 elif t == "error":
                     errored = True
@@ -2530,6 +2534,69 @@ def api_agent_eval():
     except ImportError:
         from agent_eval import run_eval  # type: ignore
     return jsonify(run_eval(limit=int(limit) if limit else None, runs=int(runs)))
+
+
+@app.route("/api/agent/action/execute", methods=["POST"])
+def api_agent_action_execute():
+    """执行 Agent 提议的、已被用户确认的写动作（记录决策/加盯盘/设提醒）。
+
+    这是「提议-确认-执行」安全链路的执行端：Agent 只能提议（propose_*），
+    真正落库必须由用户在前端确认后打这个端点，写操作的控制权始终在用户手里。
+
+    body: {"type": "record_decision|add_watch|set_alert", "params": {...}}
+    """
+    body = request.get_json(silent=True) or {}
+    action_type = (body.get("type") or "").strip()
+    params = body.get("params") or {}
+    code = str(params.get("code", "")).strip()
+    if not re.match(r"^\d{6}$", code):
+        return jsonify({"ok": False, "error": "股票代码格式错误"}), 400
+
+    try:
+        if action_type == "record_decision":
+            ds = get_decision_store()
+            did = ds.record_decision(
+                stock_code=code,
+                stock_name=params.get("name", ""),
+                entry_price=float(params.get("entry_price", 0)),
+                signal=params.get("signal", ""),
+                source="agent_confirmed",
+                notes=params.get("reason", ""),
+            )
+            return jsonify({"ok": True, "action": action_type, "id": did,
+                            "message": f"已将 {code} 记入决策飞轮"})
+
+        if action_type == "add_watch":
+            r = position_watcher.add_position(
+                code=code,
+                name=params.get("name", ""),
+                cost=float(params.get("cost", 0)),
+                signal=params.get("signal", ""),
+                source="agent_confirmed",
+            )
+            if not r.get("ok"):
+                return jsonify(r), 400
+            return jsonify({"ok": True, "action": action_type, **r,
+                            "message": f"已将 {code} 加入持仓盯盘"})
+
+        if action_type == "set_alert":
+            # 找到该 code 的在盯持仓，更新止盈止损
+            positions = position_watcher.get_positions()
+            target = next((p for p in positions if p.get("stock_code") == code), None)
+            if not target:
+                return jsonify({"ok": False, "error": f"{code} 不在盯盘列表，请先加入盯盘"}), 400
+            r = position_watcher.update_stops(
+                pid=target["id"],
+                take_profit_pct=params.get("take_profit_pct"),
+                stop_loss_pct=params.get("stop_loss_pct"),
+            )
+            return jsonify({"ok": True, "action": action_type, **r,
+                            "message": f"已更新 {code} 的止盈止损提醒"})
+
+        return jsonify({"ok": False, "error": f"未知动作类型: {action_type}"}), 400
+    except Exception as e:
+        logger.error("执行 Agent 动作失败: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 

@@ -714,6 +714,21 @@ body {
 .agent-badge.warn { background: rgba(234,134,0,0.12); color: #b26a00; }
 .agent-badge .material-symbols-outlined { font-size: 13px; }
 
+/* Agent 待确认动作卡片 */
+.agent-actions { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.agent-action-card { border: 1px solid var(--accent); border-radius: 10px; padding: 10px 12px; background: var(--accent-light); }
+.aa-head { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--accent); margin-bottom: 4px; }
+.aa-head .material-symbols-outlined { font-size: 16px; }
+.aa-detail { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }
+.aa-btns { display: flex; gap: 8px; align-items: center; }
+.aa-confirm { background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 4px 14px; font-size: 12px; cursor: pointer; }
+.aa-confirm:hover { opacity: 0.9; }
+.aa-cancel { background: transparent; color: var(--text-tertiary); border: 1px solid var(--border); border-radius: 6px; padding: 4px 12px; font-size: 12px; cursor: pointer; }
+.aa-done { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.aa-done.ok { color: #2a8544; }
+.aa-done.err { color: #d33; }
+.aa-done .material-symbols-outlined { font-size: 15px; }
+
 /* Risk disclaimer */
 .risk-disclaimer {
   font-size: 10px; color: var(--text-tertiary); padding: 10px 24px;
@@ -3271,6 +3286,9 @@ async function sendChatAgent(msg) {
           msgs.scrollTop = msgs.scrollHeight;
         } else if (evt.type === 'done') {
           renderAgentMeta(metaEl, evt);
+          if (evt.pending_actions && evt.pending_actions.length) {
+            renderAgentActions(wrap.querySelector('.msg-bubble'), evt.pending_actions);
+          }
         }
       }
     }
@@ -3304,6 +3322,64 @@ function renderAgentMeta(metaEl, evt) {
   else if (v.issues && v.issues.length) badges.push(`<span class="agent-badge warn"><span class="material-symbols-outlined">warning</span>${v.issues.length} 项待改进</span>`);
   if (evt.fallback) badges.push(`<span class="agent-badge">降级基础问答</span>`);
   if (badges.length) { metaEl.innerHTML = badges.join(''); metaEl.style.display = 'flex'; }
+}
+
+// Agent 提议的待确认动作卡片（提议-确认-执行安全链路的前端确认端）
+const AGENT_ACTION_META = {
+  record_decision: { icon: 'flag', label: '记入决策飞轮' },
+  add_watch:       { icon: 'visibility', label: '加入持仓盯盘' },
+  set_alert:       { icon: 'notifications', label: '设置止盈止损提醒' },
+};
+
+function renderAgentActions(bubbleEl, actions) {
+  const box = document.createElement('div');
+  box.className = 'agent-actions';
+  actions.forEach((act, i) => {
+    const meta = AGENT_ACTION_META[act.type] || { icon: 'bolt', label: act.type };
+    const p = act.params || {};
+    const parts = [];
+    if (p.name || p.code) parts.push(`${p.name || ''} ${p.code || ''}`.trim());
+    if (p.entry_price != null) parts.push(`买入价 ${p.entry_price}`);
+    if (p.cost != null) parts.push(`成本 ${p.cost}`);
+    if (p.take_profit_pct != null) parts.push(`止盈 ${p.take_profit_pct}%`);
+    if (p.stop_loss_pct != null) parts.push(`止损 ${p.stop_loss_pct}%`);
+    if (p.reason) parts.push(p.reason);
+    const card = document.createElement('div');
+    card.className = 'agent-action-card';
+    card.innerHTML = `
+      <div class="aa-head"><span class="material-symbols-outlined">${meta.icon}</span>
+        <b>${meta.label}</b></div>
+      <div class="aa-detail">${parts.join(' · ') || '(无参数)'}</div>
+      <div class="aa-btns">
+        <button class="aa-confirm">确认执行</button>
+        <button class="aa-cancel">忽略</button>
+      </div>`;
+    const confirmBtn = card.querySelector('.aa-confirm');
+    const cancelBtn = card.querySelector('.aa-cancel');
+    confirmBtn.onclick = () => executeAgentAction(act, card);
+    cancelBtn.onclick = () => { card.querySelector('.aa-btns').innerHTML = '<span class="aa-done">已忽略</span>'; };
+    box.appendChild(card);
+  });
+  bubbleEl.appendChild(box);
+}
+
+async function executeAgentAction(act, card) {
+  const btns = card.querySelector('.aa-btns');
+  btns.innerHTML = '<span class="aa-done">执行中…</span>';
+  try {
+    const r = await fetch('/api/agent/action/execute', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(act)
+    });
+    const d = await r.json();
+    if (d.ok) {
+      btns.innerHTML = `<span class="aa-done ok"><span class="material-symbols-outlined">check_circle</span>${d.message || '已执行'}</span>`;
+    } else {
+      btns.innerHTML = `<span class="aa-done err">执行失败：${d.error || '未知错误'}</span>`;
+    }
+  } catch(e) {
+    btns.innerHTML = '<span class="aa-done err">网络错误，请重试</span>';
+  }
 }
 
 // 流式诊断卡片壳子——立即显示结构，内容渐进填充
