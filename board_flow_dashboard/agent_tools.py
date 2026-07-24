@@ -224,8 +224,8 @@ def execute_tool(name: str, args: dict, ctx: ToolContext) -> str:
     except Exception as e:
         logger.warning("工具 %s 执行失败: %s", name, e)
         return f"工具 {name} 执行失败: {e}（可基于其他信息回答，或提示数据暂不可用）"
-    # 失败/空数据文本不缓存，避免掩盖数据源恢复
-    if result and not any(k in result[:20] for k in ("未能获取", "未找到", "执行失败", "未接入", "格式错误")):
+    # 失败/空数据文本不缓存，避免掩盖数据源恢复（整串匹配，失败关键词可能不在前缀）
+    if result and not any(k in result for k in ("未能获取", "未找到", "执行失败", "未接入", "格式错误")):
         _cache_set(cache_key, result)
     return result
 

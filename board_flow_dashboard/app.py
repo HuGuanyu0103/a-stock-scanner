@@ -2590,6 +2590,8 @@ def api_agent_action_execute():
                 take_profit_pct=params.get("take_profit_pct"),
                 stop_loss_pct=params.get("stop_loss_pct"),
             )
+            if not r.get("ok"):
+                return jsonify(r), 400
             return jsonify({"ok": True, "action": action_type, **r,
                             "message": f"已更新 {code} 的止盈止损提醒"})
 

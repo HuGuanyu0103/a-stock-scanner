@@ -189,15 +189,15 @@ _OPS = {
 def match_signal(stock: dict, rules: list, default: str = "") -> str:
     """按规则表顺序匹配信号：第一条所有条件都满足的规则即命中。
 
-    stock 字段缺失按 0 处理（与原 `s.get(k) or 0` 一致，intraday_position 缺省 0.5）。
+    stock 字段缺失或为假值(0/None)按缺省处理，与原 `s.get(k) or 0`
+    （intraday_position 为 `or 0.5`）逐一对齐——注意用 `or` 而非 `is None`：
+    真实值 0.0 也会被替换为缺省，这是与旧 if/elif 链保持零行为变化的关键。
     """
     for name, conds in rules:
         ok = True
         for factor, (op, thr) in conds.items():
             default_val = 0.5 if factor == "intraday_position" else 0
-            val = stock.get(factor)
-            if val is None:
-                val = default_val
+            val = stock.get(factor) or default_val
             if not _OPS[op](val, thr):
                 ok = False
                 break
