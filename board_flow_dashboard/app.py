@@ -2515,6 +2515,24 @@ def api_loop_tuning():
     return jsonify(get_tuning_report(store=get_decision_store()))
 
 
+@app.route("/api/agent/eval", methods=["POST"])
+def api_agent_eval():
+    """跑 Agent 离线评估集，返回评估报告（回答「怎么证明 Agent 好不好」）。
+
+    body: {"limit": N}  可选，只跑前 N 个 case（快速冒烟）。
+    评估在 mock 工具上下文下运行，聚焦推理链路与工具选择质量。
+    """
+    body = request.get_json(silent=True) or {}
+    limit = body.get("limit")
+    runs = body.get("runs", 1)
+    try:
+        from .agent_eval import run_eval
+    except ImportError:
+        from agent_eval import run_eval  # type: ignore
+    return jsonify(run_eval(limit=int(limit) if limit else None, runs=int(runs)))
+
+
+
 @app.route("/api/loop/exit", methods=["POST"])
 def api_loop_exit():
     """手动标记退出。"""
