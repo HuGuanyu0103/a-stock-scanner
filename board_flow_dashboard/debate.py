@@ -8,9 +8,11 @@ Multi-Agent 辩论系统
   NewsAnalyst     — 只看消息面信号
   Moderator       — 聚合三方意见，输出共识/分歧报告
 
-辩论流程：
-  1. 三个分析师各自独立发表意见（只看自己领域的数据）
-  2. Moderator 阅读所有意见 + 完整候选池 → 给出共识判断
+辩论流程（真辩论，三阶段）：
+  1. 三个分析师各自独立发表初始意见（只看自己领域的数据，互不可见）
+  2. 反驳轮：每个分析师看到另外两位的观点后，进行反驳/补充/让步/坚持
+  3. Moderator 基于「初始意见 + 辩论反驳」收敛出共识/分歧报告
+     （rounds=0 可退化为旧的「并行发言→聚合」，向后兼容）
 
 用法:
   from debate import DebateOrchestrator
@@ -188,6 +190,39 @@ MODERATOR_SYSTEM_PROMPT = """你是 A 股决策委员会的主席「观澜」。
 
 
 # ═══════════════════════════════════════════════════════════════
+# 反驳轮 System Prompt（真辩论的核心：分析师之间互相看见、互相质疑）
+# ═══════════════════════════════════════════════════════════════
+
+REBUT_SYSTEM_PROMPT = """你是 A 股决策委员会中的分析师「{analyst}」（{domain}）。
+
+这是一场**真辩论**：你已发表了初始意见，现在你看到了另外两位分析师的观点。
+请基于你的专业立场（{domain}）对他们的观点做出回应——这是辩论的反驳环节。
+
+## 你要做的
+1. **反驳**：另外两位哪些判断你从专业角度不认同？为什么？（用你领域的证据）
+2. **补充**：他们忽略了哪些你领域的关键信息？
+3. **让步**：他们哪些观点有道理、让你修正了初始看法？（诚实的分析师会承认对方的合理之处）
+4. **坚持**：你依然坚持的核心判断是什么？
+
+## 重要
+- 保持你的性格与专业视角，但不要为了反对而反对——辩论的目的是逼近真相，不是赢。
+- 如果对方在你领域之外的判断你无法评价，就明说「这不在我的领域」。
+
+## 输出格式
+严格 JSON：
+{{
+  "analyst": "{analyst}",
+  "rebuttals": [
+    {{"target": "观象|观势|观闻", "point": "你反驳的对方观点", "argument": "你的专业依据"}}
+  ],
+  "supplements": ["你补充的关键信息"],
+  "concessions": ["你被说服/修正的点，没有则空数组"],
+  "revised_view": "辩论后你修正/强化后的核心判断（一句话）"
+}}
+"""
+
+
+# ═══════════════════════════════════════════════════════════════
 # 数据提取器 — 为每个分析师准备专属上下文
 # ═══════════════════════════════════════════════════════════════
 
@@ -310,21 +345,28 @@ class DebateOrchestrator:
         signals: dict,
         hot_sectors: list[str],
         breadth: float = 0.5,
+        rounds: int = 1,
     ) -> Optional[dict]:
         """运行完整辩论流程。
+
+        Args:
+            rounds: 反驳轮数。0 = 退化为旧的「并行发言→聚合」（向后兼容）；
+                    ≥1 = 真辩论：分析师看到彼此观点后互相反驳/补充/让步，再由主席收敛。
 
         Returns:
             {
                 "analysts": {"tech": {...}, "sentiment": {...}, "news": {...}},
+                "rebuttals": {"tech": {...}, ...}   # rounds≥1 时才有
                 "moderator": {...},
                 "consensus_level": str,
+                "rounds": int,
                 "timestamp": str,
             }
         """
         if not self._init_client():
             return None
 
-        # Step 1: 三位分析师并行发表意见
+        # Step 1: 三位分析师各自独立发表初始意见（只看自己领域数据）
         tech_data = DataExtractor.for_tech(candidates)
         sent_data = DataExtractor.for_sentiment(signals, breadth)
         news_data = DataExtractor.for_news(signals)
@@ -336,11 +378,29 @@ class DebateOrchestrator:
         if not tech_opinion and not sent_opinion and not news_opinion:
             return None
 
-        # Step 2: Moderator 阅读所有意见并做出综合判断
+        # Step 2: 反驳轮（真辩论核心）——每位分析师看到另外两位观点后回应
+        rebuttals = {}
+        if rounds >= 1:
+            opinions = {"tech": tech_opinion, "sentiment": sent_opinion, "news": news_opinion}
+            metas = {
+                "tech": ("观象", "技术+资金面"),
+                "sentiment": ("观势", "情绪面"),
+                "news": ("观闻", "消息面"),
+            }
+            for role, (name, domain) in metas.items():
+                if not opinions[role]:
+                    continue
+                others = {metas[r][0]: op for r, op in opinions.items() if r != role and op}
+                reb = self._rebut(name, domain, opinions[role], others)
+                if reb:
+                    rebuttals[role] = reb
+
+        # Step 3: Moderator 基于「初始意见 + 辩论反驳」综合收敛
         moderator_opinion = self._moderate(
             tech_opinion, sent_opinion, news_opinion,
             DataExtractor.for_tech(candidates, top_n=15),
             hot_sectors,
+            rebuttals=rebuttals,
         )
 
         return {
@@ -349,10 +409,39 @@ class DebateOrchestrator:
                 "sentiment": sent_opinion or {"error": "分析师不可用"},
                 "news": news_opinion or {"error": "分析师不可用"},
             },
+            "rebuttals": rebuttals,
             "moderator": moderator_opinion or {"error": "主席不可用"},
             "consensus_level": (moderator_opinion or {}).get("consensus_level", "未知"),
+            "rounds": rounds,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+
+    def _rebut(self, name: str, domain: str, own: dict, others: dict) -> Optional[dict]:
+        """反驳轮：分析师看到另外两位观点后做出专业回应。"""
+        own_str = json.dumps(own, ensure_ascii=False, indent=2)
+        others_str = "\n\n".join(
+            f"=== {n} 的观点 ===\n{json.dumps(op, ensure_ascii=False, indent=2)}"
+            for n, op in others.items()
+        )
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": REBUT_SYSTEM_PROMPT.format(analyst=name, domain=domain)},
+                    {"role": "user", "content": (
+                        f"你的初始意见：\n{own_str}\n\n"
+                        f"另外两位分析师的观点：\n{others_str}\n\n"
+                        "请做出你的辩论回应，严格按 JSON 输出。"
+                    )},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.4,
+                max_tokens=1500,
+            )
+            return self._parse_json(resp.choices[0].message.content)
+        except Exception as e:
+            logger.warning("反驳轮 %s 调用失败: %s", name, e)
+            return None
 
     def _ask_analyst(self, role: str, system_prompt: str, data: str) -> Optional[dict]:
         """询问一位分析师。"""
@@ -383,16 +472,27 @@ class DebateOrchestrator:
         news: Optional[dict],
         full_data: str,
         hot_sectors: list[str],
+        rebuttals: dict = None,
     ) -> Optional[dict]:
-        """Moderator 综合三方意见。"""
+        """Moderator 综合三方意见（含辩论反驳）。"""
         tech_str = json.dumps(tech, ensure_ascii=False, indent=2) if tech else "无数据"
         sent_str = json.dumps(sentiment, ensure_ascii=False, indent=2) if sentiment else "无数据"
         news_str = json.dumps(news, ensure_ascii=False, indent=2) if news else "无数据"
 
         context = (
-            f"=== 技术分析师（观象）=== \n{tech_str}\n\n"
-            f"=== 情绪分析师（观势）=== \n{sent_str}\n\n"
-            f"=== 消息分析师（观闻）=== \n{news_str}\n\n"
+            f"=== 技术分析师（观象）初始意见 === \n{tech_str}\n\n"
+            f"=== 情绪分析师（观势）初始意见 === \n{sent_str}\n\n"
+            f"=== 消息分析师（观闻）初始意见 === \n{news_str}\n\n"
+        )
+        # 把辩论反驳轮纳入主席视野——这是真辩论区别于并行聚合的关键
+        if rebuttals:
+            reb_str = json.dumps(rebuttals, ensure_ascii=False, indent=2)
+            context += (
+                f"=== 辩论反驳轮（分析师看到彼此观点后的回应）=== \n{reb_str}\n\n"
+                "注意：请重点参考辩论环节中的反驳、让步与修正后观点——"
+                "被对方说服的让步、无人反驳的共识，比初始意见更可信。\n\n"
+            )
+        context += (
             f"=== 完整候选池 === \n{full_data}\n\n"
             f"=== 当前热板块 === \n{hot_sectors[:8]}"
         )
@@ -403,7 +503,7 @@ class DebateOrchestrator:
                 messages=[
                     {"role": "system", "content": MODERATOR_SYSTEM_PROMPT},
                     {"role": "user", "content": (
-                        f"请综合三位分析师的意见和完整候选池数据，给出最终决策建议。\n\n{context}\n\n"
+                        f"请综合三位分析师的意见、辩论反驳轮和完整候选池数据，给出最终决策建议。\n\n{context}\n\n"
                         "严格按照 JSON 格式输出。"
                     )},
                 ],
