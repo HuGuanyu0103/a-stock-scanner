@@ -729,6 +729,51 @@ body {
 .aa-done.err { color: #d33; }
 .aa-done .material-symbols-outlined { font-size: 15px; }
 
+/* Agent 实验室 */
+.lab-card { padding: 18px 20px; }
+.lab-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.lab-card-head h3 { display: flex; align-items: center; gap: 6px; font-size: 15px; margin: 0 0 4px 0; }
+.lab-card-head h3 .material-symbols-outlined { font-size: 19px; color: var(--accent); }
+.lab-sub { font-size: 12px; color: var(--text-tertiary); margin: 0; line-height: 1.5; max-width: 560px; }
+.lab-run-btn { flex-shrink: 0; display: inline-flex; align-items: center; gap: 5px; border: none; background: var(--accent);
+  color: #fff; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.lab-run-btn:hover { opacity: 0.9; }
+.lab-run-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.lab-run-btn .material-symbols-outlined { font-size: 17px; }
+.spin { animation: labspin 0.9s linear infinite; }
+@keyframes labspin { to { transform: rotate(360deg); } }
+.lab-result { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-light); }
+.lab-loading { font-size: 13px; color: var(--text-secondary); padding: 12px 0; }
+.lab-err { font-size: 13px; color: #d33; padding: 8px 0; }
+/* eval 结果 */
+.eval-summary { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.eval-metric { flex: 1; min-width: 90px; background: var(--surface-low); border-radius: 10px; padding: 12px; text-align: center; }
+.em-val { display: block; font-size: 22px; font-weight: 700; color: var(--accent); }
+.em-lbl { display: block; font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
+.eval-dims { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }
+.eval-cats { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.eval-cat { font-size: 11px; background: var(--accent-light); color: var(--accent); padding: 3px 9px; border-radius: 10px; }
+.eval-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.eval-table th { text-align: left; color: var(--text-tertiary); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--border-light); }
+.eval-table td { padding: 6px 8px; border-bottom: 1px solid var(--surface-container); }
+.eval-flag { font-weight: 700; }
+.eval-flag.ok { color: #2a8544; } .eval-flag.warn { color: #b26a00; } .eval-flag.bad { color: #d33; }
+.eval-caserr { color: #d33; }
+/* debate 结果 */
+.debate-verdict { background: var(--accent-light); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+.dv-head { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--accent); margin-bottom: 8px; }
+.dv-head .material-symbols-outlined { font-size: 18px; }
+.dv-row { display: flex; gap: 10px; font-size: 13px; margin-bottom: 6px; }
+.dv-row span { color: var(--text-tertiary); }
+.dv-line { font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
+.debate-analysts { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.da-card { border: 1px solid var(--border-light); border-radius: 10px; padding: 12px; }
+.da-name { font-size: 13px; font-weight: 600; color: var(--accent); margin-bottom: 6px; }
+.da-view { font-size: 12px; color: var(--text); margin-bottom: 8px; line-height: 1.5; }
+.da-reb, .da-concede, .da-revised { font-size: 11px; color: var(--text-secondary); line-height: 1.5; margin-top: 4px; }
+.da-reb b { color: #b26a00; } .da-concede b { color: #2a8544; } .da-revised b { color: var(--accent); }
+.da-err { font-size: 12px; color: var(--text-tertiary); }
+
 /* Risk disclaimer */
 .risk-disclaimer {
   font-size: 10px; color: var(--text-tertiary); padding: 10px 24px;
@@ -1177,6 +1222,9 @@ document.addEventListener('DOMContentLoaded', function() {
     <a onclick="switchLeftTab('watch');syncSidebar(this)">
       <span class="material-symbols-outlined">visibility</span> 持仓盯盘
     </a>
+    <a onclick="switchLeftTab('lab');syncSidebar(this)">
+      <span class="material-symbols-outlined">science</span> Agent 实验室
+    </a>
   </nav>
   <div style="margin:12px 8px;padding:8px 12px;border-radius:8px;background:var(--surface-container);font-size:10px;color:var(--text-tertiary)">
     <span class="material-symbols-outlined" style="font-size:14px;vertical-align:middle;margin-right:4px">schedule</span>
@@ -1345,9 +1393,46 @@ document.addEventListener('DOMContentLoaded', function() {
 
         <div id="watchList" style="margin-top:16px"><div class="loading">加载持仓中...</div></div>
       </div>
+
+      <!-- ── Agent 实验室 ── -->
+      <div id="tabLab" style="display:none">
+        <div class="section-header">
+          <div class="section-header-left">
+            <h2>Agent 实验室</h2>
+            <p>观澜 Agent 的能力度量与多智能体决策 · 面向"怎么证明 Agent 好不好"</p>
+          </div>
+        </div>
+
+        <!-- 评估体系卡片 -->
+        <div class="soft-card lab-card" style="margin-top:16px">
+          <div class="lab-card-head">
+            <div>
+              <h3><span class="material-symbols-outlined">fact_check</span> Agent 离线评估（Eval）</h3>
+              <p class="lab-sub">用 LLM-as-judge 对典型问题集打分：工具调用合理性 + 有据性/相关性/无幻觉/可执行性四维</p>
+            </div>
+            <button class="lab-run-btn" onclick="runAgentEval()" id="evalRunBtn">
+              <span class="material-symbols-outlined">play_arrow</span>运行评估
+            </button>
+          </div>
+          <div id="evalResult" class="lab-result" style="display:none"></div>
+        </div>
+
+        <!-- 多Agent辩论卡片 -->
+        <div class="soft-card lab-card" style="margin-top:16px">
+          <div class="lab-card-head">
+            <div>
+              <h3><span class="material-symbols-outlined">groups</span> 多 Agent 决策委员会（真辩论）</h3>
+              <p class="lab-sub">观象/观势/观闻三分析师独立发言 → 互相反驳/让步 → 主席收敛，用视角分工降低单模型偏见</p>
+            </div>
+            <button class="lab-run-btn" onclick="runAgentDebate()" id="debateRunBtn">
+              <span class="material-symbols-outlined">play_arrow</span>发起辩论
+            </button>
+          </div>
+          <div id="debateResult" class="lab-result" style="display:none"></div>
+        </div>
+      </div>
     </div>
 
-    <!-- ── RIGHT PANEL: AI ── -->
     <div class="right-panel" id="rightPanel">
       <div class="ai-header">
         <div class="ai-header-left">
@@ -1444,6 +1529,7 @@ function switchLeftTab(tab) {
   }
   document.getElementById('tabWatchlist').style.display = tab === 'watchlist' ? '' : 'none';
   document.getElementById('tabWatch').style.display = tab === 'watch' ? '' : 'none';
+  document.getElementById('tabLab').style.display = tab === 'lab' ? '' : 'none';
   // 已预加载则直接渲染，未加载才拉取
   if (tab === 'picks') {
     if (window._lastPicksData) renderPicks(window._lastPicksData);
@@ -1458,6 +1544,119 @@ function switchLeftTab(tab) {
     if (sectorChart) setTimeout(() => sectorChart.resize(), 100);
     if (sectorData && sectorData.is_trading) scheduleDeltaPoll();
   }
+}
+
+// ── Agent 实验室：评估 + 真辩论 ──────────────────────────
+async function runAgentEval() {
+  const btn = document.getElementById('evalRunBtn');
+  const box = document.getElementById('evalResult');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="material-symbols-outlined spin">progress_activity</span>评估中…';
+  box.style.display = 'block';
+  box.innerHTML = '<div class="lab-loading">正在跑评估集，用裁判模型逐题打分，约需 1-2 分钟…</div>';
+  try {
+    const r = await fetch('/api/agent/eval', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({})
+    });
+    const d = await r.json();
+    if (d.error) { box.innerHTML = `<div class="lab-err">评估失败：${d.error}</div>`; return; }
+    box.innerHTML = renderEvalReport(d);
+  } catch(e) {
+    box.innerHTML = `<div class="lab-err">请求失败：${e.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<span class="material-symbols-outlined">replay</span>重新评估';
+  }
+}
+
+function renderEvalReport(d) {
+  const dim = d.judge_dimensions || {};
+  const cat = d.category_scores || {};
+  let html = `<div class="eval-summary">
+    <div class="eval-metric"><span class="em-val">${d.avg_score}</span><span class="em-lbl">综合均分</span></div>
+    <div class="eval-metric"><span class="em-val">${d.tool_pass_rate}%</span><span class="em-lbl">工具合格率</span></div>
+    <div class="eval-metric"><span class="em-val">${d.quality_pass_rate}%</span><span class="em-lbl">规则合格率</span></div>
+    <div class="eval-metric"><span class="em-val">¥${d.total_cost_cny}</span><span class="em-lbl">总成本</span></div>
+  </div>`;
+  if (Object.keys(dim).length) {
+    html += `<div class="eval-dims"><b>裁判四维(1-5)</b>：`
+      + `有据 ${dim.groundedness} · 相关 ${dim.relevance} · 无幻觉 ${dim.no_hallucination} · 可执行 ${dim.actionability}</div>`;
+  }
+  if (Object.keys(cat).length) {
+    html += `<div class="eval-cats">` + Object.entries(cat).map(([k,v]) =>
+      `<span class="eval-cat">${k} <b>${v}</b></span>`).join('') + `</div>`;
+  }
+  html += `<table class="eval-table"><thead><tr><th>用例</th><th>分</th><th>工具</th><th>裁判均</th></tr></thead><tbody>`;
+  (d.results || []).forEach(r => {
+    if (r.error) { html += `<tr><td>${r.id||'?'}</td><td colspan="3" class="eval-caserr">错误: ${r.error}</td></tr>`; return; }
+    const flag = r.score >= 70 ? '✓' : (r.score >= 50 ? '△' : '✗');
+    const flagCls = r.score >= 70 ? 'ok' : (r.score >= 50 ? 'warn' : 'bad');
+    const tools = (r.tools_called && r.tools_called.length) ? r.tools_called.length + '个' : '无';
+    html += `<tr><td><span class="eval-flag ${flagCls}">${flag}</span> ${r.id}</td>`
+      + `<td>${r.score}</td><td>${tools}</td><td>${r.judge_avg ?? '-'}</td></tr>`;
+  });
+  html += `</tbody></table>`;
+  return html;
+}
+
+async function runAgentDebate() {
+  const btn = document.getElementById('debateRunBtn');
+  const box = document.getElementById('debateResult');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="material-symbols-outlined spin">progress_activity</span>辩论中…';
+  box.style.display = 'block';
+  box.innerHTML = '<div class="lab-loading">三位分析师正在独立分析、互相反驳、主席收敛，约需 1-2 分钟…</div>';
+  try {
+    const r = await fetch('/api/agent/debate');
+    const d = await r.json();
+    if (d.error) { box.innerHTML = `<div class="lab-err">辩论失败：${d.error}</div>`; return; }
+    box.innerHTML = renderDebateReport(d);
+  } catch(e) {
+    box.innerHTML = `<div class="lab-err">请求失败：${e.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<span class="material-symbols-outlined">replay</span>重新辩论';
+  }
+}
+
+function renderDebateReport(d) {
+  const A = d.analysts || {}, R = d.rebuttals || {}, M = d.moderator || {};
+  const names = {tech: '观象·技术资金', sentiment: '观势·情绪', news: '观闻·消息'};
+  let html = '';
+  // 主席结论置顶
+  if (M && !M.error) {
+    const fd = M.final_decision || {};
+    html += `<div class="debate-verdict">
+      <div class="dv-head"><span class="material-symbols-outlined">gavel</span>
+        主席收敛 · <b>${M.consensus_level || '?'}</b></div>
+      <div class="dv-body">
+        <div class="dv-row"><span>决策</span><b>${fd.posture || '?'} / ${fd.position_advice || '?'}</b></div>
+        <div class="dv-line">${M.bottom_line || fd.key_reasoning || ''}</div>
+      </div></div>`;
+  }
+  // 三分析师初始立场 + 辩论反驳
+  html += `<div class="debate-analysts">`;
+  ['tech','sentiment','news'].forEach(k => {
+    const a = A[k] || {}; const reb = R[k];
+    if (a.error) { html += `<div class="da-card"><div class="da-name">${names[k]}</div><div class="da-err">不可用</div></div>`; return; }
+    const view = a.overall_view || a.advice || a.overall_rating || a.mood || '—';
+    html += `<div class="da-card"><div class="da-name">${names[k]}</div>
+      <div class="da-view">${view}</div>`;
+    if (reb) {
+      if (reb.rebuttals && reb.rebuttals.length) {
+        html += `<div class="da-reb"><b>反驳</b>：` + reb.rebuttals.slice(0,2).map(rb =>
+          `对${rb.target}—${(rb.point||'').slice(0,30)}`).join('；') + `</div>`;
+      }
+      if (reb.concessions && reb.concessions.length) {
+        html += `<div class="da-concede"><b>让步</b>：${reb.concessions[0].slice(0,50)}</div>`;
+      }
+      if (reb.revised_view) html += `<div class="da-revised"><b>修正后</b>：${reb.revised_view.slice(0,50)}</div>`;
+    }
+    html += `</div>`;
+  });
+  html += `</div>`;
+  return html;
 }
 
 // ── 持仓盯盘 ────────────────────────────────────────────
