@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""决策日志存储 — Loop Engineering + 影子模式 + 基准对照"""
+"""决策日志存储 — 决策数据飞轮(Data Flywheel) + 影子模式 + 基准对照
+
+命名澄清（避免与 loop engineering 混淆）：本模块是「决策数据飞轮」——
+推荐→结算→统计→反哺的**业务效果闭环**，时间尺度是天级/跨会话的离线循环，
+属 MLOps/增长语境的 data flywheel。它与 loop engineering（Agent 单次任务内的
+ReAct 执行循环，秒级，见 agent.py / debate.py 的 mini-loop）是两个不同层、
+不同时间尺度的「循环」，不要混为一谈。飞轮产出的历史胜率会反哺给辩论的
+观史分析师（见 debate.py），形成跨层闭环。
+"""
 from __future__ import annotations
 import json, logging, os, sqlite3, threading, time
 from datetime import datetime, date, timedelta

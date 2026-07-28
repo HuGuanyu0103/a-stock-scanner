@@ -109,7 +109,14 @@ TOOL_SCHEMAS = [
                 "『开个会/辩论一下/让分析师们讨论/帮我把关』时调用。此工具较重（多次模型调用），"
                 "仅在单点诊断不足以支撑决策、用户想要交叉验证时使用。"
             ),
-            "parameters": {"type": "object", "properties": {}},
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "focus": {"type": "string", "description":
+                              "用户的决策诉求原话或要点（如『帮我把关能不能进场』『重点看回撤风险』），"
+                              "供主席据此动态决定召集哪些分析师、下达取证重点。可选。"},
+                },
+            },
         },
     },
 ]
@@ -236,7 +243,7 @@ def execute_tool(name: str, args: dict, ctx: ToolContext) -> str:
         elif name == "get_market_signals":
             result = _tool_market_signals(ctx)
         elif name == "run_debate":
-            result = _tool_run_debate(ctx)
+            result = _tool_run_debate(ctx, args.get("focus", ""))
         else:
             return f"未知工具: {name}"
     except Exception as e:
@@ -308,12 +315,16 @@ def _tool_market_signals(ctx: ToolContext) -> str:
     return json.dumps(signals, ensure_ascii=False, default=str)[:2000]
 
 
-def _tool_run_debate(ctx: ToolContext) -> str:
+def _tool_run_debate(ctx: ToolContext, focus: str = "") -> str:
     """召集五分析师辩论并返回压缩后的决策摘要（不把多轮全文塞回 LLM，省 token）。"""
     if not ctx.run_debate_fn:
         return "辩论系统未接入"
     try:
-        report = ctx.run_debate_fn()
+        # focus 透传给主席做动态编排（决定召集谁/下达取证重点）
+        try:
+            report = ctx.run_debate_fn(user_context=focus) if focus else ctx.run_debate_fn()
+        except TypeError:
+            report = ctx.run_debate_fn()  # 兼容不接收 user_context 的注入实现
     except Exception as e:
         logger.warning("run_debate 工具执行失败: %s", e)
         return f"辩论系统执行失败: {e}（可基于其他工具信息回答）"
@@ -322,10 +333,13 @@ def _tool_run_debate(ctx: ToolContext) -> str:
 
     mod = report.get("moderator") or {}
     fd = mod.get("final_decision") or {}
-    # 只回传主席结论 + 各角色立场 + 权重，足够 Agent 组织回答，避免上下文爆炸
+    orch = report.get("orchestration") or {}
+    # 只回传主席结论 + 各角色立场 + 权重 + 编排概览，足够 Agent 组织回答，避免上下文爆炸
     digest = {
         "共识级别": report.get("consensus_level"),
         "辩论轮数": report.get("rounds"),
+        "参会分析师": report.get("roster"),
+        "被主席回炉补证": orch.get("recalled_analysts"),
         "角色权重": report.get("weights"),
         "最终决策": {
             "姿态": fd.get("posture"),

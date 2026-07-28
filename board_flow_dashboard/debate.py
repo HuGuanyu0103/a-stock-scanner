@@ -1,27 +1,40 @@
 #!/usr/bin/env python3
 """
-Multi-Agent 辩论系统
+Multi-Agent 辩论系统（真·多智能体：自主取证 + 动态编排 + 多轮收敛）
 
-六个 Agent 角色（5 分析师 + 1 主席），基于现有三系统架构 + 决策飞轮 + 风控：
-  TechAnalyst      观象 — 只看技术+资金面信号
-  SentimentAnalyst 观势 — 只看情绪面信号
-  NewsAnalyst      观闻 — 只看消息面信号
-  HistoryAnalyst   观史 — 只看决策飞轮历史战绩（信号级真实胜率）
-  RiskOfficer      观危 — 独立风控审视（板块集中度/大盘环境/纪律红线）
-  Moderator        观澜 — 按可审计权重聚合五方意见，输出共识/分歧报告
+三层循环的概念澄清（本项目刻意区分，避免把不同尺度的"循环"混为一谈）：
+  1. Agent 执行循环 (ReAct loop) —— 真·loop engineering，秒级。本文件里每个分析师
+     的 _run_analyst_loop 就是一个：感知→调专属工具取证→观察→再决策→收敛。
+  2. 多 Agent 审议循环 —— 一次决策内，主席 route→evidence→debate→challenge→converge
+     的动态编排（本文件 run_debate）。
+  3. 决策数据飞轮 (data flywheel) —— 天级/跨会话的业务效果闭环，见 decision_store.py。
+     它反哺的历史胜率 → 喂回本文件的观史分析师，形成跨层闭环。
 
-辩论流程（真辩论，三阶段）：
-  1. 五个分析师并发独立发表初始意见（只看自己领域的数据，互不可见）
-  2. 反驳轮（真多轮）：每个分析师看到他人观点 + 上一轮别人对自己的反驳后，
-     进行反驳/补充/让步/坚持；立场稳定（无人再反驳）即提前收敛
-  3. Moderator 基于「初始意见 + 多轮辩论 + 历史胜率 + 数值权重」收敛出共识/分歧报告
-     （rounds=0 可退化为旧的「并行发言→聚合」，向后兼容）
+Multi-Agent 光谱定位：本系统已达 L3-L4 —— 每个 agent 有自主性（自己的工具、自己的
+ReAct mini-loop、自己去取证），主席是动态编排者（按市场/诉求路由召集、对存疑结论
+把分析师"打回去补证据"），而非固定三段式的并行聚合。
+
+六个 Agent 角色（5 分析师 + 1 主席）：
+  TechAnalyst      观象 — 技术+资金面；工具：个股技术面、板块资金流
+  SentimentAnalyst 观势 — 情绪面；工具：市场情绪
+  NewsAnalyst      观闻 — 消息面；工具：消息信号
+  HistoryAnalyst   观史 — 历史复盘；工具：飞轮信号胜率、来源胜率对比
+  RiskOfficer      观危 — 风控；工具：板块集中度、大盘环境
+  Moderator        观澜 — 编排者：路由→质询回炉→按可审计权重收敛
+
+辩论流程（run_debate 五阶段）：
+  ① route     主席按市场状态/用户诉求决定召集哪些分析师 + 各自取证重点
+  ② evidence  被召集的分析师各跑 ReAct mini-loop，用专属工具自主取证后表态
+  ③ debate    真多轮反驳收敛（看到别人对自己的反驳再调整，立场稳定即止）
+  ④ challenge 主席对存疑/证据不足的结论把特定分析师「打回去补证据」
+  ⑤ converge  主席综合全部证据+多轮辩论+回炉补证+数值权重，出最终决策
 
 用法:
   from debate import DebateOrchestrator
   do = DebateOrchestrator()
   report = do.run_debate(candidates, signals, hot_sectors, breadth,
-                         rounds=1, loop_context="<飞轮历史胜率>")
+                         rounds=1, loop_context="<飞轮历史胜率>",
+                         collector=collector, store=store, user_context="用户诉求")
 """
 
 from __future__ import annotations
@@ -445,55 +458,98 @@ class DebateOrchestrator:
         breadth: float = 0.5,
         rounds: int = 1,
         loop_context: str = "",
+        collector=None,
+        store=None,
+        user_context: str = "",
+        autonomous: bool = True,
     ) -> Optional[dict]:
-        """运行完整辩论流程（5 角色并发 + 真多轮收敛 + 历史校验 + 可审计加权）。
+        """运行完整辩论流程（L4 动态编排 + L3 自主取证 + 真多轮收敛 + 可审计加权）。
+
+        编排链路（主席=编排者，非纯聚合器）：
+          ① route     主席按市场状态/用户诉求决定召集哪些分析师、给各自下达取证重点
+          ② evidence  被召集的分析师各自跑 ReAct mini-loop，用专属工具自主取证后表态
+          ③ debate    多轮反驳收敛（看到别人对自己的反驳再调整，立场稳定即止）
+          ④ challenge 主席审视草案，对存疑处把特定分析师「打回去补证据」定向追问
+          ⑤ converge  主席综合全部证据+多轮辩论+回炉补证+数值权重，出最终决策
 
         Args:
-            rounds: 反驳轮数。0 = 并行发言→聚合；≥1 = 真多轮辩论：每轮分析师看到
-                    「别人对自己的反驳」后再调整，循环至立场稳定或达 rounds 上限。
-            loop_context: 决策飞轮历史信号胜率文本（M2），注入观史角色与主席。
+            rounds: 反驳轮数。0 = 跳过反驳直接聚合；≥1 = 真多轮辩论。
+            loop_context: 决策飞轮历史胜率文本（观史兜底用）。
+            collector/store: 注入后分析师可自主查板块资金流/飞轮胜率（L3 取证）。
+            user_context: 用户本次诉求（供主席路由，如"帮我把关能不能进场"）。
+            autonomous: True=分析师走自主取证 mini-loop；False=退化为喂预抽数据（旧路径）。
 
         Returns:
-            {analysts, rebuttals(每轮), moderator, consensus_level, rounds, weights, timestamp}
+            {analysts, rebuttal_rounds, moderator, consensus_level, rounds, weights,
+             roster, directives, challenges, orchestration, timestamp}
         """
         if not self._init_client():
             return None
 
-        # ── 5 个分析师并发发表初始意见（M4 并发）──────────────
-        # 角色: 观象(技术资金) 观势(情绪) 观闻(消息) 观史(历史战绩) 观危(风控)
-        agent_specs = {
-            "tech": (TECH_SYSTEM_PROMPT, DataExtractor.for_tech(candidates)),
-            "sentiment": (SENTIMENT_SYSTEM_PROMPT, DataExtractor.for_sentiment(signals, breadth)),
-            "news": (NEWS_SYSTEM_PROMPT, DataExtractor.for_news(signals)),
-            "history": (HISTORY_SYSTEM_PROMPT, DataExtractor.for_history(loop_context, candidates)),
-            "risk": (RISK_SYSTEM_PROMPT, DataExtractor.for_risk(candidates, breadth, hot_sectors)),
-        }
         metas = {
             "tech": ("观象", "技术+资金面"), "sentiment": ("观势", "情绪面"),
             "news": ("观闻", "消息面"), "history": ("观史", "历史复盘"), "risk": ("观危", "风险控制"),
         }
+        prompts = {
+            "tech": TECH_SYSTEM_PROMPT, "sentiment": SENTIMENT_SYSTEM_PROMPT,
+            "news": NEWS_SYSTEM_PROMPT, "history": HISTORY_SYSTEM_PROMPT, "risk": RISK_SYSTEM_PROMPT,
+        }
+        # 预抽数据（autonomous=False 的旧路径 + mini-loop 失败时的兜底）
+        fallback_data = {
+            "tech": DataExtractor.for_tech(candidates),
+            "sentiment": DataExtractor.for_sentiment(signals, breadth),
+            "news": DataExtractor.for_news(signals),
+            "history": DataExtractor.for_history(loop_context, candidates),
+            "risk": DataExtractor.for_risk(candidates, breadth, hot_sectors),
+        }
 
-        def _one_analyst(item):
-            role, (prompt, data) = item
-            return role, self._ask_analyst(role, prompt, data)
+        # 共享黑板：分析师工具从这里取真实数据，主席可往 black_board 写定向追问
+        try:
+            from .analyst_tools import AnalystToolCtx
+        except ImportError:
+            from analyst_tools import AnalystToolCtx  # type: ignore
+        tool_ctx = AnalystToolCtx(
+            candidates=candidates, signals=signals, breadth=breadth,
+            hot_sectors=hot_sectors, collector=collector, store=store,
+            loop_context=loop_context,
+        )
 
-        with ThreadPoolExecutor(max_workers=5) as ex:
-            opinions = dict(ex.map(_one_analyst, agent_specs.items()))
+        # ── ① 主席路由（L4）：定 roster + 各分析师取证重点 ──────────
+        route = self._route(candidates, breadth, hot_sectors, loop_context, user_context)
+        roster = route.get("roster") or list(metas.keys())
+        roster = [r for r in roster if r in metas] or list(metas.keys())
+        # 风控官始终在场（金融场景刹车片不可缺）
+        if "risk" not in roster:
+            roster.append("risk")
+        directives = route.get("directives") or {}
+
+        # ── ② 分析师自主取证（L3-2）：被召集者各跑 mini-loop 并发 ────
+        def _one_analyst(role):
+            if autonomous:
+                op = self._run_analyst_loop(role, prompts[role], tool_ctx,
+                                            directive=directives.get(role, ""))
+                if op is not None:
+                    return role, op
+            # 兜底：mini-loop 不可用 → 旧的喂数据一次问
+            return role, self._ask_analyst(role, prompts[role], fallback_data[role])
+
+        with ThreadPoolExecutor(max_workers=len(roster)) as ex:
+            opinions = dict(ex.map(_one_analyst, roster))
 
         if not any(opinions.values()):
             return None
 
-        # ── 真多轮反驳收敛（M3）：每轮让 analyst 看到别人对自己的反驳再调整 ──
-        all_rounds = []          # 每轮的 rebuttals dict
+        # ── ③ 真多轮反驳收敛（M3）──────────────────────────────
+        all_rounds = []
         cur_opinions = dict(opinions)
-        prev_rebut = {}          # 上一轮别人的反驳（供本轮 analyst 看到"别人怎么说我"）
-        for rd in range(max(rounds, 0)):
+        prev_rebut = {}
+        active_roles = [r for r in roster if cur_opinions.get(r)]
+        for _rd in range(max(rounds, 0)):
             def _one_rebut(role):
                 name, domain = metas[role]
                 if not cur_opinions.get(role):
                     return role, None
                 others = {metas[r][0]: op for r, op in cur_opinions.items() if r != role and op}
-                # M3 多轮关键：把"上一轮别人对我的反驳"也带进来，让本轮能回应
                 against_me = None
                 if prev_rebut:
                     against_me = [
@@ -503,24 +559,43 @@ class DebateOrchestrator:
                     ]
                 return role, self._rebut(name, domain, cur_opinions[role], others, against_me)
 
-            with ThreadPoolExecutor(max_workers=5) as ex:
-                rebut = dict(ex.map(_one_rebut, list(metas.keys())))
+            with ThreadPoolExecutor(max_workers=max(1, len(active_roles))) as ex:
+                rebut = dict(ex.map(_one_rebut, active_roles))
             rebut = {k: v for k, v in rebut.items() if v}
             all_rounds.append(rebut)
-            # 收敛判定：本轮所有 analyst 都无实质反驳（rebuttals 为空）→ 立场稳定，提前结束
             active = sum(1 for v in rebut.values() if v.get("rebuttals"))
             prev_rebut = rebut
             if active == 0:
                 break
 
-        # ── 可审计加权（M3）：用市场广度做数值权重约束，喂给主席 ──
         weights = self._compute_role_weights(breadth, signals)
 
-        # ── 主席收敛（含全部角色意见 + 多轮反驳 + 历史 + 数值权重）──
+        # ── ④ 主席回炉补证（L4）：对存疑点把特定分析师打回去补数据 ───
+        challenges = self._challenge(cur_opinions, all_rounds, metas)
+        if challenges:
+            def _re_query(item):
+                role, ask = item
+                if role not in prompts:
+                    return role, None
+                op = self._run_analyst_loop(role, prompts[role], tool_ctx,
+                                            directive=f"主席对你上一轮结论提出质疑，请补充证据回应：{ask}") \
+                    if autonomous else self._ask_analyst(role, prompts[role], fallback_data.get(role, ""))
+                return role, op
+            with ThreadPoolExecutor(max_workers=max(1, len(challenges))) as ex:
+                refetched = dict(ex.map(_re_query, challenges.items()))
+            for role, op in refetched.items():
+                if op:
+                    op["_refetched_for_challenge"] = challenges[role]
+                    cur_opinions[role] = op  # 用补证后的意见覆盖
+
+        # ── ⑤ 主席最终收敛 ────────────────────────────────────
         moderator_opinion = self._moderate(
             cur_opinions, DataExtractor.for_tech(candidates, top_n=15),
             hot_sectors, all_rounds, weights, loop_context,
         )
+
+        # 汇总各分析师的取证链路（可观测：谁调了哪些工具）
+        evidence_trace = {r: (op or {}).get("_tool_trace", []) for r, op in cur_opinions.items()}
 
         return {
             "analysts": {r: (op or {"error": "分析师不可用"}) for r, op in cur_opinions.items()},
@@ -530,8 +605,108 @@ class DebateOrchestrator:
             "consensus_level": (moderator_opinion or {}).get("consensus_level", "未知"),
             "rounds": len(all_rounds),
             "weights": weights,
+            # L4 编排可观测
+            "roster": roster,
+            "directives": directives,
+            "challenges": challenges,
+            "evidence_trace": evidence_trace,
+            "orchestration": {
+                "routed": bool(route.get("_routed")),
+                "route_reason": route.get("reason", ""),
+                "autonomous_evidence": autonomous,
+                "recalled_analysts": list(challenges.keys()),
+            },
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+
+    def _route(self, candidates: list[dict], breadth: float, hot_sectors: list[str],
+               loop_context: str, user_context: str) -> dict:
+        """L4 主席路由：按市场状态/用户诉求决定召集哪些分析师 + 各自取证重点。
+
+        主席不再是被动聚合器，而是先做「派活」——这是动态编排的入口。
+        LLM 不可用/解析失败时优雅退化为「全员上场、无定向」。
+        """
+        overview = {
+            "候选池规模": len(candidates),
+            "市场广度": f"{int(breadth * 100)}%",
+            "热板块": hot_sectors[:6],
+            "有历史胜率数据": bool(loop_context),
+            "用户诉求": user_context or "（未指定，做常规盘中决策）",
+        }
+        sys = (
+            "你是 A 股决策委员会主席「观澜」，现在处于【派活阶段】。你有五位分析师：\n"
+            "tech观象(技术资金) / sentiment观势(情绪) / news观闻(消息) / "
+            "history观史(历史胜率) / risk观危(风控)。\n"
+            "根据当前市场状态与用户诉求，决定本次召集哪些分析师、给每人下达一句取证重点。\n"
+            "原则：risk 风控官必须在场；普跌市重点上 risk+sentiment；普涨突破市重点上 tech；"
+            "有明显消息驱动上 news；需要经验校验上 history。不必每次全上，但也不要漏掉关键视角。\n"
+            "严格输出 JSON：{\"roster\":[\"tech\",...],\"directives\":{\"tech\":\"取证重点一句话\",...},"
+            "\"reason\":\"你如此派活的理由\"}"
+        )
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._model,
+                messages=[{"role": "system", "content": sys},
+                          {"role": "user", "content": json.dumps(overview, ensure_ascii=False)}],
+                response_format={"type": "json_object"},
+                temperature=0.3, max_tokens=600,
+            )
+            data = self._parse_json(resp.choices[0].message.content) or {}
+            if data.get("roster"):
+                data["_routed"] = True
+                return data
+        except Exception as e:
+            logger.warning("主席路由失败，退化为全员上场: %s", e)
+        return {"roster": ["tech", "sentiment", "news", "history", "risk"],
+                "directives": {}, "reason": "路由不可用，全员上场", "_routed": False}
+
+    def _challenge(self, opinions: dict, all_rounds: list, metas: dict) -> dict:
+        """L4 主席回炉：审视辩论草案，决定把哪些分析师「打回去补证据」。
+
+        返回 {role: 追问内容}。无需回炉时返回 {}。这是主席从「聚合」升级到
+        「质询」的关键——对存疑或证据不足的结论，主席能主动要求补数据再收敛。
+        """
+        # 汇总各分析师意见 + 反驳，交给主席判断哪里证据不足/矛盾未解
+        brief = {}
+        for role, op in opinions.items():
+            if not op:
+                continue
+            name = metas.get(role, (role, ""))[0]
+            brief[name] = {
+                "bottom_line": op.get("bottom_line") or op.get("advice") or op.get("overall_view"),
+                "取证次数": op.get("_evidence_calls", 0),
+            }
+        unresolved = []
+        for rd in all_rounds:
+            for role, reb in (rd or {}).items():
+                for rb in (reb.get("rebuttals") or []):
+                    unresolved.append(rb)
+        sys = (
+            "你是决策委员会主席「观澜」，处于【质询阶段】。下面是各分析师结论摘要与辩论中的反驳。\n"
+            "判断：有没有哪位分析师的结论证据不足、或与他人存在未解决的实质矛盾，需要他"
+            "「带着具体问题回去补证据」？\n"
+            "只在确有必要时才召回（回炉有成本）；至多召回 2 人。\n"
+            "严格输出 JSON：{\"recall\":{\"角色键\":\"要他补什么证据/回应什么质疑\"}}，"
+            "角色键取值 tech/sentiment/news/history/risk；无需召回则 {\"recall\":{}}。"
+        )
+        payload = {"分析师结论摘要": brief, "辩论中的反驳": unresolved[:10]}
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._model,
+                messages=[{"role": "system", "content": sys},
+                          {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}],
+                response_format={"type": "json_object"},
+                temperature=0.3, max_tokens=500,
+            )
+            data = self._parse_json(resp.choices[0].message.content) or {}
+            recall = data.get("recall") or {}
+            # 只保留合法角色，最多 2 人
+            recall = {k: v for k, v in recall.items() if k in metas}
+            return dict(list(recall.items())[:2])
+        except Exception as e:
+            logger.warning("主席质询阶段失败(不回炉): %s", e)
+            return {}
+
 
     @staticmethod
     def _compute_role_weights(breadth: float, signals: dict) -> dict:
@@ -590,7 +765,7 @@ class DebateOrchestrator:
             return None
 
     def _ask_analyst(self, role: str, system_prompt: str, data: str) -> Optional[dict]:
-        """询问一位分析师。"""
+        """询问一位分析师（旧路径：喂预抽数据一次问，保留作 mini-loop 的兜底）。"""
         try:
             resp = self._client.chat.completions.create(
                 model=self._model,
@@ -610,6 +785,100 @@ class DebateOrchestrator:
         except Exception as e:
             logger.warning("分析师 %s 调用失败: %s", role, e)
             return None
+
+    # ── L3-2：分析师自主取证 ReAct mini-loop ───────────────────
+    # 每个分析师不再被喂预抽数据，而是拿到「任务 + 自己领域的工具」，自己决定
+    # 去取哪些证据（调 list_candidates 看全局 → 深挖个别票/板块/历史胜率），
+    # 迭代到信息足够再出 JSON 意见。这是「真 Multi-Agent」的核心：每个 agent
+    # 有自主性、有专属工具、跑自己的循环。返回意见时附 tool_trace（取证链路可观测）。
+    def _run_analyst_loop(
+        self, role: str, system_prompt: str, tool_ctx,
+        directive: str = "", max_iters: int = 3,
+    ) -> Optional[dict]:
+        """让分析师自主调用专属工具取证后给出意见。
+
+        Args:
+            role: 角色键（tech/sentiment/news/history/risk），决定可见工具集
+            system_prompt: 该角色的人格与职责 prompt
+            tool_ctx: AnalystToolCtx 黑板（工具从这里取真实数据）
+            directive: 主席的定向任务/追问（L4 用；为空则自由取证）
+            max_iters: mini-loop 最大迭代轮数（防失控）
+
+        Returns:
+            意见 dict，附 "_tool_trace"（本分析师调过的工具）与 "_iterations"。
+            工具不可用或 LLM 失败时回退到 None（调用方可降级到 _ask_analyst）。
+        """
+        try:
+            from .analyst_tools import tools_for, execute_analyst_tool
+        except ImportError:
+            from analyst_tools import tools_for, execute_analyst_tool  # type: ignore
+
+        schemas = tools_for(role)
+        task = (
+            "你现在可以调用你专属领域的工具，自主获取你需要的证据，再给出专业意见。\n"
+            "步骤建议：先调 list_candidates 看清候选池全局，再针对性深挖你关心的标的/"
+            "板块/历史胜率等；信息足够后停止调用工具，直接输出你的 JSON 意见。\n"
+            "禁止编造工具没返回的数据。"
+        )
+        if directive:
+            task += f"\n\n【主席交办的重点】{directive}\n请优先围绕这个重点取证与表态。"
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": task},
+        ]
+        trace: list[dict] = []
+        for _ in range(max(1, max_iters)):
+            try:
+                resp = self._client.chat.completions.create(
+                    model=self._model, messages=messages,
+                    tools=schemas, tool_choice="auto",
+                    temperature=0.3, max_tokens=1500,
+                )
+            except Exception as e:
+                logger.warning("分析师 %s mini-loop LLM 失败: %s", role, e)
+                return None
+            msg = resp.choices[0].message
+            tool_calls = getattr(msg, "tool_calls", None)
+            if not tool_calls:
+                break  # 无工具调用 = 准备出意见
+            messages.append({
+                "role": "assistant", "content": msg.content or "",
+                "tool_calls": [
+                    {"id": tc.id, "type": "function",
+                     "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in tool_calls
+                ],
+            })
+            for tc in tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except Exception:
+                    args = {}
+                result = execute_analyst_tool(role, tc.function.name, args, tool_ctx)
+                trace.append({"tool": tc.function.name, "args": args})
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result[:2000]})
+
+        # 收尾：要求严格 JSON 意见（此步不再给工具，强制出结论）
+        messages.append({"role": "user", "content": (
+            "证据收集完毕。现在严格按你的 JSON 输出格式给出最终专业意见，不要再调用工具，"
+            "不要输出 JSON 以外的内容。"
+        )})
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._model, messages=messages,
+                response_format={"type": "json_object"},
+                temperature=0.3, max_tokens=1500,
+            )
+            opinion = self._parse_json(resp.choices[0].message.content)
+        except Exception as e:
+            logger.warning("分析师 %s mini-loop 收尾失败: %s", role, e)
+            return None
+        if opinion is not None:
+            opinion["_tool_trace"] = trace
+            opinion["_evidence_calls"] = len(trace)
+        return opinion
+
 
     def _moderate(
         self,

@@ -825,6 +825,8 @@ class DecisionAgent:
         messages.append({"role": "user", "content": user_message})
 
         tool_trace = []
+        iter_trace = []  # per-iteration 可观测：这就是 loop engineering 的本体——Agent 执行循环，
+                         # 每轮记录思考/调了哪些工具/是否收敛，让"单次任务内的推理环"看得见
         usage = {"prompt_tokens": 0, "completion_tokens": 0, "cost_cny": 0.0}
 
         def _accumulate(resp):
@@ -858,7 +860,15 @@ class DecisionAgent:
                 # 无工具调用 = 出最终结论
                 reply = msg.content or ""
                 iterations = iteration + 1
+                iter_trace.append({"step": iteration + 1, "action": "finalize",
+                                   "tools": [], "converged": True})
                 break
+            iter_trace.append({
+                "step": iteration + 1, "action": "call_tools",
+                "thought": (msg.content or "")[:160],
+                "tools": [tc.function.name for tc in tool_calls],
+                "converged": False,
+            })
             # 执行工具，把结果喂回
             messages.append({
                 "role": "assistant", "content": msg.content or "",
@@ -918,7 +928,7 @@ class DecisionAgent:
                 logger.warning("chat_agent 自我纠错重答失败: %s", e)
 
         usage["cost_cny"] = round(usage["cost_cny"], 6)
-        return {"reply": reply or "", "tool_trace": tool_trace,
+        return {"reply": reply or "", "tool_trace": tool_trace, "iter_trace": iter_trace,
                 "iterations": iterations, "usage": usage, "corrected": corrected,
                 "pending_actions": list(getattr(tool_ctx, "pending_actions", []))}
 

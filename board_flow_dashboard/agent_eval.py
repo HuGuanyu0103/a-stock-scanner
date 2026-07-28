@@ -205,13 +205,17 @@ def _build_mock_ctx():
                 return {"breadth": 0.55, "sentiment": 62, "tech_state": "偏多", "limit_up": 45, "limit_down": 8}
         return S()
 
-    def mock_run_debate(rounds=1):
+    def mock_run_debate(rounds=1, user_context=""):
         # 离线环境 5 个真实分析师 LLM 不可达，返回结构与 _run_debate_full 一致的定型报告，
         # 用于评估 Agent「是否在该开会时开会、能否把委员会结论组织成回答」，而非辩论内容本身
         return {
             "consensus_level": "部分共识",
             "rounds": 1,
+            "roster": ["tech", "sentiment", "history", "risk"],
             "weights": {"tech": 0.3, "sentiment": 0.15, "news": 0.15, "history": 0.2, "risk": 0.2},
+            "orchestration": {"routed": True, "recalled_analysts": ["risk"],
+                              "autonomous_evidence": True,
+                              "route_reason": "分化市，重点上技术+风控+历史校验"},
             "moderator": {
                 "analyst_alignment": {"tech": "看多", "sentiment": "中性", "news": "中性",
                                        "history": "看多", "risk": "警示"},

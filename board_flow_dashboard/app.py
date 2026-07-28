@@ -2247,7 +2247,7 @@ def api_holdings_analyze():
 
 # ── Multi-Agent 辩论端点 ───────────────────────────────
 
-def _run_debate_full(rounds: int = 1) -> dict:
+def _run_debate_full(rounds: int = 1, user_context: str = "") -> dict:
     """执行完整五分析师辩论 + 主席综合 + 结论落库飞轮。
 
     被 /api/agent/debate 端点与 Agent 的 run_debate 工具共用，保证两条路径
@@ -2265,14 +2265,18 @@ def _run_debate_full(rounds: int = 1) -> dict:
 
     # M2: 注入决策飞轮历史胜率，让"观史"角色与主席有真实战绩可参考
     loop_context = ""
+    store = None
     try:
-        loop_context = get_decision_store().get_loop_context()
+        store = get_decision_store()
+        loop_context = store.get_loop_context()
     except Exception as e:
         logger.debug("debate loop_context 获取失败(不阻断): %s", e)
 
+    # L3/L4: 注入 collector + store，分析师可自主取证；user_context 供主席路由
     report = get_orchestrator().run_debate(
         all_candidates, signals, hot_sectors, breadth,
-        rounds=max(0, min(3, rounds)), loop_context=loop_context)
+        rounds=max(0, min(3, rounds)), loop_context=loop_context,
+        collector=collector, store=store, user_context=user_context)
     if not report:
         return {"error": "辩论系统不可用", "hint": "请查看 AI 观澜标签页"}
 
@@ -2517,7 +2521,9 @@ def api_agent_chat_agent_stream():
         },
     )
 
-# ── Loop Engineering 端点 ───────────────────────────────
+# ── 决策数据飞轮(Data Flywheel)端点 —— 推荐→结算→统计→反哺的效果闭环 ──
+# 注：这是业务效果闭环(天级/跨会话)，与 loop engineering(Agent 单次任务内的
+# ReAct 执行循环，秒级) 是不同层的「循环」，路由前缀沿用 /api/loop 仅为历史兼容。
 
 @app.route("/api/loop/adopt", methods=["POST"])
 def api_loop_adopt():
