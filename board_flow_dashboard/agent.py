@@ -36,6 +36,27 @@ DEEPSEEK_PRICE_IN = 2.0 / 1_000_000
 DEEPSEEK_PRICE_OUT = 8.0 / 1_000_000
 
 
+def _sanitize_history(history: list, keep: int = 20) -> list:
+    """清洗注入 messages 的历史对话，避免破坏 OpenAI 协议的消息配对。
+
+    历史来自持久化记忆（只存 user/assistant 的纯文本），但为稳健起见：
+      - 只保留 role ∈ {user, assistant} 且 content 非空的消息；
+      - 剔除任何携带 tool_calls 的 assistant 与 role=tool 的消息——它们若缺少
+        配对的另一半，会让 API 因「assistant(tool_calls) 与 tool 消息不配对」报 400；
+      - 从尾部取最近 keep 条后，若首条是 assistant 则再往前对齐，避免从中途切断。
+    """
+    if not history:
+        return []
+    clean = [
+        m for m in history
+        if isinstance(m, dict)
+        and m.get("role") in ("user", "assistant")
+        and not m.get("tool_calls")
+        and (m.get("content") or "").strip()
+    ]
+    return clean[-keep:] if keep else clean
+
+
 # ═══════════════════════════════════════════════════════════════
 # 统一 System Prompt — 观澜的决策框架
 # ═══════════════════════════════════════════════════════════════
@@ -462,8 +483,8 @@ class DecisionAgent:
 
         messages = [{"role": "system", "content": system_msg}]
         if chat_history:
-            # 保留最近 10 轮对话
-            messages.extend(chat_history[-20:])
+            # 保留最近若干轮对话（清洗以免破坏 tool 消息配对）
+            messages.extend(_sanitize_history(chat_history, keep=20))
         messages.append({"role": "user", "content": user_message})
 
         try:
@@ -561,7 +582,7 @@ class DecisionAgent:
 
         messages = [{"role": "system", "content": system_msg}]
         if chat_history:
-            messages.extend(chat_history[-20:])
+            messages.extend(_sanitize_history(chat_history, keep=20))
         messages.append({"role": "user", "content": user_message})
 
         try:
@@ -677,7 +698,7 @@ class DecisionAgent:
 
         messages = [{"role": "system", "content": INTRA_PICKS_PROMPT}]
         if chat_history:
-            messages.extend(chat_history[-10:])
+            messages.extend(_sanitize_history(chat_history, keep=10))
         messages.append({"role": "user", "content": user_msg})
 
         try:
@@ -703,10 +724,13 @@ class DecisionAgent:
 
     @staticmethod
     def _parse_json(raw: str) -> Optional[dict]:
+        # 括号配平抽取，比贪婪正则 \{.*\} 稳（不会吞入后续解释里的花括号/多对象）
         try:
-            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
-            data = json.loads(json_match.group() if json_match else raw)
-        except json.JSONDecodeError:
+            from .llm_json import parse_json_object
+        except ImportError:
+            from llm_json import parse_json_object  # type: ignore
+        data = parse_json_object(raw)
+        if data is None:
             logger.warning("JSON 解析失败")
             return None
 
@@ -758,17 +782,26 @@ class DecisionAgent:
                 p["risk_note"] = (p.get("risk_note") or "") + " | 主力流出"
             result.append(p)
 
-        # 板块集中度控制
+        # 板块集中度控制：真正生效——同板块前 2 只正常保留，第 3 只起降权并后置，
+        # 超过硬上限(SECTOR_HARD_CAP)的同板块标的直接剔除（不再只是加句提示后原样返回）。
+        SECTOR_SOFT_CAP = 2   # 超过此数即视为集中，降权 + 后置
+        SECTOR_HARD_CAP = 3   # 同板块最多保留这么多，多出的剔除
         sector_count = Counter()
-        validated = []
+        kept, deferred = [], []
         for p in result:
             s = p.get("sector", "")
-            if sector_count.get(s, 0) >= 2:
+            n = sector_count.get(s, 0)
+            if n >= SECTOR_HARD_CAP:
+                logger.info("硬校验剔除 %s: 板块[%s]超集中度上限", p.get("code", ""), s)
+                continue  # 真正剔除，控制单一板块系统性风险
+            sector_count[s] = n + 1
+            if n >= SECTOR_SOFT_CAP:
                 p["confidence"] = max(1, (p.get("confidence") or 3) - 1)
-                p["risk_note"] = (p.get("risk_note") or "") + " | 板块集中"
-            sector_count[s] = sector_count.get(s, 0) + 1
-            validated.append(p)
-        return validated
+                p["risk_note"] = (p.get("risk_note") or "") + " | 板块集中(已降权后置)"
+                deferred.append(p)   # 后置：让分散标的排在前面
+            else:
+                kept.append(p)
+        return kept + deferred
 
     # ── Agent 模式：Function Calling + ReAct 循环 ──────────────
     def chat_agent(
@@ -821,7 +854,7 @@ class DecisionAgent:
         )
         messages = [{"role": "system", "content": system_msg}]
         if chat_history:
-            messages.extend(chat_history[-10:])
+            messages.extend(_sanitize_history(chat_history, keep=10))
         messages.append({"role": "user", "content": user_message})
 
         tool_trace = []
@@ -927,9 +960,43 @@ class DecisionAgent:
             except Exception as e:
                 logger.warning("chat_agent 自我纠错重答失败: %s", e)
 
+        # ── 合规护栏（Guardrails）：金融红线层，独立于上面的质量校验 ──
+        # 命中硬红线（承诺收益/涨停/诱导满仓/内幕）→ 触发一次合规重写；
+        # 通过后统一软改写措辞 + 追加免责声明。这是"可交付"的最后一道闸。
+        compliance = {"violated": False, "violations": [], "softened": []}
+        try:
+            from .guardrails import check_output, enforce, rewrite_hint
+        except ImportError:
+            from guardrails import check_output, enforce, rewrite_hint  # type: ignore
+        scan = check_output(reply)
+        if not scan["compliant"]:
+            compliance["violated"] = True
+            compliance["violations"] = scan["violations"]
+            logger.warning("chat_agent 输出触犯合规红线，触发合规重写: %s", scan["violations"])
+            messages.append({"role": "assistant", "content": reply})
+            messages.append({"role": "user", "content": rewrite_hint(scan["violations"])})
+            try:
+                resp = self._client.chat.completions.create(
+                    model=self._model, messages=messages,
+                    temperature=0.3, max_tokens=3000,
+                )
+                _accumulate(resp)
+                rewritten = resp.choices[0].message.content or ""
+                if rewritten:
+                    reply = rewritten
+                    corrected = True
+            except Exception as e:
+                logger.warning("chat_agent 合规重写失败: %s", e)
+        # 交付侧总闸：软改写 + 免责声明（重写后若仍有硬红线，enforce 不加免责，如实标记）
+        enforced = enforce(reply)
+        reply = enforced["text"]
+        compliance["softened"] = enforced["softened"]
+        compliance["final_compliant"] = enforced["compliant"]
+
         usage["cost_cny"] = round(usage["cost_cny"], 6)
         return {"reply": reply or "", "tool_trace": tool_trace, "iter_trace": iter_trace,
                 "iterations": iterations, "usage": usage, "corrected": corrected,
+                "compliance": compliance,
                 "pending_actions": list(getattr(tool_ctx, "pending_actions", []))}
 
     @staticmethod
@@ -1010,7 +1077,7 @@ class DecisionAgent:
         )
         messages = [{"role": "system", "content": system_msg}]
         if chat_history:
-            messages.extend(chat_history[-10:])
+            messages.extend(_sanitize_history(chat_history, keep=10))
         messages.append({"role": "user", "content": user_message})
 
         tool_trace = []

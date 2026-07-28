@@ -374,6 +374,29 @@ class DecisionStore:
             with self._get_conn() as conn:
                 return [dict(r) for r in conn.execute("SELECT signal_combo,total_trades,win_trades,ROUND(win_trades*100.0/total_trades,1) as win_rate,ROUND(avg_return,2) as avg_ret FROM signal_combo_stats WHERE total_trades>=2 ORDER BY total_trades DESC LIMIT 20").fetchall()]
 
+    def get_settled_trades(self):
+        """返回全部已结算交易明细(含结算时间)，供样本外对照评估用。
+
+        合并 decisions(status=closed) 与 shadow_decisions(status=resolved)，
+        每条含 {signal_combo, return_pct, exit_date}，按 exit_date 升序。
+        这是 weight_tuner 做时间切分(Champion-Challenger 真反事实)的数据源。
+        """
+        rows = []
+        with self._lock:
+            with self._get_conn() as conn:
+                for r in conn.execute(
+                    "SELECT signal_combo, return_pct, exit_date FROM decisions "
+                    "WHERE status='closed' AND return_pct IS NOT NULL AND exit_date IS NOT NULL "
+                    "AND signal_combo!=''").fetchall():
+                    rows.append(dict(r))
+                for r in conn.execute(
+                    "SELECT signal_combo, return_pct, exit_date FROM shadow_decisions "
+                    "WHERE status='resolved' AND return_pct IS NOT NULL AND exit_date IS NOT NULL "
+                    "AND signal_combo!=''").fetchall():
+                    rows.append(dict(r))
+        rows.sort(key=lambda x: x.get("exit_date") or "")
+        return rows
+
     def get_loop_context(self):
         s = self.get_total_stats()
         sr = self.get_signal_win_rates()

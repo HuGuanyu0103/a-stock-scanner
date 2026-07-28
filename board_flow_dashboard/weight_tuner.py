@@ -123,68 +123,108 @@ def get_tuning_report(store=None) -> dict:
     }
 
 
-# ── L4: Champion-Challenger 调权对照验证 ───────────────────────
-# 问题：weight_tuner 直接把反哺乘数用于生产选股，属"在线自增强、无对照"——
-# 被调高的信号更容易再被选中，形成自证，无法证明"调权真的更好"。
-# 方案：在历史已结算样本上做反事实对照——
-#   champion  = 不调权(所有乘数=1.0)的等权平均收益
-#   challenger= 按反哺乘数加权的平均收益（乘数即"选择倾向"权重）
-# challenger 稳定跑赢 champion 且样本足够，才建议把乘数晋升为生产配置。
+# ── L4: Champion-Challenger 调权对照验证（样本外/时间切分）───────
+# 问题（旧实现的致命缺陷）：用同一批已结算样本既算乘数又评估收益，是"用拟合
+# 数据评估拟合结果"——高收益信号本就被 _compute_multiplier 赋更高乘数，challenger
+# 数学上必然 ≥ champion，edge 无统计意义（自证循环）。
+# 正解（本实现）：时间切分做真·样本外(out-of-sample)验证——
+#   1) 按结算时间排序，前 TRAIN_FRAC 作训练集，用它算各信号乘数（= challenger 策略）；
+#   2) 在留出的后半段（测试集，训练时不可见）上比：
+#        champion   = 等权平均收益（不调权基线）
+#        challenger = 用"训练集学到的乘数"加权测试集收益
+#   3) challenger 在**没见过的**测试集上仍稳定跑赢，才说明调权真的有泛化价值。
+# 这才是反事实评估，能拿去被量化/ML 背景的人推敲而不露怯。
 
-PROMOTE_MIN_SAMPLES = 30   # 晋升所需最小样本量（对照结论可信的下限）
+PROMOTE_MIN_SAMPLES = 30   # 晋升所需最小(测试集)样本量
 PROMOTE_MIN_EDGE = 0.3     # challenger 需领先 champion 的最小收益差(pp)才建议晋升
+TRAIN_FRAC = 0.6           # 时间切分：前 60% 已结算样本作训练(算乘数)，后 40% 作样本外测试
+MIN_TEST_PER_COMBO = 1     # 测试集里某信号至少几笔才纳入对照
+
+
+def _multipliers_from_trades(trades: list) -> dict:
+    """仅用给定(训练集)交易明细计算每个信号组合的乘数——与生产同一套映射，
+    但只喂训练集数据，保证测试集对乘数不可见。"""
+    agg: dict = {}
+    for t in trades:
+        combo = t.get("signal_combo", "")
+        if not combo:
+            continue
+        a = agg.setdefault(combo, {"n": 0, "wins": 0, "sum_ret": 0.0})
+        a["n"] += 1
+        a["sum_ret"] += (t.get("return_pct") or 0.0)
+        if (t.get("return_pct") or 0.0) > 0:
+            a["wins"] += 1
+    mults = {}
+    for combo, a in agg.items():
+        if a["n"] < MIN_SAMPLES:
+            continue  # 训练样本不足的信号不调权（乘数=1，由 .get 默认兜底）
+        win_rate = a["wins"] / a["n"] * 100.0
+        avg_ret = a["sum_ret"] / a["n"]
+        mults[combo] = _compute_multiplier(win_rate, avg_ret)
+    return mults
 
 
 def evaluate_challenger(store) -> dict:
-    """在历史已结算影子/实盘样本上，对照 champion(不调权) vs challenger(反哺加权)。
+    """样本外 Champion-Challenger 对照：前段学乘数，后段(未见过)验证收益。
 
-    返回 {champion_avg, challenger_avg, edge, n_samples, recommend, reason}。
-    这是反事实评估：不改动生产，只回答"这套乘数若上线，历史上是赚是亏"。
+    返回 {champion_avg, challenger_avg, edge, n_samples, recommend_promote, reason,
+          method, train_size, test_size}。回答"这套调权在没见过的数据上是否真更好"。
     """
     if store is None:
         return {"error": "无 store"}
-    # 逐信号组合的胜率明细（已含影子表，见 decision_store._refresh_combo_stats）
     try:
-        rows = store.get_signal_win_rates()
+        trades = store.get_settled_trades()  # 已按 exit_date 升序、含 signal_combo
     except Exception as e:
         return {"error": f"取样失败: {e}"}
-    if not rows:
-        return {"n_samples": 0, "recommend": False, "reason": "无已结算样本，无法对照"}
 
-    mults = get_multipliers(store)  # 当前 challenger 乘数
-    champ_num = champ_den = chall_num = chall_den = 0.0
-    total_n = 0
-    for r in rows:
-        combo = r.get("signal_combo", "")
-        n = r.get("total_trades", 0) or 0
-        avg_ret = r.get("avg_ret", 0) or 0
-        if n <= 0:
-            continue
-        total_n += n
-        # champion：每个信号组合等权（乘数视为 1）
-        champ_num += avg_ret * n * 1.0
-        champ_den += n * 1.0
-        # challenger：按反哺乘数加权（乘数>1 的信号在选股里被更多采纳 → 影响更大）
-        m = mults.get(combo, 1.0)
-        chall_num += avg_ret * n * m
-        chall_den += n * m
+    n = len(trades)
+    if n < PROMOTE_MIN_SAMPLES:
+        return {"n_samples": n, "recommend_promote": False,
+                "reason": f"总样本不足({n}<{PROMOTE_MIN_SAMPLES})，无法做可信的样本外对照",
+                "method": "out_of_sample_time_split",
+                "promote_min_samples": PROMOTE_MIN_SAMPLES, "promote_min_edge": PROMOTE_MIN_EDGE}
 
-    champion_avg = round(champ_num / champ_den, 3) if champ_den else 0
+    # 时间切分：前 TRAIN_FRAC 训练、后段测试（训练时不可见）
+    split = max(1, int(n * TRAIN_FRAC))
+    train, test = trades[:split], trades[split:]
+    if len(test) < 1:
+        return {"n_samples": n, "recommend_promote": False,
+                "reason": "测试集为空，样本时间跨度不足", "method": "out_of_sample_time_split"}
+
+    # 只用训练集学乘数（challenger 策略），测试集对此不可见
+    mults = _multipliers_from_trades(train)
+
+    champ_sum = champ_cnt = 0.0
+    chall_num = chall_den = 0.0
+    for t in test:
+        combo = t.get("signal_combo", "")
+        ret = t.get("return_pct") or 0.0
+        champ_sum += ret          # champion：等权
+        champ_cnt += 1
+        m = mults.get(combo, 1.0)  # challenger：用训练集乘数加权
+        chall_num += ret * m
+        chall_den += m
+
+    champion_avg = round(champ_sum / champ_cnt, 3) if champ_cnt else 0
     challenger_avg = round(chall_num / chall_den, 3) if chall_den else 0
     edge = round(challenger_avg - champion_avg, 3)
 
-    if total_n < PROMOTE_MIN_SAMPLES:
-        recommend, reason = False, f"样本不足({total_n}<{PROMOTE_MIN_SAMPLES})，继续观察不晋升"
+    if len(test) < PROMOTE_MIN_SAMPLES:
+        recommend, reason = False, f"测试集样本不足({len(test)}<{PROMOTE_MIN_SAMPLES})，样本外结论不够可信"
     elif edge >= PROMOTE_MIN_EDGE:
-        recommend, reason = True, f"challenger 领先 champion {edge}pp 且样本充分，建议晋升"
+        recommend, reason = True, f"样本外测试集上 challenger 领先 champion {edge}pp，调权有泛化价值，建议晋升"
     else:
-        recommend, reason = False, f"challenger 未稳定领先(edge={edge}pp<{PROMOTE_MIN_EDGE})，保持 champion"
+        recommend, reason = False, f"样本外未稳定领先(edge={edge}pp<{PROMOTE_MIN_EDGE})，保持 champion 不晋升"
 
     return {
-        "champion_avg": champion_avg,      # 不调权基线的加权平均收益(pp)
-        "challenger_avg": challenger_avg,  # 反哺加权后的平均收益(pp)
-        "edge": edge,                      # challenger 领先幅度(pp)
-        "n_samples": total_n,
+        "method": "out_of_sample_time_split",   # 明示口径：样本外时间切分
+        "champion_avg": champion_avg,           # 测试集等权平均收益(pp)
+        "challenger_avg": challenger_avg,        # 测试集按训练集乘数加权收益(pp)
+        "edge": edge,
+        "n_samples": n,
+        "train_size": len(train),
+        "test_size": len(test),
+        "learned_multipliers": len(mults),      # 训练集学到多少个信号乘数
         "recommend_promote": recommend,
         "reason": reason,
         "promote_min_samples": PROMOTE_MIN_SAMPLES,

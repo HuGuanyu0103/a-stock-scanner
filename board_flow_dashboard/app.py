@@ -2254,6 +2254,14 @@ def _run_debate_full(rounds: int = 1, user_context: str = "") -> dict:
     行为一致（同样注入历史胜率、同样把共识票落库做胜率追踪）。
     返回 report dict；失败时返回 {"error": ...}。
     """
+    # 合规护栏：用户诉求会拼进主席路由 prompt，先做 prompt 注入清洗
+    if user_context:
+        try:
+            from .guardrails import sanitize_user_input
+        except ImportError:
+            from guardrails import sanitize_user_input  # type: ignore
+        user_context = sanitize_user_input(user_context, max_len=500)
+
     data = select_stocks(collector=collector)
     all_candidates = data.get("pool_a", []) + data.get("pool_b", [])
     if not all_candidates:
@@ -2792,5 +2800,11 @@ _auto_generate_reports()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    logger.info("启动看板服务 v2: http://127.0.0.1:%d", port)
-    app.run(host="0.0.0.0", port=port, debug=True, use_reloader=False)
+    # 安全：debug 默认关闭。debug=True 会开启 Werkzeug 交互式调试器，若服务
+    # 暴露到公网（如经内网穿透），任何触发异常的请求都能拿到 Python 控制台 →
+    # 远程代码执行。仅在明确设置 FLASK_DEBUG=1 的本地排障场景才开启。
+    debug = os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true", "yes")
+    # host 默认仅绑本机回环；需对外提供时显式设 HOST=0.0.0.0（并自行确保鉴权/隧道安全）
+    host = os.environ.get("HOST", "127.0.0.1")
+    logger.info("启动看板服务 v2: http://%s:%d (debug=%s)", host, port, debug)
+    app.run(host=host, port=port, debug=debug, use_reloader=False)

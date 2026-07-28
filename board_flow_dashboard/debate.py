@@ -42,11 +42,45 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# ── 成本护栏 ────────────────────────────────────────────────────
+# 一次辩论会串/并发触发数十次 LLM 调用（route + 5分析师mini-loop + 多轮反驳 +
+# 回炉补证 + moderate）。无上限时，用户一句"帮我把关"经 chat_agent 工具触发，
+# 极端情况下费用/延迟失控。这里用「单次辩论调用预算」硬熔断：达到上限后，
+# 后续阶段优雅降级（跳过回炉、mini-loop 立即收尾），保证有结论但不烧钱。
+DEBATE_MAX_LLM_CALLS = 26   # 单次辩论 LLM 调用硬上限（正常 route1+析5*~2+反驳5+回炉+mod≈18-22）
+
+
+class _CallBudget:
+    """线程安全的调用计数器 + 硬上限。over() 为真时各阶段应主动降级。"""
+
+    def __init__(self, limit: int):
+        self.limit = limit
+        self._n = 0
+        self._lock = threading.Lock()
+
+    def take(self) -> bool:
+        """预约一次调用配额；超限返回 False（调用方应跳过该次 LLM 调用）。"""
+        with self._lock:
+            if self._n >= self.limit:
+                return False
+            self._n += 1
+            return True
+
+    def over(self) -> bool:
+        with self._lock:
+            return self._n >= self.limit
+
+    @property
+    def used(self) -> int:
+        with self._lock:
+            return self._n
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -486,6 +520,9 @@ class DebateOrchestrator:
         if not self._init_client():
             return None
 
+        # 成本护栏：本次辩论的调用预算（贯穿 route/evidence/debate/challenge/moderate）
+        self._budget = _CallBudget(DEBATE_MAX_LLM_CALLS)
+
         metas = {
             "tech": ("观象", "技术+资金面"), "sentiment": ("观势", "情绪面"),
             "news": ("观闻", "消息面"), "history": ("观史", "历史复盘"), "risk": ("观危", "风险控制"),
@@ -571,7 +608,9 @@ class DebateOrchestrator:
         weights = self._compute_role_weights(breadth, signals)
 
         # ── ④ 主席回炉补证（L4）：对存疑点把特定分析师打回去补数据 ───
-        challenges = self._challenge(cur_opinions, all_rounds, metas)
+        # 成本护栏：回炉是最贵的可选阶段（每人一个 mini-loop）。预算吃紧时直接跳过，
+        # 把剩余额度留给必不可少的 moderate 收敛，保证有结论。
+        challenges = {} if self._budget.over() else self._challenge(cur_opinions, all_rounds, metas)
         if challenges:
             def _re_query(item):
                 role, ask = item
@@ -615,6 +654,9 @@ class DebateOrchestrator:
                 "route_reason": route.get("reason", ""),
                 "autonomous_evidence": autonomous,
                 "recalled_analysts": list(challenges.keys()),
+                "llm_calls": self._budget.used,          # 本次辩论实际 LLM 调用数
+                "llm_call_budget": self._budget.limit,   # 硬上限
+                "budget_hit": self._budget.over(),       # 是否触顶降级
             },
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -643,6 +685,9 @@ class DebateOrchestrator:
             "严格输出 JSON：{\"roster\":[\"tech\",...],\"directives\":{\"tech\":\"取证重点一句话\",...},"
             "\"reason\":\"你如此派活的理由\"}"
         )
+        budget = getattr(self, "_budget", None)
+        if budget is not None:
+            budget.take()  # 路由计入预算（几乎不会在入口就超限）
         try:
             resp = self._client.chat.completions.create(
                 model=self._model,
@@ -690,6 +735,9 @@ class DebateOrchestrator:
             "角色键取值 tech/sentiment/news/history/risk；无需召回则 {\"recall\":{}}。"
         )
         payload = {"分析师结论摘要": brief, "辩论中的反驳": unresolved[:10]}
+        budget = getattr(self, "_budget", None)
+        if budget is not None and not budget.take():
+            return {}  # 预算耗尽，不回炉
         try:
             resp = self._client.chat.completions.create(
                 model=self._model,
@@ -743,6 +791,9 @@ class DebateOrchestrator:
                 "\n\n=== 上一轮其他分析师对你的反驳（请针对性回应：坚持或让步）===\n"
                 + json.dumps(against_me, ensure_ascii=False, indent=2)
             )
+        budget = getattr(self, "_budget", None)
+        if budget is not None and not budget.take():
+            return None  # 预算耗尽，跳过本轮反驳（视作无实质反驳，促使收敛）
         try:
             resp = self._client.chat.completions.create(
                 model=self._model,
@@ -766,6 +817,9 @@ class DebateOrchestrator:
 
     def _ask_analyst(self, role: str, system_prompt: str, data: str) -> Optional[dict]:
         """询问一位分析师（旧路径：喂预抽数据一次问，保留作 mini-loop 的兜底）。"""
+        budget = getattr(self, "_budget", None)
+        if budget is not None:
+            budget.take()  # 兜底路径也计入预算
         try:
             resp = self._client.chat.completions.create(
                 model=self._model,
@@ -828,7 +882,11 @@ class DebateOrchestrator:
             {"role": "user", "content": task},
         ]
         trace: list[dict] = []
+        budget = getattr(self, "_budget", None)
         for _ in range(max(1, max_iters)):
+            # 成本护栏：预算耗尽则不再取证，直接跳到收尾出结论
+            if budget is not None and not budget.take():
+                break
             try:
                 resp = self._client.chat.completions.create(
                     model=self._model, messages=messages,
@@ -864,6 +922,8 @@ class DebateOrchestrator:
             "证据收集完毕。现在严格按你的 JSON 输出格式给出最终专业意见，不要再调用工具，"
             "不要输出 JSON 以外的内容。"
         )})
+        if budget is not None:
+            budget.take()  # 收尾是每个分析师必做步骤，计入预算（保证 used 真实、上限可控）
         try:
             resp = self._client.chat.completions.create(
                 model=self._model, messages=messages,
@@ -919,6 +979,9 @@ class DebateOrchestrator:
         context += (f"=== 完整候选池 ===\n{full_data}\n\n"
                     f"=== 当前热板块 ===\n{hot_sectors[:8]}")
 
+        budget = getattr(self, "_budget", None)
+        if budget is not None:
+            budget.take()  # 收敛是终局必做步骤，计入预算但不跳过
         try:
             resp = self._client.chat.completions.create(
                 model=self._model,
@@ -943,11 +1006,12 @@ class DebateOrchestrator:
 
     @staticmethod
     def _parse_json(raw: str) -> Optional[dict]:
+        # 括号配平抽取，比贪婪正则更稳（见 llm_json.py 说明）
         try:
-            m = re.search(r'\{.*\}', raw, re.DOTALL)
-            return json.loads(m.group() if m else raw)
-        except (json.JSONDecodeError, AttributeError):
-            return None
+            from .llm_json import parse_json_object
+        except ImportError:
+            from llm_json import parse_json_object  # type: ignore
+        return parse_json_object(raw)
 
 
 # ── 全局单例 ──────────────────────────────────────────────────
