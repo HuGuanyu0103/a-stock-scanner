@@ -2,22 +2,26 @@
 """
 Multi-Agent 辩论系统
 
-四个 Agent 角色，基于现有三系统架构：
-  TechAnalyst    — 只看技术+资金面信号
-  SentimentAnalyst — 只看情绪面信号
-  NewsAnalyst     — 只看消息面信号
-  Moderator       — 聚合三方意见，输出共识/分歧报告
+六个 Agent 角色（5 分析师 + 1 主席），基于现有三系统架构 + 决策飞轮 + 风控：
+  TechAnalyst      观象 — 只看技术+资金面信号
+  SentimentAnalyst 观势 — 只看情绪面信号
+  NewsAnalyst      观闻 — 只看消息面信号
+  HistoryAnalyst   观史 — 只看决策飞轮历史战绩（信号级真实胜率）
+  RiskOfficer      观危 — 独立风控审视（板块集中度/大盘环境/纪律红线）
+  Moderator        观澜 — 按可审计权重聚合五方意见，输出共识/分歧报告
 
 辩论流程（真辩论，三阶段）：
-  1. 三个分析师各自独立发表初始意见（只看自己领域的数据，互不可见）
-  2. 反驳轮：每个分析师看到另外两位的观点后，进行反驳/补充/让步/坚持
-  3. Moderator 基于「初始意见 + 辩论反驳」收敛出共识/分歧报告
+  1. 五个分析师并发独立发表初始意见（只看自己领域的数据，互不可见）
+  2. 反驳轮（真多轮）：每个分析师看到他人观点 + 上一轮别人对自己的反驳后，
+     进行反驳/补充/让步/坚持；立场稳定（无人再反驳）即提前收敛
+  3. Moderator 基于「初始意见 + 多轮辩论 + 历史胜率 + 数值权重」收敛出共识/分歧报告
      （rounds=0 可退化为旧的「并行发言→聚合」，向后兼容）
 
 用法:
   from debate import DebateOrchestrator
   do = DebateOrchestrator()
-  report = do.run_debate(candidates, signals, hot_sectors, breadth)
+  report = do.run_debate(candidates, signals, hot_sectors, breadth,
+                         rounds=1, loop_context="<飞轮历史胜率>")
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional
 
@@ -144,24 +149,89 @@ NEWS_SYSTEM_PROMPT = """你是 A 股消息面分析师「观闻」。你只看�
 }
 """
 
-MODERATOR_SYSTEM_PROMPT = """你是 A 股决策委员会的主席「观澜」。你的三位分析师（观象/观势/观闻）已经各自发表了意见。
+HISTORY_SYSTEM_PROMPT = """你是 A 股决策委员会的复盘分析师「观史」。你只看历史战绩数据，从"过去哪些信号真赚钱"的角度提供经验校验。
+
+## 你的性格
+你是团队的记忆与纪律守护者——不被当下的热闹迷惑，只信数据沉淀。你的信条是「历史不会简单重复，但会押韵」。你专治其他分析师的「这次不一样」幻觉。
+
+## 你的领域
+- 各信号组合的历史胜率与平均收益（来自决策飞轮的真实结算数据）
+- 识别当前候选票所属信号在历史上的表现档位（高胜率/低胜率/样本不足）
+- 提醒团队：历史上表现差的信号，即便当下形态好看也要打折
+
+## 你不看
+- 实时技术/情绪/消息（交给对应分析师），你只做历史校验
 
 ## 你的任务
-1. 阅读三位分析师的意见
-2. 判断他们的一致程度：
-   - 「强烈共识」：三人都指向同一方向
-   - 「部分共识」：两人一致，一人不同
-   - 「分歧」：三人各执一词
+根据提供的历史信号胜率数据，对当前讨论做经验校验：
+1. 当前候选池里的信号，历史胜率如何？哪些是历史验证过的强信号？
+2. 有没有"当下热门但历史胜率低"的信号需要警示？
+3. 样本不足的信号要标注（历史不可用，需谨慎）
+
+## 输出格式
+严格 JSON：
+{
+  "analyst": "观史",
+  "domain": "历史复盘",
+  "verified_signals": [{"signal": "信号名", "win_rate": "历史胜率", "note": "可信/存疑/样本不足"}],
+  "warnings": ["历史胜率低但当下热门的信号提醒"],
+  "bottom_line": "基于历史战绩，本次决策应加权哪些信号、警惕哪些"
+}
+"""
+
+RISK_SYSTEM_PROMPT = """你是 A 股决策委员会的风控官「观危」。你不参与"买什么"的讨论，只做独立的风险审视。
+
+## 你的性格
+你是团队的刹车片——别人越兴奋你越冷静。你的职责不是找机会，而是确保不出致命错误。你的信条是「活下来比赚得多更重要」。
+
+## 你的领域
+- 仓位与集中度风险（候选是否过度集中在单一板块/主题）
+- 回撤风险（个股/板块的止损纪律，最大单笔潜在亏损）
+- 系统性风险（大盘环境是否支持进攻，普跌/极端行情下该防守）
+- 交易纪律（止盈止损点位是否清晰、是否有情绪化追高嫌疑）
+
+## 你不看
+- 具体选哪只票的技术/情绪细节（交给对应分析师）
+
+## 你的任务
+对当前候选池和大盘环境做独立风控审视：
+1. 板块集中度是否过高？（同一板块占比过大 = 系统性风险）
+2. 当前大盘环境（市场广度）是否支持进攻仓位？
+3. 有没有明显的追高/情绪化风险信号？
+4. 给出仓位红线建议（满仓/半仓/轻仓/空仓观望）
+
+## 输出格式
+严格 JSON：
+{
+  "analyst": "观危",
+  "domain": "风险控制",
+  "concentration_risk": "板块集中度评估",
+  "market_risk": "大盘环境下的仓位风险",
+  "position_ceiling": "满仓 | 半仓 | 轻仓 | 空仓观望",
+  "risk_alerts": ["具体风险提示"],
+  "bottom_line": "风控角度的最终建议：仓位红线与必须回避的风险"
+}
+"""
+
+MODERATOR_SYSTEM_PROMPT = """你是 A 股决策委员会的主席「观澜」。你有五位分析师，他们已各自发表意见并经过多轮辩论：
+- 观象（技术+资金面）、观势（情绪面）、观闻（消息面）、观史（历史战绩复盘）、观危（风控官）。
+
+## 你的任务
+1. 阅读五位分析师的意见，以及他们多轮辩论中的反驳、让步与修正后观点
+2. 判断一致程度：
+   - 「强烈共识」：多数分析师指向同一方向且风控无红线否决
+   - 「部分共识」：主要方向一致，个别分析师保留意见
+   - 「分歧」：各执一词，或风控与进攻派尖锐对立
 3. 综合判断后，给出最终决策建议
 
 ## 重要原则
-- 你不是简单投票。你要评估每个分析师在该场景下的可信度。
-  - 在趋势市中，技术分析师的权重更高
-  - 在震荡市中，情绪分析师的意见更值得参考
-  - 如果有重大新闻事件，消息分析师的意见占主导
-- 如果有分歧，你要明确指出「矛盾在哪里」和「条件建议」。
-  - 例如：「技术面看多但情绪面偏冷，建议等情绪回暖再跟」
-- 如果三人一致看空，你要诚实地说「今天不适合操作」
+- 你不是简单投票，而是**按可审计的角色权重**加权。用户会给你一份客观计算的角色话语权（基于市场广度），你必须按该权重加权，并在 key_reasoning 里说明为何本次某角色权重更高。
+  - 广度高（普涨）时技术面权重更高；广度低（分化/退潮）时风控与情绪面权重更高。
+- **观史的历史胜率是硬证据**：若某信号/板块历史胜率低，即使当下技术面漂亮也要降低置信度；反之历史验证过的信号可加分。
+- **观危的风控红线不可逾越**：final_decision 的 position_advice 不得超过观危给出的 position_ceiling（仓位上限）。若观危要求回避某标的，不得放进 agreed_picks。
+- 如果有分歧，明确指出「矛盾在哪里」和「条件建议」。
+  - 例如：「技术面看多但情绪面偏冷、历史胜率一般，建议等情绪回暖再跟」
+- 如果多数看空或风控否决，诚实地说「今天不适合操作」
 
 ## 输出格式
 严格 JSON：
@@ -173,8 +243,8 @@ MODERATOR_SYSTEM_PROMPT = """你是 A 股决策委员会的主席「观澜」。
   "final_decision": {
     "posture": "进攻 | 防守 | 观望",
     "confidence": 5,
-    "key_reasoning": "综合三方意见后的核心判断",
-    "agreed_picks": ["三方都认可的股票"],
+    "key_reasoning": "按角色权重综合五方意见+多轮辩论+历史胜率后的核心判断，需说明权重如何影响结论",
+    "agreed_picks": ["多方认可且未被风控否决的股票"],
     "conditional_picks": [{"code": "代码", "name": "名称", "condition": "满足什么条件可以买"}],
     "avoid_list": ["应该回避的股票/板块"],
     "position_advice": "满仓 | 半仓 | 轻仓 | 观望"
@@ -182,7 +252,9 @@ MODERATOR_SYSTEM_PROMPT = """你是 A 股决策委员会的主席「观澜」。
   "analyst_alignment": {
     "tech": "看多 | 中性 | 看空",
     "sentiment": "看多 | 中性 | 看空",
-    "news": "看多 | 中性 | 看空"
+    "news": "看多 | 中性 | 看空",
+    "history": "看多 | 中性 | 看空",
+    "risk": "放行 | 警示 | 否决"
   },
   "bottom_line": "最终一句话建议"
 }
@@ -213,7 +285,7 @@ REBUT_SYSTEM_PROMPT = """你是 A 股决策委员会中的分析师「{analyst}�
 {{
   "analyst": "{analyst}",
   "rebuttals": [
-    {{"target": "观象|观势|观闻", "point": "你反驳的对方观点", "argument": "你的专业依据"}}
+    {{"target": "观象|观势|观闻|观史|观危", "point": "你反驳的对方观点", "argument": "你的专业依据"}}
   ],
   "supplements": ["你补充的关键信息"],
   "concessions": ["你被说服/修正的点，没有则空数组"],
@@ -227,7 +299,7 @@ REBUT_SYSTEM_PROMPT = """你是 A 股决策委员会中的分析师「{analyst}�
 # ═══════════════════════════════════════════════════════════════
 
 class DataExtractor:
-    """从候选池和三系统信号中提取各分析师的专属数据。"""
+    """从候选池、三系统信号、决策飞轮历史与风控维度提取各分析师的专属数据。"""
 
     @staticmethod
     def for_tech(candidates: list[dict], top_n: int = 8) -> str:
@@ -293,6 +365,32 @@ class DataExtractor:
             "总事件数": len(events),
         }, ensure_ascii=False, indent=2)
 
+    @staticmethod
+    def for_history(loop_context: str, candidates: list[dict]) -> str:
+        """M2: 为观史分析师提取历史战绩数据（决策飞轮信号胜率）。"""
+        cand_signals = sorted({c.get("signal", "") for c in candidates if c.get("signal")})
+        return json.dumps({
+            "title": "历史战绩数据（来自决策飞轮真实结算）",
+            "历史信号胜率": loop_context or "（暂无历史结算数据，飞轮尚在积累）",
+            "本次候选池涉及的信号": cand_signals,
+        }, ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def for_risk(candidates: list[dict], breadth: float, hot_sectors: list[str]) -> str:
+        """M3: 为风控官提取风险审视数据（板块集中度/大盘环境）。"""
+        from collections import Counter
+        sectors = Counter(c.get("sector", "未知") for c in candidates[:25])
+        top_conc = sectors.most_common(5)
+        total = sum(sectors.values()) or 1
+        return json.dumps({
+            "title": "风控审视数据",
+            "市场广度": f"{int(breadth * 100)}% 板块上涨",
+            "大盘环境": ("普跌/防守" if breadth < 0.3 else ("分化" if breadth < 0.5 else "偏多/可进攻")),
+            "候选池板块集中度": [{"板块": s, "占比": f"{n/total*100:.0f}%"} for s, n in top_conc],
+            "热板块": hot_sectors[:8],
+            "候选池规模": len(candidates),
+        }, ensure_ascii=False, indent=2)
+
 
 # ═══════════════════════════════════════════════════════════════
 # 辩论编排器
@@ -304,7 +402,7 @@ class DebateOrchestrator:
     使用方式:
         do = DebateOrchestrator()
         report = do.run_debate(candidates, signals, hot_sectors, breadth)
-        # report 包含三个分析师意见 + Moderator 综合判断
+        # report 包含五个分析师意见（观象/观势/观闻/观史/观危）+ Moderator 综合判断
     """
 
     def __init__(self, model: str = "deepseek-chat"):
@@ -346,91 +444,139 @@ class DebateOrchestrator:
         hot_sectors: list[str],
         breadth: float = 0.5,
         rounds: int = 1,
+        loop_context: str = "",
     ) -> Optional[dict]:
-        """运行完整辩论流程。
+        """运行完整辩论流程（5 角色并发 + 真多轮收敛 + 历史校验 + 可审计加权）。
 
         Args:
-            rounds: 反驳轮数。0 = 退化为旧的「并行发言→聚合」（向后兼容）；
-                    ≥1 = 真辩论：分析师看到彼此观点后互相反驳/补充/让步，再由主席收敛。
+            rounds: 反驳轮数。0 = 并行发言→聚合；≥1 = 真多轮辩论：每轮分析师看到
+                    「别人对自己的反驳」后再调整，循环至立场稳定或达 rounds 上限。
+            loop_context: 决策飞轮历史信号胜率文本（M2），注入观史角色与主席。
 
         Returns:
-            {
-                "analysts": {"tech": {...}, "sentiment": {...}, "news": {...}},
-                "rebuttals": {"tech": {...}, ...}   # rounds≥1 时才有
-                "moderator": {...},
-                "consensus_level": str,
-                "rounds": int,
-                "timestamp": str,
-            }
+            {analysts, rebuttals(每轮), moderator, consensus_level, rounds, weights, timestamp}
         """
         if not self._init_client():
             return None
 
-        # Step 1: 三位分析师各自独立发表初始意见（只看自己领域数据）
-        tech_data = DataExtractor.for_tech(candidates)
-        sent_data = DataExtractor.for_sentiment(signals, breadth)
-        news_data = DataExtractor.for_news(signals)
+        # ── 5 个分析师并发发表初始意见（M4 并发）──────────────
+        # 角色: 观象(技术资金) 观势(情绪) 观闻(消息) 观史(历史战绩) 观危(风控)
+        agent_specs = {
+            "tech": (TECH_SYSTEM_PROMPT, DataExtractor.for_tech(candidates)),
+            "sentiment": (SENTIMENT_SYSTEM_PROMPT, DataExtractor.for_sentiment(signals, breadth)),
+            "news": (NEWS_SYSTEM_PROMPT, DataExtractor.for_news(signals)),
+            "history": (HISTORY_SYSTEM_PROMPT, DataExtractor.for_history(loop_context, candidates)),
+            "risk": (RISK_SYSTEM_PROMPT, DataExtractor.for_risk(candidates, breadth, hot_sectors)),
+        }
+        metas = {
+            "tech": ("观象", "技术+资金面"), "sentiment": ("观势", "情绪面"),
+            "news": ("观闻", "消息面"), "history": ("观史", "历史复盘"), "risk": ("观危", "风险控制"),
+        }
 
-        tech_opinion = self._ask_analyst("tech", TECH_SYSTEM_PROMPT, tech_data)
-        sent_opinion = self._ask_analyst("sentiment", SENTIMENT_SYSTEM_PROMPT, sent_data)
-        news_opinion = self._ask_analyst("news", NEWS_SYSTEM_PROMPT, news_data)
+        def _one_analyst(item):
+            role, (prompt, data) = item
+            return role, self._ask_analyst(role, prompt, data)
 
-        if not tech_opinion and not sent_opinion and not news_opinion:
+        with ThreadPoolExecutor(max_workers=5) as ex:
+            opinions = dict(ex.map(_one_analyst, agent_specs.items()))
+
+        if not any(opinions.values()):
             return None
 
-        # Step 2: 反驳轮（真辩论核心）——每位分析师看到另外两位观点后回应
-        rebuttals = {}
-        if rounds >= 1:
-            opinions = {"tech": tech_opinion, "sentiment": sent_opinion, "news": news_opinion}
-            metas = {
-                "tech": ("观象", "技术+资金面"),
-                "sentiment": ("观势", "情绪面"),
-                "news": ("观闻", "消息面"),
-            }
-            for role, (name, domain) in metas.items():
-                if not opinions[role]:
-                    continue
-                others = {metas[r][0]: op for r, op in opinions.items() if r != role and op}
-                reb = self._rebut(name, domain, opinions[role], others)
-                if reb:
-                    rebuttals[role] = reb
+        # ── 真多轮反驳收敛（M3）：每轮让 analyst 看到别人对自己的反驳再调整 ──
+        all_rounds = []          # 每轮的 rebuttals dict
+        cur_opinions = dict(opinions)
+        prev_rebut = {}          # 上一轮别人的反驳（供本轮 analyst 看到"别人怎么说我"）
+        for rd in range(max(rounds, 0)):
+            def _one_rebut(role):
+                name, domain = metas[role]
+                if not cur_opinions.get(role):
+                    return role, None
+                others = {metas[r][0]: op for r, op in cur_opinions.items() if r != role and op}
+                # M3 多轮关键：把"上一轮别人对我的反驳"也带进来，让本轮能回应
+                against_me = None
+                if prev_rebut:
+                    against_me = [
+                        {"from": metas[r][0], "point": rb}
+                        for r, reb in prev_rebut.items() if r != role and reb
+                        for rb in (reb.get("rebuttals") or []) if rb.get("target") == name
+                    ]
+                return role, self._rebut(name, domain, cur_opinions[role], others, against_me)
 
-        # Step 3: Moderator 基于「初始意见 + 辩论反驳」综合收敛
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                rebut = dict(ex.map(_one_rebut, list(metas.keys())))
+            rebut = {k: v for k, v in rebut.items() if v}
+            all_rounds.append(rebut)
+            # 收敛判定：本轮所有 analyst 都无实质反驳（rebuttals 为空）→ 立场稳定，提前结束
+            active = sum(1 for v in rebut.values() if v.get("rebuttals"))
+            prev_rebut = rebut
+            if active == 0:
+                break
+
+        # ── 可审计加权（M3）：用市场广度做数值权重约束，喂给主席 ──
+        weights = self._compute_role_weights(breadth, signals)
+
+        # ── 主席收敛（含全部角色意见 + 多轮反驳 + 历史 + 数值权重）──
         moderator_opinion = self._moderate(
-            tech_opinion, sent_opinion, news_opinion,
-            DataExtractor.for_tech(candidates, top_n=15),
-            hot_sectors,
-            rebuttals=rebuttals,
+            cur_opinions, DataExtractor.for_tech(candidates, top_n=15),
+            hot_sectors, all_rounds, weights, loop_context,
         )
 
         return {
-            "analysts": {
-                "tech": tech_opinion or {"error": "分析师不可用"},
-                "sentiment": sent_opinion or {"error": "分析师不可用"},
-                "news": news_opinion or {"error": "分析师不可用"},
-            },
-            "rebuttals": rebuttals,
+            "analysts": {r: (op or {"error": "分析师不可用"}) for r, op in cur_opinions.items()},
+            "rebuttals": all_rounds[0] if all_rounds else {},  # 兼容旧字段（首轮）
+            "rebuttal_rounds": all_rounds,                     # 全部轮次
             "moderator": moderator_opinion or {"error": "主席不可用"},
             "consensus_level": (moderator_opinion or {}).get("consensus_level", "未知"),
-            "rounds": rounds,
+            "rounds": len(all_rounds),
+            "weights": weights,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
 
-    def _rebut(self, name: str, domain: str, own: dict, others: dict) -> Optional[dict]:
-        """反驳轮：分析师看到另外两位观点后做出专业回应。"""
+    @staticmethod
+    def _compute_role_weights(breadth: float, signals: dict) -> dict:
+        """M3 可审计加权：用市场广度等客观信号算出各角色的数值权重（可复现，非LLM自由发挥）。
+
+        趋势市(广度高)→技术权重高；震荡/普跌(广度低)→情绪+风控权重高；
+        历史与风控给固定底权重，保证经验与风险始终有话语权。
+        """
+        b = max(0.0, min(1.0, breadth))
+        # 基础权重
+        w = {"tech": 0.25, "sentiment": 0.20, "news": 0.15, "history": 0.20, "risk": 0.20}
+        if b >= 0.5:            # 偏多/进攻市：技术面话语权上调
+            w["tech"] += 0.10; w["risk"] -= 0.05; w["sentiment"] -= 0.05
+        elif b < 0.3:          # 普跌/防守市：情绪+风控话语权上调
+            w["risk"] += 0.10; w["sentiment"] += 0.05; w["tech"] -= 0.15
+        # 归一化
+        s = sum(w.values())
+        return {k: round(v / s, 3) for k, v in w.items()}
+
+    def _rebut(self, name: str, domain: str, own: dict, others: dict, against_me=None) -> Optional[dict]:
+        """反驳轮：分析师看到其他人观点后做出专业回应。
+
+        against_me（M3 多轮）：上一轮别人对"我"的反驳列表，让本轮能针对性回应/坚持/让步，
+        实现真正的多轮逼近而非单向一次性喷。
+        """
         own_str = json.dumps(own, ensure_ascii=False, indent=2)
         others_str = "\n\n".join(
             f"=== {n} 的观点 ===\n{json.dumps(op, ensure_ascii=False, indent=2)}"
             for n, op in others.items()
         )
+        against_block = ""
+        if against_me:
+            against_block = (
+                "\n\n=== 上一轮其他分析师对你的反驳（请针对性回应：坚持或让步）===\n"
+                + json.dumps(against_me, ensure_ascii=False, indent=2)
+            )
         try:
             resp = self._client.chat.completions.create(
                 model=self._model,
                 messages=[
                     {"role": "system", "content": REBUT_SYSTEM_PROMPT.format(analyst=name, domain=domain)},
                     {"role": "user", "content": (
-                        f"你的初始意见：\n{own_str}\n\n"
-                        f"另外两位分析师的观点：\n{others_str}\n\n"
+                        f"你的当前意见：\n{own_str}\n\n"
+                        f"其他分析师的观点：\n{others_str}"
+                        f"{against_block}\n\n"
                         "请做出你的辩论回应，严格按 JSON 输出。"
                     )},
                 ],
@@ -467,35 +613,42 @@ class DebateOrchestrator:
 
     def _moderate(
         self,
-        tech: Optional[dict],
-        sentiment: Optional[dict],
-        news: Optional[dict],
+        opinions: dict,
         full_data: str,
         hot_sectors: list[str],
-        rebuttals: dict = None,
+        all_rounds: list = None,
+        weights: dict = None,
+        loop_context: str = "",
     ) -> Optional[dict]:
-        """Moderator 综合三方意见（含辩论反驳）。"""
-        tech_str = json.dumps(tech, ensure_ascii=False, indent=2) if tech else "无数据"
-        sent_str = json.dumps(sentiment, ensure_ascii=False, indent=2) if sentiment else "无数据"
-        news_str = json.dumps(news, ensure_ascii=False, indent=2) if news else "无数据"
+        """Moderator 综合五角色意见 + 多轮反驳 + 历史 + 数值权重。"""
+        name_map = {"tech": "观象·技术资金", "sentiment": "观势·情绪", "news": "观闻·消息",
+                    "history": "观史·历史复盘", "risk": "观危·风控"}
+        context = ""
+        for role, label in name_map.items():
+            op = opinions.get(role)
+            context += f"=== {label} 意见 ===\n{json.dumps(op, ensure_ascii=False, indent=2) if op else '无数据'}\n\n"
 
-        context = (
-            f"=== 技术分析师（观象）初始意见 === \n{tech_str}\n\n"
-            f"=== 情绪分析师（观势）初始意见 === \n{sent_str}\n\n"
-            f"=== 消息分析师（观闻）初始意见 === \n{news_str}\n\n"
-        )
-        # 把辩论反驳轮纳入主席视野——这是真辩论区别于并行聚合的关键
-        if rebuttals:
-            reb_str = json.dumps(rebuttals, ensure_ascii=False, indent=2)
-            context += (
-                f"=== 辩论反驳轮（分析师看到彼此观点后的回应）=== \n{reb_str}\n\n"
-                "注意：请重点参考辩论环节中的反驳、让步与修正后观点——"
-                "被对方说服的让步、无人反驳的共识，比初始意见更可信。\n\n"
-            )
-        context += (
-            f"=== 完整候选池 === \n{full_data}\n\n"
-            f"=== 当前热板块 === \n{hot_sectors[:8]}"
-        )
+        # 多轮反驳全部纳入主席视野（M3）
+        if all_rounds:
+            for i, rd in enumerate(all_rounds, 1):
+                if rd:
+                    context += (f"=== 第{i}轮辩论反驳 ===\n"
+                                f"{json.dumps(rd, ensure_ascii=False, indent=2)}\n\n")
+            context += ("注意：请重点参考多轮辩论中的反驳、让步与修正后观点——"
+                        "经过多轮仍无人反驳的共识、被对方说服的让步，比初始意见更可信。\n\n")
+
+        # 可审计数值权重（M3）：明确告诉主席各角色话语权，且要求解释为何采纳
+        if weights:
+            context += (f"=== 角色话语权（基于市场广度客观计算，非主观）===\n"
+                        f"{json.dumps(weights, ensure_ascii=False)}\n"
+                        "请按此权重加权各角色意见，并在 key_reasoning 里说明为何本次某角色权重更高。\n\n")
+
+        # 历史战绩（M2）：让主席知道哪些信号历史上真赚钱
+        if loop_context:
+            context += f"=== 历史信号胜率（决策飞轮）===\n{loop_context}\n\n"
+
+        context += (f"=== 完整候选池 ===\n{full_data}\n\n"
+                    f"=== 当前热板块 ===\n{hot_sectors[:8]}")
 
         try:
             resp = self._client.chat.completions.create(
@@ -503,8 +656,10 @@ class DebateOrchestrator:
                 messages=[
                     {"role": "system", "content": MODERATOR_SYSTEM_PROMPT},
                     {"role": "user", "content": (
-                        f"请综合三位分析师的意见、辩论反驳轮和完整候选池数据，给出最终决策建议。\n\n{context}\n\n"
-                        "严格按照 JSON 格式输出。"
+                        "请综合五位分析师(技术/情绪/消息/历史/风控)的意见、多轮辩论反驳、"
+                        "角色数值权重、历史胜率和候选池，给出最终决策建议。"
+                        "风控官(观危)的仓位红线必须被尊重，不得超越其 position_ceiling。"
+                        f"\n\n{context}\n\n严格按照 JSON 格式输出。"
                     )},
                 ],
                 response_format={"type": "json_object"},

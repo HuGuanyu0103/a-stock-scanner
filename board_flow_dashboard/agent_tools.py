@@ -16,6 +16,7 @@
   2. get_sector_trend(name)     — 板块资金流时序趋势（判断板块启动/退潮）
   3. get_candidate_pool()       — 当前 A/B 候选池（选股推荐）
   4. get_market_signals()       — 大盘/情绪/三系统信号
+  5. run_debate()               — 召集五分析师多轮辩论 + 主席综合（重工具，审慎决策用）
 """
 
 from __future__ import annotations
@@ -97,6 +98,20 @@ TOOL_SCHEMAS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_debate",
+            "description": (
+                "召集五位 AI 分析师（观象-技术/观势-情绪/观闻-消息/观史-历史战绩/观危-风控）"
+                "对当前候选池展开多轮辩论，由主席「观澜」按可审计权重综合，给出共识标的、"
+                "仓位建议与风险红线。当用户需要『更审慎/多视角/委员会级』的决策，或明确要求"
+                "『开个会/辩论一下/让分析师们讨论/帮我把关』时调用。此工具较重（多次模型调用），"
+                "仅在单点诊断不足以支撑决策、用户想要交叉验证时使用。"
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 
@@ -172,12 +187,13 @@ class ToolContext:
 
     def __init__(self, collector=None, extract_stock_context: Optional[Callable] = None,
                  select_stocks: Optional[Callable] = None, get_signal_store: Optional[Callable] = None,
-                 enable_write: bool = False):
+                 enable_write: bool = False, run_debate_fn: Optional[Callable] = None):
         self.collector = collector
         self.extract_stock_context = extract_stock_context   # app._extract_stock_context
         self.select_stocks = select_stocks                   # stock_selector.select_stocks
         self.get_signal_store = get_signal_store             # signals.get_signal_store
         self.enable_write = enable_write                     # 是否放开写类工具
+        self.run_debate_fn = run_debate_fn                   # app 注入的辩论执行器（重工具）
         self.pending_actions = []                            # 收集 Agent 提议的待确认动作
 
 
@@ -219,6 +235,8 @@ def execute_tool(name: str, args: dict, ctx: ToolContext) -> str:
             result = _tool_candidate_pool(ctx)
         elif name == "get_market_signals":
             result = _tool_market_signals(ctx)
+        elif name == "run_debate":
+            result = _tool_run_debate(ctx)
         else:
             return f"未知工具: {name}"
     except Exception as e:
@@ -288,3 +306,37 @@ def _tool_market_signals(ctx: ToolContext) -> str:
         return "信号系统未接入"
     signals = ctx.get_signal_store().get_all()
     return json.dumps(signals, ensure_ascii=False, default=str)[:2000]
+
+
+def _tool_run_debate(ctx: ToolContext) -> str:
+    """召集五分析师辩论并返回压缩后的决策摘要（不把多轮全文塞回 LLM，省 token）。"""
+    if not ctx.run_debate_fn:
+        return "辩论系统未接入"
+    try:
+        report = ctx.run_debate_fn()
+    except Exception as e:
+        logger.warning("run_debate 工具执行失败: %s", e)
+        return f"辩论系统执行失败: {e}（可基于其他工具信息回答）"
+    if not report or report.get("error"):
+        return f"辩论未产出结论：{(report or {}).get('error', '系统不可用')}"
+
+    mod = report.get("moderator") or {}
+    fd = mod.get("final_decision") or {}
+    # 只回传主席结论 + 各角色立场 + 权重，足够 Agent 组织回答，避免上下文爆炸
+    digest = {
+        "共识级别": report.get("consensus_level"),
+        "辩论轮数": report.get("rounds"),
+        "角色权重": report.get("weights"),
+        "最终决策": {
+            "姿态": fd.get("posture"),
+            "置信度": fd.get("confidence"),
+            "共识标的": fd.get("agreed_picks"),
+            "条件标的": fd.get("conditional_picks"),
+            "回避": fd.get("avoid_list"),
+            "仓位建议": fd.get("position_advice"),
+            "核心理由": fd.get("key_reasoning"),
+        },
+        "各方立场": mod.get("analyst_alignment"),
+        "一句话结论": mod.get("bottom_line"),
+    }
+    return json.dumps(digest, ensure_ascii=False)

@@ -2247,24 +2247,72 @@ def api_holdings_analyze():
 
 # ── Multi-Agent 辩论端点 ───────────────────────────────
 
-@app.route("/api/agent/debate")
-def api_agent_debate():
-    """Multi-Agent 辩论：三位分析师 + 主席综合判断。"""
+def _run_debate_full(rounds: int = 1) -> dict:
+    """执行完整五分析师辩论 + 主席综合 + 结论落库飞轮。
+
+    被 /api/agent/debate 端点与 Agent 的 run_debate 工具共用，保证两条路径
+    行为一致（同样注入历史胜率、同样把共识票落库做胜率追踪）。
+    返回 report dict；失败时返回 {"error": ...}。
+    """
     data = select_stocks(collector=collector)
     all_candidates = data.get("pool_a", []) + data.get("pool_b", [])
     if not all_candidates:
-        return jsonify({"error": "候选池为空"})
+        return {"error": "候选池为空"}
 
-    store = get_signal_store()
-    signals = store.get_all()
+    signals = get_signal_store().get_all()
     breadth = data.get("market_breadth", 0.5)
     hot_sectors = data.get("hot_sectors", [])
 
-    do = get_orchestrator()
-    report = do.run_debate(all_candidates, signals, hot_sectors, breadth)
-    if report:
-        return jsonify(report)
-    return jsonify({"error": "辩论系统不可用", "hint": "请查看 AI 观澜标签页"})
+    # M2: 注入决策飞轮历史胜率，让"观史"角色与主席有真实战绩可参考
+    loop_context = ""
+    try:
+        loop_context = get_decision_store().get_loop_context()
+    except Exception as e:
+        logger.debug("debate loop_context 获取失败(不阻断): %s", e)
+
+    report = get_orchestrator().run_debate(
+        all_candidates, signals, hot_sectors, breadth,
+        rounds=max(0, min(3, rounds)), loop_context=loop_context)
+    if not report:
+        return {"error": "辩论系统不可用", "hint": "请查看 AI 观澜标签页"}
+
+    # M1: 把辩论主席的共识票(agreed_picks)落库为 source="debate" 的影子记录，
+    # 使其进入决策飞轮做胜率追踪，可与单 Agent / 规则选股对比谁更准。
+    try:
+        fd = (report.get("moderator") or {}).get("final_decision") or {}
+        agreed = fd.get("agreed_picks") or []
+        if agreed:
+            by_code = {c.get("code"): c for c in all_candidates}
+            by_name = {c.get("name"): c for c in all_candidates}
+            debate_picks = []
+            for a in agreed:
+                key = a.get("code") if isinstance(a, dict) else str(a)
+                cand = by_code.get(key) or by_name.get(key)
+                if cand:
+                    debate_picks.append({
+                        "code": cand.get("code", ""), "name": cand.get("name", ""),
+                        "sector": cand.get("sector", ""), "pool": cand.get("pool", ""),
+                        "signal": cand.get("signal", ""), "price": cand.get("price", 0) or cand.get("current_price", 0),
+                        "score": cand.get("score", 0), "confidence": (fd.get("confidence") or 3),
+                    })
+            if debate_picks:
+                get_decision_store().record_shadow_batch_daily(
+                    [{**p, "source": "debate"} for p in debate_picks])
+                report["_persisted"] = {"debate_picks_recorded": len(debate_picks)}
+    except Exception as e:
+        logger.warning("辩论结论落库失败: %s", e)
+
+    return report
+
+
+@app.route("/api/agent/debate")
+def api_agent_debate():
+    """Multi-Agent 辩论：五位分析师(观象/观势/观闻/观史/观危) + 主席综合判断。"""
+    try:
+        rounds = int(request.args.get("rounds", 1))
+    except (TypeError, ValueError):
+        rounds = 1
+    return jsonify(_run_debate_full(rounds=rounds))
 
 
 # ── Agent 模式端点（Function Calling + 记忆 + 输出校验）──────
@@ -2299,6 +2347,7 @@ def api_agent_chat_agent():
         select_stocks=select_stocks,
         get_signal_store=get_signal_store,
         enable_write=True,
+        run_debate_fn=_run_debate_full,
     )
 
     # 服务端会话记忆 + 用户画像
@@ -2388,6 +2437,7 @@ def api_agent_chat_agent_stream():
         select_stocks=select_stocks,
         get_signal_store=get_signal_store,
         enable_write=True,
+        run_debate_fn=_run_debate_full,
     )
 
     history = mem.get_history(session_id)
@@ -2517,6 +2567,37 @@ def api_loop_tuning():
     except ImportError:
         from weight_tuner import get_tuning_report  # type: ignore
     return jsonify(get_tuning_report(store=get_decision_store()))
+
+
+@app.route("/api/loop/shadow-stats")
+def api_loop_shadow_stats():
+    """影子模式统计 — 全体影子收益 vs 已采纳收益 + 选择偏差(selection_bias)。
+
+    selection_bias>0 说明"用户/系统采纳的票确实比全体推荐更好"，即选择有价值。
+    """
+    return jsonify(get_decision_store().get_shadow_stats())
+
+
+@app.route("/api/loop/source-compare")
+def api_loop_source_compare():
+    """三源胜率对比 — 辩论(debate) vs 单Agent(agent_shadow) vs 规则,谁选的票更准。"""
+    return jsonify({"sources": get_decision_store().get_source_win_rates()})
+
+
+@app.route("/api/loop/excess-return")
+def api_loop_excess_return():
+    """超额收益 — 逐笔对齐同期沪深300的 alpha 平均。"""
+    return jsonify(get_decision_store().get_excess_return())
+
+
+@app.route("/api/loop/challenger")
+def api_loop_challenger():
+    """Champion-Challenger 调权对照 — 反哺乘数 vs 不调权基线的反事实评估。"""
+    try:
+        from .weight_tuner import evaluate_challenger
+    except ImportError:
+        from weight_tuner import evaluate_challenger  # type: ignore
+    return jsonify(evaluate_challenger(store=get_decision_store()))
 
 
 @app.route("/api/agent/eval", methods=["POST"])

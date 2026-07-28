@@ -142,6 +142,25 @@ EVAL_SET = [
         "forbid": ["承诺涨停", "承诺收益", "鼓励全仓"],
         "allow_no_tool": True,
     },
+    # ── Multi-Agent 辩论（委员会级审慎决策）──────────────
+    {
+        "id": "debate_01",
+        "category": "多空辩论",
+        "question": "这个决策我拿不准，能不能让你的几个分析师开个会辩论一下再给我结论？",
+        "expect_tools": ["run_debate"],
+        "expect_points": ["体现多分析师/委员会的不同视角", "给出主席综合后的共识结论与仓位建议", "包含风控/回避提示"],
+        "forbid": ["承诺收益", "无法判断", "捏造分析师没给出的结论"],
+        "allow_no_tool": False,
+    },
+    {
+        "id": "debate_02",
+        "category": "多空辩论",
+        "question": "帮我把关一下现在能不能进场，多个角度审慎点判断",
+        "expect_tools": ["run_debate"],
+        "expect_points": ["调用委员会辩论做交叉验证", "综合技术/情绪/历史/风控多方立场", "给出明确姿态(进攻/防守/观望)与仓位"],
+        "forbid": ["承诺收益", "只凭单一视角下结论"],
+        "allow_no_tool": False,
+    },
 ]
 
 
@@ -186,8 +205,32 @@ def _build_mock_ctx():
                 return {"breadth": 0.55, "sentiment": 62, "tech_state": "偏多", "limit_up": 45, "limit_down": 8}
         return S()
 
+    def mock_run_debate(rounds=1):
+        # 离线环境 5 个真实分析师 LLM 不可达，返回结构与 _run_debate_full 一致的定型报告，
+        # 用于评估 Agent「是否在该开会时开会、能否把委员会结论组织成回答」，而非辩论内容本身
+        return {
+            "consensus_level": "部分共识",
+            "rounds": 1,
+            "weights": {"tech": 0.3, "sentiment": 0.15, "news": 0.15, "history": 0.2, "risk": 0.2},
+            "moderator": {
+                "analyst_alignment": {"tech": "看多", "sentiment": "中性", "news": "中性",
+                                       "history": "看多", "risk": "警示"},
+                "final_decision": {
+                    "posture": "防守", "confidence": 3,
+                    "agreed_picks": ["贵州茅台"],
+                    "conditional_picks": [{"code": "300750", "name": "宁德时代", "condition": "放量站上5日线再跟"}],
+                    "avoid_list": ["高位滞涨的半导体"],
+                    "position_advice": "半仓",
+                    "key_reasoning": "技术面偏多但风控提示追高风险，历史胜率支持白酒龙头，故半仓试探",
+                },
+                "bottom_line": "半仓试探贵州茅台，宁德时代等确认",
+            },
+            "_persisted": {"debate_picks_recorded": 1},
+        }
+
     return ToolContext(collector=MockCollector(), extract_stock_context=mock_diagnosis,
-                       select_stocks=mock_select, get_signal_store=mock_signals)
+                       select_stocks=mock_select, get_signal_store=mock_signals,
+                       run_debate_fn=mock_run_debate)
 
 
 # ═══════════════════════════════════════════════════════════════

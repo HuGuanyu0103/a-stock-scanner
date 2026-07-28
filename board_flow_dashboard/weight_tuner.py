@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # ── 调节边界参数（保守设定，宁可少调也不激进）──────────────────
 ENABLED = True            # 全局开关：False 时所有乘数=1.0（等于关闭反馈闭环）
-MIN_SAMPLES = 5           # 信号组合累计结算 < 此值不参与调节（样本不足不可信）
+MIN_SAMPLES = 20          # 信号组合累计结算 < 此值不参与调节（金融胜率需足够样本才可信，5笔噪声过大）
 MIN_MULT = 0.85           # 乘数下限（表现最差的信号最多降权到 0.85）
 MAX_MULT = 1.15           # 乘数上限（表现最好的信号最多加权到 1.15）
 CACHE_TTL = 1800.0        # 乘数缓存 30 分钟，避免每次选股都查库
@@ -120,4 +120,73 @@ def get_tuning_report(store=None) -> dict:
         "signals": [
             {"signal_combo": k, **v} for k, v in items
         ],
+    }
+
+
+# ── L4: Champion-Challenger 调权对照验证 ───────────────────────
+# 问题：weight_tuner 直接把反哺乘数用于生产选股，属"在线自增强、无对照"——
+# 被调高的信号更容易再被选中，形成自证，无法证明"调权真的更好"。
+# 方案：在历史已结算样本上做反事实对照——
+#   champion  = 不调权(所有乘数=1.0)的等权平均收益
+#   challenger= 按反哺乘数加权的平均收益（乘数即"选择倾向"权重）
+# challenger 稳定跑赢 champion 且样本足够，才建议把乘数晋升为生产配置。
+
+PROMOTE_MIN_SAMPLES = 30   # 晋升所需最小样本量（对照结论可信的下限）
+PROMOTE_MIN_EDGE = 0.3     # challenger 需领先 champion 的最小收益差(pp)才建议晋升
+
+
+def evaluate_challenger(store) -> dict:
+    """在历史已结算影子/实盘样本上，对照 champion(不调权) vs challenger(反哺加权)。
+
+    返回 {champion_avg, challenger_avg, edge, n_samples, recommend, reason}。
+    这是反事实评估：不改动生产，只回答"这套乘数若上线，历史上是赚是亏"。
+    """
+    if store is None:
+        return {"error": "无 store"}
+    # 逐信号组合的胜率明细（已含影子表，见 decision_store._refresh_combo_stats）
+    try:
+        rows = store.get_signal_win_rates()
+    except Exception as e:
+        return {"error": f"取样失败: {e}"}
+    if not rows:
+        return {"n_samples": 0, "recommend": False, "reason": "无已结算样本，无法对照"}
+
+    mults = get_multipliers(store)  # 当前 challenger 乘数
+    champ_num = champ_den = chall_num = chall_den = 0.0
+    total_n = 0
+    for r in rows:
+        combo = r.get("signal_combo", "")
+        n = r.get("total_trades", 0) or 0
+        avg_ret = r.get("avg_ret", 0) or 0
+        if n <= 0:
+            continue
+        total_n += n
+        # champion：每个信号组合等权（乘数视为 1）
+        champ_num += avg_ret * n * 1.0
+        champ_den += n * 1.0
+        # challenger：按反哺乘数加权（乘数>1 的信号在选股里被更多采纳 → 影响更大）
+        m = mults.get(combo, 1.0)
+        chall_num += avg_ret * n * m
+        chall_den += n * m
+
+    champion_avg = round(champ_num / champ_den, 3) if champ_den else 0
+    challenger_avg = round(chall_num / chall_den, 3) if chall_den else 0
+    edge = round(challenger_avg - champion_avg, 3)
+
+    if total_n < PROMOTE_MIN_SAMPLES:
+        recommend, reason = False, f"样本不足({total_n}<{PROMOTE_MIN_SAMPLES})，继续观察不晋升"
+    elif edge >= PROMOTE_MIN_EDGE:
+        recommend, reason = True, f"challenger 领先 champion {edge}pp 且样本充分，建议晋升"
+    else:
+        recommend, reason = False, f"challenger 未稳定领先(edge={edge}pp<{PROMOTE_MIN_EDGE})，保持 champion"
+
+    return {
+        "champion_avg": champion_avg,      # 不调权基线的加权平均收益(pp)
+        "challenger_avg": challenger_avg,  # 反哺加权后的平均收益(pp)
+        "edge": edge,                      # challenger 领先幅度(pp)
+        "n_samples": total_n,
+        "recommend_promote": recommend,
+        "reason": reason,
+        "promote_min_samples": PROMOTE_MIN_SAMPLES,
+        "promote_min_edge": PROMOTE_MIN_EDGE,
     }

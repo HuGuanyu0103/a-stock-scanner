@@ -10,6 +10,12 @@ DATA_DIR = Path(__file__).parent / "data"
 DB_PATH = DATA_DIR / "decisions.db"
 HOLDING_DAYS = 3
 
+# ── L3 结算严谨化参数 ──────────────────────────────────────────
+TRADING_COST_PCT = 0.1     # 双边交易成本（买卖佣金+印花税+过户费，约 0.1%），从收益里扣
+LIMIT_UP_PCT = 9.8         # 主板涨停阈值（当日涨幅≥此值视为涨停，卖出可能无法成交）
+LIMIT_DOWN_PCT = -9.8      # 主板跌停阈值
+SETTLE_MAX_DEFER_DAYS = 4  # 停牌顺延最多再等 N 个自然日，超过则按最新可得价强制结算
+
 class DecisionStore:
     def __init__(self):
         self._lock = threading.Lock()
@@ -66,7 +72,23 @@ class DecisionStore:
         with self._lock:
             with self._get_conn() as conn:
                 c = conn.execute("INSERT INTO decisions (stock_code,stock_name,sector,pool,signal,entry_price,entry_date,status,source,confidence,score,signal_combo,notes,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))", (stock_code,stock_name,sector,pool,signal,entry_price,today,"open",source,confidence,score,signal_combo,notes))
-                return c.lastrowid
+                did = c.lastrowid
+        # L5: 用户采纳某票时，把当日对应的影子记录标记 adopted=1，
+        # 让 get_shadow_stats 的 selection_bias(采纳票收益 - 全体影子收益) 有意义
+        self.mark_adopted(stock_code)
+        return did
+
+    def mark_adopted(self, stock_code, entry_date=""):
+        """把指定股票当日(或指定日)的影子记录标记为已采纳。
+
+        修复 adopted 字段永远为 0 的断点——selection_bias 度量依赖它。
+        """
+        entry_date = entry_date or date.today().strftime("%Y-%m-%d")
+        with self._lock:
+            with self._get_conn() as conn:
+                conn.execute(
+                    "UPDATE shadow_decisions SET adopted=1 WHERE stock_code=? AND entry_date=?",
+                    (stock_code, entry_date))
 
     def mark_exited(self, decision_id, exit_price, exit_date="", notes=""):
         exit_date = exit_date or date.today().strftime("%Y-%m-%d")
@@ -75,25 +97,60 @@ class DecisionStore:
                 row = conn.execute("SELECT entry_price FROM decisions WHERE id=?",(decision_id,)).fetchone()
                 if not row: return
                 rp = round((exit_price-row["entry_price"])/row["entry_price"]*100,2)
-                conn.execute("UPDATE decisions SET exit_price=?,exit_date=?,return_pct=?,status='closed',notes=notes||? WHERE id=?",(exit_price,exit_date,rp,f" exit @{exit_price}",decision_id))
+                # 修复：原实现 notes=notes||? 中 notes 指列名、入参 notes 从未被用；
+                # 且列为 NULL 时 ||结果为 NULL。改为 COALESCE(列,'') 追加，且带上入参 notes。
+                suffix = (f" {notes}" if notes else "") + f" exit @{exit_price}"
+                conn.execute("UPDATE decisions SET exit_price=?,exit_date=?,return_pct=?,status='closed',notes=COALESCE(notes,'')||? WHERE id=?",(exit_price,exit_date,rp,suffix,decision_id))
+        if True:
+            self._refresh_combo_stats()
 
     def auto_resolve(self, days_threshold=HOLDING_DAYS):
-        cutoff = (date.today()-timedelta(days=days_threshold)).strftime("%Y-%m-%d")
-        resolved = 0
+        # L3: 用交易日而非自然日。N 交易日≈ceil(N*7/5) 自然日 + 2 缓冲，覆盖周末。
+        # entry_date 早于该自然日 cutoff 的才够 N 个交易日持有期。
+        import math
+        natural_days = math.ceil(days_threshold * 7 / 5) + 1
+        cutoff = (date.today() - timedelta(days=natural_days)).strftime("%Y-%m-%d")
+        resolved, deferred = 0, 0
         with self._lock:
             with self._get_conn() as conn:
-                rows = conn.execute("SELECT id,stock_code,entry_price FROM decisions WHERE status='open' AND entry_date<=?",(cutoff,)).fetchall()
+                rows = conn.execute("SELECT id,stock_code,entry_price,entry_date FROM decisions WHERE status='open' AND entry_date<=?", (cutoff,)).fetchall()
         for d in rows:
             try:
-                p = self._fetch_latest_close(d["stock_code"])
-                if p is None: continue
-                rp = round((p-d["entry_price"])/d["entry_price"]*100,2)
+                sd = self._fetch_settle_data(d["stock_code"])
+                if sd is None:
+                    # 取数失败 → 顺延，不强行结算
+                    deferred += 1
+                    continue
+                # L3: 停牌不结算，顺延（但超过最大顺延期则强制结算，避免永久滞留）
+                held_days = (date.today() - datetime.strptime(d["entry_date"], "%Y-%m-%d").date()).days
+                if sd["halted"] and held_days <= natural_days + SETTLE_MAX_DEFER_DAYS:
+                    deferred += 1
+                    continue
+                exit_price = sd["close"]
+                gross = (exit_price - d["entry_price"]) / d["entry_price"] * 100
+                # L3: 扣双边交易成本
+                net = gross - TRADING_COST_PCT
+                # L3: 涨跌停标记（卖出可能无法成交，收益仅为账面参考）
+                note_flag = ""
+                if sd["pct_chg"] >= LIMIT_UP_PCT:
+                    note_flag = " [涨停/卖出受限,账面价]"
+                elif sd["pct_chg"] <= LIMIT_DOWN_PCT:
+                    note_flag = " [跌停/卖出受限,账面价]"
+                rp = round(net, 2)
                 with self._lock:
                     with self._get_conn() as conn:
-                        conn.execute("UPDATE decisions SET exit_price=?,exit_date=?,return_pct=?,status='closed' WHERE id=?",(p,date.today().strftime("%Y-%m-%d"),rp,d["id"]))
+                        conn.execute(
+                            "UPDATE decisions SET exit_price=?,exit_date=?,return_pct=?,status='closed',"
+                            "notes=COALESCE(notes,'')||? WHERE id=?",
+                            (exit_price, date.today().strftime("%Y-%m-%d"), rp,
+                             f" settle net@{exit_price}{note_flag}", d["id"]))
                 resolved += 1
-            except Exception: pass
-        if resolved: self._refresh_combo_stats()
+            except Exception:
+                pass
+        if resolved:
+            self._refresh_combo_stats()
+        if deferred:
+            logger.info("结算顺延 %d 笔(停牌/取数失败)", deferred)
         return resolved
 
     def _fetch_latest_close(self, stock_code):
@@ -111,6 +168,30 @@ class DecisionStore:
         except Exception: pass
         return None
 
+    def _fetch_settle_data(self, stock_code):
+        """L3: 结算专用取数，返回 {close, pct_chg, volume, halted}。
+
+        比 _fetch_latest_close 多返回当日涨跌幅（判涨跌停）和成交量（判停牌）。
+        取最近一个交易日的日线。失败返回 None（调用方顺延）。
+        """
+        try:
+            import akshare as ak
+            m = "sh" if stock_code.startswith(("6", "9")) else "sz"
+            df = ak.stock_zh_a_hist(
+                symbol=f"{m}{stock_code}", period="daily",
+                start_date=(date.today() - timedelta(days=8)).strftime("%Y%m%d"),
+                end_date=date.today().strftime("%Y%m%d"), adjust="qfq")
+            if df is None or df.empty:
+                return None
+            last = df.iloc[-1]
+            close = float(last["收盘"])
+            pct = float(last["涨跌幅"]) if "涨跌幅" in df.columns else 0.0
+            vol = float(last["成交量"]) if "成交量" in df.columns else 0.0
+            return {"close": close, "pct_chg": pct, "volume": vol,
+                    "halted": vol <= 0}  # 成交量为 0 视为停牌
+        except Exception:
+            return None
+
     # ── 基准指数对照 ───────────────────────────────────────
     def record_benchmark(self, trade_date="", csi300_return=0):
         trade_date = trade_date or date.today().strftime("%Y-%m-%d")
@@ -119,11 +200,50 @@ class DecisionStore:
                 conn.execute("INSERT OR REPLACE INTO benchmark_index VALUES (?,?)",(trade_date,csi300_return))
 
     def get_excess_return(self):
-        s = self.get_total_stats()
+        """超额收益（逐笔对齐同期基准）。
+
+        修正前实现是「AVG(所有决策3日累计收益) - AVG(benchmark所有记录日单日均值)」，
+        两个时间窗口完全不对齐（持有期累计 vs 单日均值），相减无意义。
+        现改为：每笔已结算决策，取其 entry_date→exit_date 区间内沪深300日涨跌幅累乘得到
+        同期基准区间收益，逐笔算 alpha = 个股收益 - 同期基准收益，再对所有笔求平均。
+        """
         with self._lock:
             with self._get_conn() as conn:
-                row = conn.execute("SELECT AVG(return_pct) as a, AVG(return_pct)-(SELECT AVG(csi300_return)*100 FROM benchmark_index) as e FROM decisions WHERE status='closed'").fetchone()
-        return {"avg_return":round(row["a"],2) if row and row["a"] else 0,"excess_return":round(row["e"],2) if row and row["e"] else 0,"total_closed":s["total_closed"]}
+                decs = conn.execute(
+                    "SELECT return_pct, entry_date, exit_date FROM decisions "
+                    "WHERE status='closed' AND return_pct IS NOT NULL AND exit_date IS NOT NULL"
+                ).fetchall()
+                bench_rows = conn.execute(
+                    "SELECT trade_date, csi300_return FROM benchmark_index ORDER BY trade_date"
+                ).fetchall()
+
+        if not decs:
+            return {"avg_return": 0, "excess_return": 0, "total_closed": 0, "matched": 0}
+
+        # 基准日涨跌幅（小数）按日期索引
+        bench = {r["trade_date"]: (r["csi300_return"] or 0) for r in bench_rows}
+
+        alphas, rets = [], []
+        matched = 0
+        for d in decs:
+            ret = d["return_pct"]  # 百分数，如 +3.5
+            rets.append(ret)
+            ed, xd = d["entry_date"], d["exit_date"]
+            # 累乘 (entry, exit] 区间内的基准日涨跌幅 → 区间基准收益（百分数）
+            period = [v for dt, v in bench.items() if ed < dt <= xd]
+            if not period:
+                continue  # 无同期基准数据的笔不计入 alpha（但仍计入 avg_return）
+            comp = 1.0
+            for v in period:
+                comp *= (1 + v)
+            bench_ret = (comp - 1) * 100  # 转百分数
+            alphas.append(ret - bench_ret)
+            matched += 1
+
+        avg_return = round(sum(rets) / len(rets), 2) if rets else 0
+        excess = round(sum(alphas) / len(alphas), 2) if alphas else 0
+        return {"avg_return": avg_return, "excess_return": excess,
+                "total_closed": len(decs), "matched": matched}
 
     # ── 影子模式 ───────────────────────────────────────────
     def record_shadow_batch(self, picks):
@@ -155,18 +275,28 @@ class DecisionStore:
         return self.record_shadow_batch(fresh) if fresh else 0
 
     def auto_resolve_shadows(self, days_threshold=3):
-        cutoff = (date.today()-timedelta(days=days_threshold)).strftime("%Y-%m-%d")
+        # L3: 交易日阈值，与实盘 auto_resolve 口径一致
+        import math
+        natural_days = math.ceil(days_threshold * 7 / 5) + 1
+        cutoff = (date.today()-timedelta(days=natural_days)).strftime("%Y-%m-%d")
         r = 0
         with self._lock:
             with self._get_conn() as conn:
-                rows = conn.execute("SELECT id,stock_code FROM shadow_decisions WHERE status='tracking' AND entry_date<=?",(cutoff,)).fetchall()
+                # 取 recommend_price 作为入场价，用于结算时计算 return_pct
+                rows = conn.execute("SELECT id,stock_code,recommend_price FROM shadow_decisions WHERE status='tracking' AND entry_date<=?",(cutoff,)).fetchall()
         for d in rows:
             try:
-                p = self._fetch_latest_close(d["stock_code"])
-                if p is None: continue
+                sd = self._fetch_settle_data(d["stock_code"])
+                if sd is None or sd["halted"]:
+                    continue  # 取数失败/停牌 → 顺延
+                p = sd["close"]
+                # 修复：结算影子决策时补算 return_pct（原实现只写 exit_price，导致胜率统计拿不到收益）
+                # L3: 同样扣双边交易成本，与实盘口径一致
+                rec = d["recommend_price"]
+                rp = round((p-rec)/rec*100 - TRADING_COST_PCT, 2) if rec and rec > 0 else None
                 with self._lock:
                     with self._get_conn() as conn:
-                        conn.execute("UPDATE shadow_decisions SET exit_price=?,exit_date=?,status='resolved' WHERE id=?",(p,date.today().strftime("%Y-%m-%d"),d["id"]))
+                        conn.execute("UPDATE shadow_decisions SET exit_price=?,exit_date=?,return_pct=?,status='resolved' WHERE id=?",(p,date.today().strftime("%Y-%m-%d"),rp,d["id"]))
                 r += 1
             except Exception: pass
         return r
@@ -177,6 +307,34 @@ class DecisionStore:
                 aa = conn.execute("SELECT AVG(return_pct) as v, COUNT(*) as n FROM shadow_decisions WHERE status='resolved'").fetchone()
                 ad = conn.execute("SELECT AVG(return_pct) as v, COUNT(*) as n FROM shadow_decisions WHERE status='resolved' AND adopted=1").fetchone()
         return {"all_avg_return":round(aa["v"],2) if aa and aa["v"] else 0,"all_count":aa["n"] if aa else 0,"adopted_avg_return":round(ad["v"],2) if ad and ad["v"] else 0,"adopted_count":ad["n"] if ad else 0,"selection_bias":round((ad["v"] or 0)-(aa["v"] or 0),2) if aa and ad else 0}
+
+    def get_source_win_rates(self):
+        """M1: 按来源(source)分组的影子胜率对比 —— 回答"辩论选的票 vs 单Agent vs 规则,谁更准"。
+
+        source 取值：agent_shadow(单Agent选股) / debate(多Agent辩论共识) / agent(其他)。
+        这是多智能体到底值不值的实证出口。
+        """
+        with self._lock:
+            with self._get_conn() as conn:
+                rows = conn.execute("""
+                    SELECT source,
+                           COUNT(*) as n,
+                           SUM(CASE WHEN return_pct>0 THEN 1 ELSE 0 END) as w,
+                           ROUND(AVG(return_pct),2) as avg_ret
+                    FROM shadow_decisions
+                    WHERE status='resolved' AND return_pct IS NOT NULL
+                    GROUP BY source ORDER BY n DESC
+                """).fetchall()
+        out = []
+        for r in rows:
+            n = r["n"] or 0
+            out.append({
+                "source": r["source"] or "unknown",
+                "count": n,
+                "win_rate": round((r["w"] or 0) / n * 100, 1) if n else 0,
+                "avg_return": r["avg_ret"] or 0,
+            })
+        return out
 
     # ── 查询 ─────────────────────────────────────────────────
     def get_open_decisions(self):
@@ -224,10 +382,27 @@ class DecisionStore:
         return "\n".join(lines)
 
     def _refresh_combo_stats(self):
+        # 飞轮修复：统计同时纳入实盘 decisions 与影子 shadow_decisions（已结算）。
+        # 原实现只读 decisions，而 decisions 依赖用户手动采纳、常年为空，导致飞轮空转；
+        # shadow_decisions 由 Agent 推荐自动写入+自动结算，是唯一稳定积累的数据源。
         with self._lock:
             with self._get_conn() as conn:
                 conn.execute("DELETE FROM signal_combo_stats")
-                conn.execute("INSERT INTO signal_combo_stats (signal_combo,total_trades,win_trades,avg_return) SELECT signal_combo,COUNT(*) as t,SUM(CASE WHEN return_pct>0 THEN 1 ELSE 0 END) as w,AVG(return_pct) as a FROM decisions WHERE status='closed' AND signal_combo!='' GROUP BY signal_combo HAVING t>=2")
+                conn.execute("""
+                    INSERT INTO signal_combo_stats (signal_combo,total_trades,win_trades,avg_return)
+                    SELECT signal_combo,
+                           COUNT(*) as t,
+                           SUM(CASE WHEN return_pct>0 THEN 1 ELSE 0 END) as w,
+                           AVG(return_pct) as a
+                    FROM (
+                        SELECT signal_combo, return_pct FROM decisions
+                            WHERE status='closed' AND signal_combo!='' AND return_pct IS NOT NULL
+                        UNION ALL
+                        SELECT signal_combo, return_pct FROM shadow_decisions
+                            WHERE status='resolved' AND signal_combo!='' AND return_pct IS NOT NULL
+                    )
+                    GROUP BY signal_combo HAVING t>=2
+                """)
 
     # ── P1-1: 自动结算调度（让决策飞轮自动运转）─────────────
     def start_auto_resolve(self, check_interval: float = 3600.0):
