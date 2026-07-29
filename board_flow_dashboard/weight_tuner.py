@@ -8,10 +8,12 @@
 「静态硬编码规则」走向「数据反馈驱动的自适应规则」的关键一环。
 
 设计原则（金融场景，稳健第一）：
-  1. 可解释：每个乘数都能追溯到「某信号 N 笔、胜率 X%、均收益 Y%」，非黑盒。
-  2. 有边界：样本不足不调；乘数封顶在 [MIN_MULT, MAX_MULT]，防止过拟合/暴走。
+  1. 可解释：每个乘数都能追溯到「某信号 N 笔、胜率 X%、均收益 Y%、收缩系数」，非黑盒。
+  2. 有边界：乘数封顶在 [MIN_MULT, MAX_MULT]，防止过拟合/暴走。
   3. 可回滚：一个开关全局关闭；关闭后评分与调节前完全一致。
-  4. 平滑：用胜率与盈亏综合打分，线性映射到乘数，避免阶跃式剧烈变动。
+  4. 置信度收缩（v2）：不再用「样本过硬门槛就全信」，而是按样本量 n 平滑给信任度
+     （收缩因子 n/(n+K)）——小样本自动往中性(乘数=1.0)拉，样本充分才逼近满额调节。
+     这从统计上解决了「20 笔小样本胜率噪声被照单全收」的脆弱性。
   5. 冷启动安全：无数据时所有乘数=1.0（等于不调节），不影响新系统运行。
 
 数据来源：decision_store.get_signal_win_rates() → [{signal_combo,total_trades,win_rate,avg_ret}]
@@ -29,7 +31,10 @@ logger = logging.getLogger(__name__)
 
 # ── 调节边界参数（保守设定，宁可少调也不激进）──────────────────
 ENABLED = True            # 全局开关：False 时所有乘数=1.0（等于关闭反馈闭环）
-MIN_SAMPLES = 20          # 信号组合累计结算 < 此值不参与调节（金融胜率需足够样本才可信，5笔噪声过大）
+MIN_SAMPLES = 5           # 参与调节的最低样本（v2：从硬门槛降为软门槛，5 笔起即可参与，
+                          #   由「置信度收缩」按样本量自动决定实际调节力度，而非一刀切）
+SHRINK_K = 20             # v2 置信度收缩常数：有效力度 = n/(n+K)。n=K 时信任 50%，
+                          #   n≫K 才接近满额。小样本自动往中性(乘数=1.0)收缩，防噪声暴走
 MIN_MULT = 0.85           # 乘数下限（表现最差的信号最多降权到 0.85）
 MAX_MULT = 1.15           # 乘数上限（表现最好的信号最多加权到 1.15）
 CACHE_TTL = 1800.0        # 乘数缓存 30 分钟，避免每次选股都查库
@@ -46,13 +51,26 @@ _cache: dict = {"mults": {}, "ts": 0.0, "detail": {}}
 _lock = threading.Lock()
 
 
-def _compute_multiplier(win_rate: float, avg_ret: float) -> float:
-    """把单个信号的胜率与均收益映射为 [MIN_MULT, MAX_MULT] 的乘数。
+def _shrink_factor(n: int) -> float:
+    """v2 置信度收缩因子 n/(n+K)：样本越少越接近 0（往中性拉），越多越接近 1。
 
-    胜率高于基准、均收益为正 → 乘数 > 1；反之 < 1。两者线性叠加后裁剪到边界。
+    这是把旧的「样本过 20 硬门槛就全信」升级为「按样本量平滑给信任度」的核心。
     """
-    delta = ((win_rate - WINRATE_BASELINE) * WINRATE_SENSITIVITY
-             + (avg_ret - RETURN_BASELINE) * RETURN_SENSITIVITY)
+    n = max(0, int(n or 0))
+    return n / (n + SHRINK_K) if (n + SHRINK_K) > 0 else 0.0
+
+
+def _compute_multiplier(win_rate: float, avg_ret: float, n: int = 0) -> float:
+    """把单个信号的胜率与均收益映射为 [MIN_MULT, MAX_MULT] 的乘数（v2：含置信度收缩）。
+
+    胜率高于基准、均收益为正 → 乘数 > 1；反之 < 1。
+    v2 关键改进：原始偏离先乘以置信度收缩因子 n/(n+K) 再叠加——样本少时调节量
+    自动往中性(1.0)收缩，避免「20 笔小样本胜率噪声」被当成真实信号照单全收；
+    样本充分时才逼近满额调节。兼顾可解释（仍可追溯胜率/均收益）与统计稳健。
+    """
+    raw_delta = ((win_rate - WINRATE_BASELINE) * WINRATE_SENSITIVITY
+                 + (avg_ret - RETURN_BASELINE) * RETURN_SENSITIVITY)
+    delta = raw_delta * _shrink_factor(n)   # v2：按样本置信度收缩
     mult = 1.0 + delta
     return round(max(MIN_MULT, min(MAX_MULT, mult)), 4)
 
@@ -72,9 +90,10 @@ def _refresh(store) -> None:
             continue
         win_rate = r.get("win_rate", 0) or 0
         avg_ret = r.get("avg_ret", 0) or 0
-        m = _compute_multiplier(win_rate, avg_ret)
+        m = _compute_multiplier(win_rate, avg_ret, n)   # v2：传入 n 做置信度收缩
         mults[combo] = m
-        detail[combo] = {"n": n, "win_rate": win_rate, "avg_ret": avg_ret, "mult": m}
+        detail[combo] = {"n": n, "win_rate": win_rate, "avg_ret": avg_ret,
+                         "shrink": round(_shrink_factor(n), 3), "mult": m}
     with _lock:
         _cache["mults"] = mults
         _cache["detail"] = detail
@@ -115,6 +134,7 @@ def get_tuning_report(store=None) -> dict:
     return {
         "enabled": ENABLED,
         "min_samples": MIN_SAMPLES,
+        "shrink_k": SHRINK_K,
         "bounds": [MIN_MULT, MAX_MULT],
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) if ts else None,
         "signals": [
@@ -160,7 +180,7 @@ def _multipliers_from_trades(trades: list) -> dict:
             continue  # 训练样本不足的信号不调权（乘数=1，由 .get 默认兜底）
         win_rate = a["wins"] / a["n"] * 100.0
         avg_ret = a["sum_ret"] / a["n"]
-        mults[combo] = _compute_multiplier(win_rate, avg_ret)
+        mults[combo] = _compute_multiplier(win_rate, avg_ret, a["n"])  # v2：同样带置信度收缩
     return mults
 
 
