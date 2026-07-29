@@ -1270,6 +1270,18 @@ def _select_stocks_real(collector=None):
         alloc = get_pool_allocation(store.get_all())
         a_size = min(50, max(5, alloc["pool_a"]))
         b_size = min(50, max(5, alloc["pool_b"]))
+        # 旋钮②：在市场态基线上叠加「历史池表现」反馈微调（总期望收益驱动、有界收缩）
+        try:
+            from decision_store import get_decision_store
+            from weight_tuner import get_pool_allocation_adjust
+            adj = get_pool_allocation_adjust(get_decision_store())
+            shift = adj.get("shift", 0)
+            if shift:
+                a_size = min(50, max(5, a_size + shift))
+                b_size = min(50, max(5, b_size - shift))
+                logger.info("池分配反馈微调: %s → A%d/B%d", adj.get("reason", ""), a_size, b_size)
+        except Exception as e:
+            logger.debug("池分配反馈微调跳过(不阻断): %s", e)
     except Exception:
         a_size, b_size = 25, 25  # 降级：固定分配
 

@@ -344,6 +344,43 @@ class DecisionStore:
             })
         return out
 
+    def get_pool_performance(self):
+        """旋钮②数据源：按池(A/B)分组的历史结算表现，供池容量/分配反馈用。
+
+        合并 decisions(closed) + shadow_decisions(resolved)，按 pool 聚合：
+          {pool: {count, win_rate, avg_return, expected_total}}
+        expected_total = avg_return × count = 该池「总期望收益」——池容量反馈的
+        目标信号必须是它，而非平均胜率（否则系统会把池子缩到只剩1只、胜率虚高但没机会）。
+        """
+        agg = {}
+        with self._lock:
+            with self._get_conn() as conn:
+                for tbl, cond in (("decisions", "status='closed'"),
+                                  ("shadow_decisions", "status='resolved'")):
+                    for r in conn.execute(
+                        f"SELECT pool, return_pct FROM {tbl} "
+                        f"WHERE {cond} AND return_pct IS NOT NULL AND pool!=''"
+                    ).fetchall():
+                        p = (r["pool"] or "").upper()
+                        if p not in ("A", "B"):
+                            continue
+                        a = agg.setdefault(p, {"n": 0, "wins": 0, "sum": 0.0})
+                        a["n"] += 1
+                        a["sum"] += r["return_pct"]
+                        if r["return_pct"] > 0:
+                            a["wins"] += 1
+        out = {}
+        for p, a in agg.items():
+            n = a["n"]
+            avg = a["sum"] / n if n else 0
+            out[p] = {
+                "count": n,
+                "win_rate": round(a["wins"] / n * 100, 1) if n else 0,
+                "avg_return": round(avg, 3),
+                "expected_total": round(avg * n, 2),  # 总期望收益(核心信号)
+            }
+        return out
+
     # ── 查询 ─────────────────────────────────────────────────
     def get_open_decisions(self):
         with self._lock:

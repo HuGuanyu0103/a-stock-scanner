@@ -131,6 +131,8 @@ def get_tuning_report(store=None) -> dict:
         detail = dict(_cache["detail"])
         ts = _cache["ts"]
     items = sorted(detail.items(), key=lambda kv: kv[1]["mult"], reverse=True)
+    # 旋钮②：池容量/分配反馈（可解释输出）
+    pool_adjust = get_pool_allocation_adjust(store) if store is not None else {"shift": 0}
     return {
         "enabled": ENABLED,
         "min_samples": MIN_SAMPLES,
@@ -140,6 +142,53 @@ def get_tuning_report(store=None) -> dict:
         "signals": [
             {"signal_combo": k, **v} for k, v in items
         ],
+        "pool_allocation_feedback": pool_adjust,  # 旋钮②:选多少的反馈微调
+    }
+
+
+# ── 旋钮②：池容量 / A-B 分配反馈（在市场态基线上叠加历史反馈微调）──────
+# 定位：飞轮的第二个旋钮——不仅调"选什么"(信号乘数)，也调"选多少 / A-B 怎么分"。
+# 关键设计：反馈信号用「总期望收益(avg_return × 采纳笔数)」而非平均胜率。
+#   若用胜率当目标，系统会把池子缩到只剩1只(Top1胜率必然最高)→ 胜率虚高但没机会可用。
+#   总期望收益兼顾"赢面 × 可用机会数"，是 precision/recall 的平衡点。
+# 做法：不推翻 get_pool_allocation 的市场态前瞻规则，只在其上叠加一层"回头看"的
+#   微调——按 A/B 两池的相对历史期望收益，把名额向表现好的一侧小幅倾斜；同样用
+#   置信度收缩(样本少不敢调)+ 有界(单次最多挪 POOL_SHIFT_MAX 个名额)护栏。
+POOL_MIN_SAMPLES = 10     # 每池样本 < 此值不参与容量反馈（样本太少不调）
+POOL_SHIFT_MAX = 8        # 单次最多在 A/B 间挪动的名额数（有界，防暴走）
+POOL_SHRINK_K = 15        # 池反馈的置信度收缩常数
+
+
+def get_pool_allocation_adjust(store) -> dict:
+    """基于历史池表现，给出 A/B 名额的反馈微调（叠加在市场态基线上）。
+
+    返回 {shift, reason, detail}：shift>0 表示应把名额从 B 挪给 A（A 历史更值），
+    shift<0 反之；已过置信度收缩与 [-POOL_SHIFT_MAX, +POOL_SHIFT_MAX] 边界。
+    数据不足或关闭时 shift=0（不调）。
+    """
+    if not ENABLED or store is None:
+        return {"shift": 0, "reason": "反馈关闭或无 store", "detail": {}}
+    try:
+        perf = store.get_pool_performance()
+    except Exception as e:
+        return {"shift": 0, "reason": f"取池表现失败: {e}", "detail": {}}
+
+    a, b = perf.get("A"), perf.get("B")
+    if not a or not b or a["count"] < POOL_MIN_SAMPLES or b["count"] < POOL_MIN_SAMPLES:
+        return {"shift": 0, "reason": "A/B 池样本不足，暂不做容量反馈", "detail": perf}
+
+    # 用「单笔期望收益」差驱动倾斜方向；用两池样本量做置信度收缩
+    edge = a["avg_return"] - b["avg_return"]          # >0 → A 池单笔更值
+    n_eff = min(a["count"], b["count"])
+    shrink = n_eff / (n_eff + POOL_SHRINK_K)          # 样本少 → 收缩趋 0
+    # 每 1pp 单笔收益差 → 倾斜约 2 个名额（经验敏感度），再收缩、再裁剪
+    raw_shift = edge * 2.0 * shrink
+    shift = int(round(max(-POOL_SHIFT_MAX, min(POOL_SHIFT_MAX, raw_shift))))
+    return {
+        "shift": shift,
+        "reason": (f"A池单笔期望{a['avg_return']:+.2f}pp vs B池{b['avg_return']:+.2f}pp, "
+                   f"收缩后名额倾斜 {shift:+d}（正=偏A）"),
+        "detail": perf,
     }
 
 
