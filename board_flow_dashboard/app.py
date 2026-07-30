@@ -2327,6 +2327,19 @@ def api_agent_debate():
     return jsonify(_run_debate_full(rounds=rounds))
 
 
+@app.route("/api/agent/debate/graph")
+def api_agent_debate_graph():
+    """辩论系统的显式 agent graph 拓扑（节点+带类型的边+共享状态）。
+
+    Graph Engineering 可观测出口：把辩论的协作结构以数据形式暴露，可视化/审计。
+    """
+    try:
+        from debate import DebateOrchestrator
+    except ImportError:
+        from .debate import DebateOrchestrator  # type: ignore
+    return jsonify(DebateOrchestrator.graph_topology())
+
+
 # ── Agent 模式端点（Function Calling + 记忆 + 输出校验）──────
 
 @app.route("/api/agent/chat/agent", methods=["POST"])

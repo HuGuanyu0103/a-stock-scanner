@@ -14,6 +14,12 @@ Multi-Agent 光谱定位：本系统已达 L3-L4 —— 每个 agent 有自主�
 ReAct mini-loop、自己去取证），主席是动态编排者（按市场/诉求路由召集、对存疑结论
 把分析师"打回去补证据"），而非固定三段式的并行聚合。
 
+从 Multi-Agent 到 Graph Engineering：本系统的协作结构本质是一张 agent graph——
+节点(专门化分析师+主席) + 带类型的边(route 条件路由 / fanout 扇出 / rebut 环 /
+fanin 扇入 / challenge 条件反馈 / converge 收敛) + 沿边流动的共享状态(黑板)。
+DEBATE_GRAPH 常量把该拓扑显式声明为数据(可打印/可校验/可观测，见 graph_topology())，
+是从"隐式图(藏在控制流)"迈向"显式 Graph Engineering"的第一步。
+
 六个 Agent 角色（5 分析师 + 1 主席）：
   TechAnalyst      观象 — 技术+资金面；工具：个股技术面、板块资金流
   SentimentAnalyst 观势 — 情绪面；工具：市场情绪
@@ -443,6 +449,42 @@ class DataExtractor:
 # 辩论编排器
 # ═══════════════════════════════════════════════════════════════
 
+# ── 显式 Agent Graph 拓扑声明（Graph Engineering）─────────────────
+# 把辩论系统的协作结构从「隐式(藏在 run_debate 的控制流里)」变为「显式(声明成数据)」：
+# 节点 = 专门化 agent / 编排步骤；边 = 带类型的路由(条件路由/扇出/扇入/条件反馈/环)。
+# 这是 multi-agent 走向 graph engineering 的关键一步——拓扑成为可打印、可校验、
+# 可观测的一等对象，而非埋在 if/else 里。run_debate 的实际执行严格遵循此拓扑。
+DEBATE_GRAPH = {
+    "nodes": [
+        {"id": "moderator", "type": "orchestrator", "role": "观澜",
+         "desc": "主席/编排者：route→challenge→加权收敛（恒在场）"},
+        {"id": "tech", "type": "analyst", "role": "观象", "desc": "技术+资金面"},
+        {"id": "sentiment", "type": "analyst", "role": "观势", "desc": "情绪面"},
+        {"id": "news", "type": "analyst", "role": "观闻", "desc": "消息面"},
+        {"id": "history", "type": "analyst", "role": "观史", "desc": "历史胜率(飞轮)"},
+        {"id": "risk", "type": "analyst", "role": "观危", "desc": "风控(恒在场)"},
+    ],
+    # 边类型：route(条件路由/派活) fanout(扇出并行) fanin(扇入汇聚)
+    #        rebut(分析师间反驳/环) challenge(条件反馈:定向打回补证) converge(收敛)
+    "edges": [
+        {"from": "moderator", "to": "*analysts", "type": "route",
+         "cond": "按市场状态/用户诉求动态召集(risk 恒选)"},
+        {"from": "moderator", "to": "*roster", "type": "fanout",
+         "cond": "被召集分析师并发发言(各跑自己的 ReAct mini-loop)"},
+        {"from": "*roster", "to": "*roster", "type": "rebut",
+         "cond": "多轮反驳/让步，立场稳定则收敛(环)"},
+        {"from": "*roster", "to": "moderator", "type": "fanin",
+         "cond": "意见+多轮辩论汇聚到主席"},
+        {"from": "moderator", "to": "*challenged", "type": "challenge",
+         "cond": "证据不足/矛盾未解 → 定向打回特定分析师补证(条件反馈边，不重跑全部)"},
+        {"from": "moderator", "to": "END", "type": "converge",
+         "cond": "按可审计权重加权收敛出最终决策"},
+    ],
+    "shared_state": "AnalystToolCtx(黑板)：候选池/信号/广度/历史胜率沿边流动",
+    "note": "隐式图(控制流内)已具备图的全部结构；显式化为数据是向 Graph Engineering 演进的第一步",
+}
+
+
 class DebateOrchestrator:
     """Multi-Agent 辩论编排器。
 
@@ -456,6 +498,16 @@ class DebateOrchestrator:
         self._model = model
         self._client = None
         self._api_available = None
+
+    @staticmethod
+    def graph_topology() -> dict:
+        """返回本辩论系统的显式 agent graph 拓扑（节点+带类型的边+共享状态）。
+
+        Graph Engineering 的关键一步：把协作结构从「隐式(藏在 run_debate 控制流)」
+        提为「显式(声明成数据)」——拓扑可打印、可校验、可观测。run_debate 的实际
+        执行严格遵循此拓扑（route→fanout→rebut→fanin→challenge→converge）。
+        """
+        return DEBATE_GRAPH
 
     def _init_client(self) -> bool:
         if self._api_available is not None:
@@ -658,6 +710,7 @@ class DebateOrchestrator:
                 "llm_call_budget": self._budget.limit,   # 硬上限
                 "budget_hit": self._budget.over(),       # 是否触顶降级
             },
+            "graph_topology": DEBATE_GRAPH,   # 显式 agent graph 拓扑(可观测)
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
 
