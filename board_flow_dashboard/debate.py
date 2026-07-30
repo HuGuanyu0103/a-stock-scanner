@@ -531,8 +531,9 @@ class DebateOrchestrator:
             return False
 
         # P1-3: 显式 timeout，避免多次串行 LLM 调用时端点长时间挂起
+        # max_retries=2：对齐 agent 端，一次网络抖动不至于让某分析师/阶段直接失效
         self._client = OpenAI(api_key=key, base_url="https://api.deepseek.com",
-                              timeout=30.0)
+                              timeout=30.0, max_retries=2)
         self._api_available = True
         return True
 
@@ -1035,24 +1036,37 @@ class DebateOrchestrator:
         budget = getattr(self, "_budget", None)
         if budget is not None:
             budget.take()  # 收敛是终局必做步骤，计入预算但不跳过
+        moderate_messages = [
+            {"role": "system", "content": MODERATOR_SYSTEM_PROMPT},
+            {"role": "user", "content": (
+                "请综合五位分析师(技术/情绪/消息/历史/风控)的意见、多轮辩论反驳、"
+                "角色数值权重、历史胜率和候选池，给出最终决策建议。"
+                "风控官(观危)的仓位红线必须被尊重，不得超越其 position_ceiling。"
+                f"\n\n{context}\n\n严格按照 JSON 格式输出。"
+            )},
+        ]
         try:
             resp = self._client.chat.completions.create(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": MODERATOR_SYSTEM_PROMPT},
-                    {"role": "user", "content": (
-                        "请综合五位分析师(技术/情绪/消息/历史/风控)的意见、多轮辩论反驳、"
-                        "角色数值权重、历史胜率和候选池，给出最终决策建议。"
-                        "风控官(观危)的仓位红线必须被尊重，不得超越其 position_ceiling。"
-                        f"\n\n{context}\n\n严格按照 JSON 格式输出。"
-                    )},
-                ],
+                model=self._model, messages=moderate_messages,
                 response_format={"type": "json_object"},
-                temperature=0.4,
-                max_tokens=2500,
+                temperature=0.4, max_tokens=2500,
             )
             raw = resp.choices[0].message.content
-            return self._parse_json(raw)
+            parsed = self._parse_json(raw)
+            # JSON 纠错：收敛是终局关键步骤，解析失败时让主席重出一次严格 JSON 再兜底
+            if parsed is None and (budget is None or budget.take()):
+                logger.info("Moderator 输出 JSON 解析失败，触发一次 JSON 纠错重问")
+                retry_msgs = moderate_messages + [
+                    {"role": "assistant", "content": raw or ""},
+                    {"role": "user", "content": "你上一条输出不是合法 JSON。请严格重新输出一个合法 JSON 对象，不要任何解释文字、不要代码围栏。"},
+                ]
+                resp2 = self._client.chat.completions.create(
+                    model=self._model, messages=retry_msgs,
+                    response_format={"type": "json_object"},
+                    temperature=0.2, max_tokens=2500,
+                )
+                parsed = self._parse_json(resp2.choices[0].message.content)
+            return parsed
         except Exception as e:
             logger.warning("Moderator 调用失败: %s", e)
             return None

@@ -65,6 +65,37 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+
+# ── 全局异常兜底 ────────────────────────────────────────────
+# 未被各端点局部 try 捕获的异常，避免走 Flask 默认 HTML 500；对 /api/ 前缀统一返回
+# JSON，让前端始终能解析出 error 字段（而非拿到一坨 HTML）。非 API 路由走默认渲染。
+def _wants_json() -> bool:
+    return request.path.startswith("/api/") or \
+        "application/json" in (request.headers.get("Accept", "") or "")
+
+
+@app.errorhandler(404)
+def _handle_404(e):
+    if _wants_json():
+        return jsonify({"error": "not_found", "path": request.path}), 404
+    return e
+
+
+@app.errorhandler(Exception)
+def _handle_uncaught(e):
+    from werkzeug.exceptions import HTTPException
+    # 保留正常的 HTTP 状态异常（如 404/405），只兜住真正未处理的 500 类异常
+    if isinstance(e, HTTPException):
+        if _wants_json() and e.code and e.code >= 500:
+            return jsonify({"error": "server_error", "detail": str(e)}), e.code
+        return e
+    logger.exception("未捕获异常 @ %s: %s", request.path, e)
+    if _wants_json():
+        return jsonify({"error": "server_error",
+                        "detail": "服务内部错误，请稍后重试"}), 500
+    return ("服务内部错误，请稍后重试", 500)
+
+
 # Gzip 压缩（含静态文件），减少 Cloudflare Tunnel 带宽
 try:
     from flask_compress import Compress
@@ -2247,6 +2278,50 @@ def api_holdings_analyze():
 
 # ── Multi-Agent 辩论端点 ───────────────────────────────
 
+def _rule_engine_fallback_reply(user_message: str = "") -> str:
+    """降级链最底层：LLM 全挂时，用规则引擎选股结果拼一段静态、合规的可读回答。
+
+    这是"多Agent → 单Agent → 规则引擎 → 静态提示"链条的第三级：即便所有 LLM
+    路径都不可用，仍能基于纯规则的选股结果给用户一个有信息量、且过合规闸的答复，
+    而不是干巴巴一句"服务不可用"。
+    """
+    try:
+        data = select_stocks(collector=collector)
+        pool = (data.get("pool_a", []) or []) + (data.get("pool_b", []) or [])
+        hot = data.get("hot_sectors", []) or []
+        breadth = data.get("market_breadth", 0.5)
+        lines = ["ℹ️ AI 对话服务暂时不可用，以下为**规则引擎**（非 AI）实时选股结果，供参考："]
+        mood = "偏强" if breadth >= 0.6 else ("偏弱" if breadth <= 0.4 else "中性")
+        lines.append(f"\n**大盘环境**：市场广度 {breadth:.0%}（{mood}）。")
+        if hot:
+            names = "、".join(str(s.get("name", s) if isinstance(s, dict) else s) for s in hot[:5])
+            lines.append(f"**热门板块**：{names}。")
+        if pool:
+            lines.append("\n**规则引擎候选（按综合评分）**：")
+            for c in pool[:6]:
+                nm = c.get("name", ""); code = c.get("code", "")
+                sec = c.get("sector", ""); sig = c.get("signal", "") or c.get("reason", "")
+                sc = c.get("score", "")
+                seg = f"- {nm}（{code}）" + (f" · {sec}" if sec else "")
+                if sc != "":
+                    seg += f" · 评分 {sc}"
+                if sig:
+                    seg += f" · {sig}"
+                lines.append(seg)
+        else:
+            lines.append("\n当前候选池为空（可能非交易时段或数据源波动），请稍后重试。")
+        text = "\n".join(lines)
+    except Exception as e:
+        logger.warning("规则引擎兜底回答生成失败: %s", e)
+        text = "抱歉，AI 助手与规则引擎均暂时不可用，请稍后重试。"
+    # 静态兜底同样过合规闸
+    try:
+        from .guardrails import seal
+    except ImportError:
+        from guardrails import seal  # type: ignore
+    return seal(text)["text"]
+
+
 def _run_debate_full(rounds: int = 1, user_context: str = "") -> dict:
     """执行完整五分析师辩论 + 主席综合 + 结论落库飞轮。
 
@@ -2314,6 +2389,36 @@ def _run_debate_full(rounds: int = 1, user_context: str = "") -> dict:
     except Exception as e:
         logger.warning("辩论结论落库失败: %s", e)
 
+    # 合规收口：辩论主席决策含面向用户的自由文本字段，逐字段软改写降绝对性
+    # （soften 只降措辞、不破坏 JSON 结构、不追加免责）；命中硬红线记录到 compliance。
+    try:
+        from .guardrails import soften, check_output
+    except ImportError:
+        from guardrails import soften, check_output  # type: ignore
+    try:
+        mod = report.get("moderator") or {}
+        fd = mod.get("final_decision") or {}
+        violations, softened_all = [], []
+        # (容器 dict, 字段名) —— 覆盖所有面向用户的自由文本出口
+        targets = [(mod, "overall_view"), (mod, "consensus_detail"),
+                   (mod, "bottom_line"), (fd, "key_reasoning")]
+        for holder, key in targets:
+            val = holder.get(key)
+            if isinstance(val, str) and val:
+                new_val, changes = soften(val)
+                if changes:
+                    holder[key] = new_val
+                    softened_all += changes
+                scan = check_output(new_val)
+                if not scan["compliant"]:
+                    violations += scan["violations"]
+        report["compliance"] = {
+            "sealed": True, "softened": softened_all,
+            "violations": violations, "compliant": len(violations) == 0,
+        }
+    except Exception as e:
+        logger.warning("辩论结论合规收口失败(不阻断): %s", e)
+
     return report
 
 
@@ -2324,7 +2429,12 @@ def api_agent_debate():
         rounds = int(request.args.get("rounds", 1))
     except (TypeError, ValueError):
         rounds = 1
-    return jsonify(_run_debate_full(rounds=rounds))
+    report = _run_debate_full(rounds=rounds)
+    # 降级链：辩论系统整体不可用 → 回退到规则引擎静态选股结果（而非只回 error）
+    if isinstance(report, dict) and report.get("error") == "辩论系统不可用":
+        report["degraded"] = "rule_engine"
+        report["fallback_reply"] = _rule_engine_fallback_reply()
+    return jsonify(report)
 
 
 @app.route("/api/agent/debate/graph")
@@ -2408,9 +2518,13 @@ def api_agent_chat_agent():
             breadth=data.get("market_breadth", 0.5),
         )
         if not reply:
-            return jsonify({"error": "Agent 不可用", "fallback": True}), 200
-        result = {"reply": reply, "tool_trace": [], "iterations": 0,
-                  "fallback": True, "usage": {}, "corrected": False}
+            # 降级链末级：单 Agent 也挂 → 规则引擎拼静态可读回答（而非干巴巴 error）
+            reply = _rule_engine_fallback_reply(user_message)
+            result = {"reply": reply, "tool_trace": [], "iterations": 0,
+                      "fallback": True, "degraded": "rule_engine", "usage": {}, "corrected": False}
+        else:
+            result = {"reply": reply, "tool_trace": [], "iterations": 0,
+                      "fallback": True, "usage": {}, "corrected": False}
 
     # 输出质量校验（不通过仅标记，不阻断返回）
     validation = agent.validate_output(result.get("reply", ""), qt)
@@ -2508,7 +2622,7 @@ def api_agent_chat_agent_stream():
             logger.error("Agent stream 异常: %s", e)
             errored = True
 
-        # LLM 不可用 → 降级到非流式 chat，一次性推回
+        # LLM 不可用 → 降级到非流式 chat；chat 也挂 → 规则引擎静态回答，一次性推回
         if errored and not full_reply:
             try:
                 data = select_stocks(collector=collector)
@@ -2517,12 +2631,24 @@ def api_agent_chat_agent_stream():
                     user_message, all_c, data.get("hot_sectors", []),
                     get_signal_store().get_all(), chat_history=history,
                     breadth=data.get("market_breadth", 0.5),
-                ) or "抱歉，暂时无法处理该请求，请稍后重试。"
+                )
+                if not reply:
+                    # 单 Agent 也挂 → 规则引擎兜底（降级链末级）
+                    reply = _rule_engine_fallback_reply(user_message)
+                    meta["degraded"] = "rule_engine"
                 full_reply = reply
                 yield f"data: {json.dumps({'type': 'chunk', 'data': reply}, ensure_ascii=False)}\n\n"
                 meta["fallback"] = True
             except Exception:
-                yield f"data: {json.dumps({'type': 'chunk', 'data': '抱歉，服务暂时不可用。'}, ensure_ascii=False)}\n\n"
+                # 最末兜底：规则引擎也异常时的静态提示
+                try:
+                    reply = _rule_engine_fallback_reply(user_message)
+                except Exception:
+                    reply = "抱歉，服务暂时不可用，请稍后重试。"
+                full_reply = reply
+                meta["fallback"] = True
+                meta["degraded"] = "static"
+                yield f"data: {json.dumps({'type': 'chunk', 'data': reply}, ensure_ascii=False)}\n\n"
 
         # 持久化 + 校验
         if full_reply:

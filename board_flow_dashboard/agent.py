@@ -494,7 +494,15 @@ class DecisionAgent:
                 temperature=0.5,
                 max_tokens=3000,
             )
-            return resp.choices[0].message.content
+            reply = resp.choices[0].message.content
+            # 合规收口：chat() 是降级路径的公共出口，话已出口无重写机会，用 seal 兜底
+            if reply:
+                try:
+                    from .guardrails import seal
+                except ImportError:
+                    from guardrails import seal  # type: ignore
+                reply = seal(reply)["text"]
+            return reply
         except Exception as e:
             logger.warning("Chat 调用失败: %s", e)
             return None
@@ -1190,10 +1198,34 @@ class DecisionAgent:
             except Exception as e:
                 logger.warning("chat_agent_stream 纠错重答失败: %s", e)
 
+        # ── 阶段四：合规收口（流式）──
+        # 文本已逐块推给用户、无法回收，故采用「事后追加」：扫描全文，命中硬红线则
+        # 追加一段合规修正说明 + 免责声明（诚实告知前文某些表述不合规，不留违规内容独走）。
+        compliance = {"violated": False, "violations": [], "disclaimer_added": False}
+        try:
+            from .guardrails import check_output, DISCLAIMER
+        except ImportError:
+            from guardrails import check_output, DISCLAIMER  # type: ignore
+        scan = check_output(full_reply)
+        if not scan["compliant"]:
+            compliance["violated"] = True
+            compliance["violations"] = scan["violations"]
+            logger.warning("chat_agent_stream 输出触犯合规红线(事后拦截): %s", scan["violations"])
+            note = ("\n\n———\n⚠️ 合规修正：上文部分表述（如收益承诺/涨停预测/诱导重仓）"
+                    "不符合金融合规要求，请勿据此决策。本工具仅提供基于量化数据的中性分析，"
+                    "不预测涨跌、不承诺收益。")
+            full_reply += note
+            yield {"type": "chunk", "data": note}
+        # 统一追加免责声明（若尚未出现）
+        if DISCLAIMER.strip() not in full_reply:
+            full_reply += DISCLAIMER
+            yield {"type": "chunk", "data": DISCLAIMER}
+            compliance["disclaimer_added"] = True
+
         usage["cost_cny"] = round(usage["cost_cny"], 6)
         yield {"type": "done", "reply": full_reply, "tool_trace": tool_trace,
                "iterations": min(iteration + 1, max_iterations),
-               "usage": usage, "corrected": corrected,
+               "usage": usage, "corrected": corrected, "compliance": compliance,
                "pending_actions": list(getattr(tool_ctx, "pending_actions", []))}
 
 

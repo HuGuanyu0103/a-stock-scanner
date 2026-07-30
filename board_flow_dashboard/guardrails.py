@@ -13,6 +13,10 @@
      命中即判定不合规并给出可用于「重写」的问题清单。
   3. 交付侧免责注入（enforce）：合规输出统一追加标准风险提示/免责声明，
      并对轻微违规做**软性改写**（把"必涨/保证"等措辞降级为条件表述）。
+     enforce 命中硬红线时按兵不动，交上层触发合规重写——适用于还能重问 LLM 的路径。
+  4. 终端出口兜底（seal）：面向**无法再重写**的出口（普通 chat 降级、流式事后、
+     辩论结论）。命中硬红线时自己兜底——剔除违规句、必要时整体降级为安全提示，
+     绝不原样放行。是全系统所有面向用户出口的"最后一道闸"。
 
 设计原则：可解释（每次拦截都能说清命中哪条红线）、可配置（红线词表集中）、
 零依赖（纯字符串规则，不额外调用 LLM，零成本零延迟）。
@@ -137,6 +141,58 @@ def enforce(text: str, add_disclaimer: bool = True) -> dict:
     }
     if scan["compliant"] and add_disclaimer and DISCLAIMER.strip() not in softened_text:
         result["text"] = softened_text + DISCLAIMER
+        result["disclaimer_added"] = True
+    return result
+
+
+def seal(text: str, add_disclaimer: bool = True) -> dict:
+    """终端出口的最后一道闸——用于**无法再让 LLM 重写**的路径。
+
+    与 enforce 的区别：enforce 命中硬红线时按兵不动（交上层触发合规重写），
+    适用于还能重问 LLM 的非流式 chat_agent；而 seal 面向"话已出口/无重写机会"的
+    出口（普通 chat 降级、流式事后修正、辩论结论），命中硬红线时**必须自己兜底**，
+    绝不把违规内容原样放行：
+
+      1. 软改写降绝对性（soften）
+      2. 合规扫描（check_output）
+      3. 若仍命中硬红线：逐句剔除含红线词的句子；剔除后若正文被掏空，
+         整体降级为一句中性安全提示（fail-safe：宁可少说，不可越界）
+      4. 追加标准免责声明
+
+    返回 {text, compliant, violations, softened, redacted, disclaimer_added}。
+    """
+    softened_text, changes = soften(text or "")
+    scan = check_output(softened_text)
+    redacted = []
+    out = softened_text
+    if not scan["compliant"]:
+        # 逐句剔除命中硬红线的句子（按中英文句末标点切分，保留分隔符）
+        bad_words = FORBIDDEN_PROMISE + FORBIDDEN_INCITE + FORBIDDEN_ILLEGAL
+        parts = re.split(r"([。！？\n!?])", out)
+        kept = []
+        for i in range(0, len(parts), 2):
+            seg = parts[i]
+            sep = parts[i + 1] if i + 1 < len(parts) else ""
+            if any(w in seg for w in bad_words):
+                redacted.append(seg.strip())
+                continue
+            kept.append(seg + sep)
+        out = "".join(kept).strip()
+        # 掏空则整体降级为安全提示（绝不放行残缺的违规文本）
+        if not out or not check_output(out)["compliant"]:
+            out = ("抱歉，本条回复因涉及合规红线（如收益承诺/涨停预测/诱导重仓等）已被"
+                   "安全策略拦截。我可以提供基于量化数据的中性分析，但不会预测涨跌或承诺收益。")
+    result = {
+        "text": out,
+        "compliant": check_output(out)["compliant"],
+        "violations": scan["violations"],
+        "categories": scan["categories"],
+        "softened": changes,
+        "redacted": redacted,
+        "disclaimer_added": False,
+    }
+    if add_disclaimer and DISCLAIMER.strip() not in result["text"]:
+        result["text"] = result["text"] + DISCLAIMER
         result["disclaimer_added"] = True
     return result
 
